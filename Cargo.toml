@@ -1,0 +1,20 @@
+[package]
+name = "redis-sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+rand_chacha = "0.3"
+fnv = "1.0"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bin]]
+name = "redis-sim"
+path = "src/main.rs"
+
+[lib]
+name = "redis_sim"
+path = "src/lib.rs"

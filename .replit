@@ -1,2 +1,26 @@
+modules = ["rust-stable"]
 [agent]
 expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Run Redis Simulator"
+
+[[workflows.workflow]]
+name = "Run Redis Simulator"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cargo run --release"
+
+[workflows.workflow.metadata]
+outputType = "console"
