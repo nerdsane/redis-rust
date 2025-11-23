@@ -25,6 +25,10 @@ path = "src/main.rs"
 name = "redis-server"
 path = "src/bin/server.rs"
 
+[[bin]]
+name = "test-client"
+path = "src/bin/test_client.rs"
+
 [lib]
 name = "redis_sim"
 path = "src/lib.rs"

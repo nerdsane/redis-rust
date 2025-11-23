@@ -1,18 +1,38 @@
-# Redis Deterministic Simulator
+# Redis Cache - Production Server + Deterministic Simulator
 
-A deterministic simulator for building Redis from scratch in Rust, using FoundationDB's engineering approach to simulation testing.
+A production-ready Redis cache server with an actor-based architecture, alongside a deterministic simulator for testing using FoundationDB's engineering approach.
 
 ## Overview
 
-This project implements a **deterministic simulation framework** that allows testing distributed systems with perfect reproducibility. Following FoundationDB's pioneering approach, the simulator provides:
+This project provides **two ways to run Redis**:
 
+### 1. Production Server (Actor-Based, Real I/O)
+- ✅ **TCP server** on port 3000 (compatible with redis-cli)
+- ✅ **Actor-based architecture** using Tokio for concurrent connections
+- ✅ **Real-time TTL expiration** with background actor
+- ✅ **35+ Redis commands** for production caching workloads
+- ✅ **Thread-safe shared state** with parking_lot RwLock
+- ✅ **Production-ready** for real applications
+
+### 2. Deterministic Simulator (Testing Harness)
 - **Single-threaded deterministic execution**: All events are processed in a controlled, reproducible order
 - **Virtual time system**: Fast-forward through delays without actual waiting
 - **Simulated network layer**: In-memory packet delivery with configurable faults
 - **Seeded random number generation**: Same seed = same execution every time
 - **BUGGIFY-style chaos injection**: Probabilistic fault injection for finding edge cases
 
+**Both implementations share the same core caching logic** (CommandExecutor, data structures, RESP protocol), following the FoundationDB philosophy: test production code in a deterministic simulator.
+
 ## Recent Changes
+
+**November 23, 2025**: Production Redis Server Added
+- ✅ **Actor-based production server** running on port 3000
+- ✅ **Tokio async runtime** for high-performance concurrent connections
+- ✅ **Background TTL expiration actor** with real-time cleanup
+- ✅ **Shared state with parking_lot RwLock** for thread-safe access
+- ✅ **Full RESP protocol** over TCP sockets
+- ✅ **Test client** verifying all 35+ commands work correctly
+- **Architecture**: Production server reuses ALL simulator logic (CommandExecutor, data structures, RESP parser)
 
 **November 23, 2025**: Full caching features added
 - ✅ **TTL & Expiration**: SETEX, EXPIRE, EXPIREAT, TTL, PTTL, PERSIST commands
@@ -194,16 +214,31 @@ Redis server and client implementations for the simulator:
 - `RedisServer`: Handles commands via simulated network
 - `RedisClient`: Sends commands and receives responses
 
-## Running the Simulator
+## Running the Project
+
+### Production Redis Server
 
 ```bash
-# Build and run
-cargo run --release
+# Run the production server (port 3000)
+cargo run --bin redis-server --release
 
-# Run tests
+# Connect with redis-cli (or any Redis client)
+redis-cli -h localhost -p 3000
+
+# Or use the test client
+cargo run --bin test-client --release
+```
+
+### Deterministic Simulator
+
+```bash
+# Run the simulator with test scenarios
+cargo run --bin redis-sim --release
+
+# Run unit tests
 cargo test
 
-# Build only
+# Build both
 cargo build --release
 ```
 
