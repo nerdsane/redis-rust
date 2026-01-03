@@ -30,6 +30,8 @@ pub enum Command {
     GetSet(String, SDS),
     MGet(Vec<String>),
     MSet(Vec<(String, SDS)>),
+    /// Internal command for batched SET within a single shard (not exposed via RESP)
+    BatchSet(Vec<(String, SDS)>),
     LPush(String, Vec<SDS>),
     RPush(String, Vec<SDS>),
     LPop(String),
@@ -662,6 +664,7 @@ impl Command {
             Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
             Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
+            Command::BatchSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::Keys(_) | Command::FlushDb | Command::FlushAll |
             Command::Info | Command::Ping | Command::Unknown(_) => None,
         }
@@ -1068,7 +1071,16 @@ impl CommandExecutor {
                 }
                 RespValue::SimpleString("OK".to_string())
             }
-            
+
+            Command::BatchSet(pairs) => {
+                // Optimized batch set - all keys are guaranteed to be on this shard
+                for (key, value) in pairs {
+                    self.data.insert(key.clone(), Value::String(value.clone()));
+                    self.access_times.insert(key.clone(), self.current_time);
+                }
+                RespValue::SimpleString("OK".to_string())
+            }
+
             Command::LPush(key, values) => {
                 if self.is_expired(key) {
                     self.data.remove(key);

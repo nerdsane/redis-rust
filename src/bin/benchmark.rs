@@ -1,13 +1,17 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let port = env::args().nth(1).unwrap_or("3000".to_string());
+    let addr = format!("127.0.0.1:{}", port);
+
     println!("🔥 Redis Server Benchmark\n");
-    println!("Connecting to 127.0.0.1:3000...\n");
+    println!("Connecting to {}...\n", addr);
     
     let num_requests = 5_000;
     let num_clients = 25;
@@ -17,29 +21,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Concurrent clients: {}\n", num_clients);
     println!("Running benchmarks...\n");
     
-    benchmark_ping(num_requests, num_clients).await?;
-    benchmark_set(num_requests, num_clients).await?;
-    benchmark_get(num_requests, num_clients).await?;
-    benchmark_incr(num_requests, num_clients).await?;
-    benchmark_mset(num_requests / 10, num_clients).await?;
-    benchmark_mixed(num_requests, num_clients).await?;
+    benchmark_ping(&addr, num_requests, num_clients).await?;
+    benchmark_set(&addr, num_requests, num_clients).await?;
+    benchmark_get(&addr, num_requests, num_clients).await?;
+    benchmark_incr(&addr, num_requests, num_clients).await?;
+    benchmark_mset(&addr, num_requests / 10, num_clients).await?;
+    benchmark_mixed(&addr, num_requests, num_clients).await?;
     
     println!("\n✅ Benchmark complete!");
     
     Ok(())
 }
 
-async fn benchmark_ping(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_ping(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let completed = Arc::new(AtomicU64::new(0));
-    
+
     let mut handles = vec![];
     let requests_per_client = num_requests / num_clients;
-    
+
     for _ in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
             let cmd = b"*1\r\n$4\r\nPING\r\n";
             
             for _ in 0..requests_per_client {
@@ -69,17 +74,18 @@ async fn benchmark_ping(num_requests: usize, num_clients: usize) -> Result<(), B
     Ok(())
 }
 
-async fn benchmark_set(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_set(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let completed = Arc::new(AtomicU64::new(0));
-    
+
     let mut handles = vec![];
     let requests_per_client = num_requests / num_clients;
-    
+
     for client_id in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
             
             for i in 0..requests_per_client {
                 let key = format!("key:{}:{}", client_id, i);
@@ -113,8 +119,8 @@ async fn benchmark_set(num_requests: usize, num_clients: usize) -> Result<(), Bo
     Ok(())
 }
 
-async fn benchmark_get(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let mut setup_stream = TcpStream::connect("127.0.0.1:3000").await?;
+async fn benchmark_get(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut setup_stream = TcpStream::connect(addr).await?;
     for i in 0..100 {
         let cmd = format!("*3\r\n$3\r\nSET\r\n$8\r\nget_key{}\r\n$5\r\nvalue\r\n", i);
         setup_stream.write_all(cmd.as_bytes()).await?;
@@ -130,9 +136,10 @@ async fn benchmark_get(num_requests: usize, num_clients: usize) -> Result<(), Bo
     
     for _ in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
-            
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
+
             for i in 0..requests_per_client {
                 let key_id = i % 100;
                 let cmd = format!("*2\r\n$3\r\nGET\r\n$8\r\nget_key{}\r\n", key_id);
@@ -163,17 +170,18 @@ async fn benchmark_get(num_requests: usize, num_clients: usize) -> Result<(), Bo
     Ok(())
 }
 
-async fn benchmark_incr(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_incr(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let completed = Arc::new(AtomicU64::new(0));
-    
+
     let mut handles = vec![];
     let requests_per_client = num_requests / num_clients;
-    
+
     for client_id in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
             let key = format!("counter:{}", client_id);
             let cmd = format!("*2\r\n$4\r\nINCR\r\n${}\r\n{}\r\n", key.len(), key);
             
@@ -204,17 +212,18 @@ async fn benchmark_incr(num_requests: usize, num_clients: usize) -> Result<(), B
     Ok(())
 }
 
-async fn benchmark_mset(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_mset(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let completed = Arc::new(AtomicU64::new(0));
-    
+
     let mut handles = vec![];
     let requests_per_client = num_requests / num_clients;
-    
+
     for client_id in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
             
             for i in 0..requests_per_client {
                 let cmd = format!(
@@ -249,17 +258,18 @@ async fn benchmark_mset(num_requests: usize, num_clients: usize) -> Result<(), B
     Ok(())
 }
 
-async fn benchmark_mixed(num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_mixed(addr: &str, num_requests: usize, num_clients: usize) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let completed = Arc::new(AtomicU64::new(0));
-    
+
     let mut handles = vec![];
     let requests_per_client = num_requests / num_clients;
-    
+
     for client_id in 0..num_clients {
         let completed = completed.clone();
+        let addr = addr.to_string();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect("127.0.0.1:3000").await.unwrap();
+            let mut stream = TcpStream::connect(&addr).await.unwrap();
             
             for i in 0..requests_per_client {
                 let cmd = match i % 5 {

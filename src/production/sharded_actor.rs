@@ -15,6 +15,11 @@ pub enum ShardMessage {
         virtual_time: VirtualTime,
         response_tx: oneshot::Sender<RespValue>,
     },
+    /// Fire-and-forget batch command (no response needed)
+    BatchCommand {
+        cmd: Command,
+        virtual_time: VirtualTime,
+    },
     EvictExpired {
         virtual_time: VirtualTime,
         response_tx: oneshot::Sender<usize>,
@@ -42,6 +47,11 @@ impl ShardActor {
                     self.executor.set_time(virtual_time);
                     let response = self.executor.execute(&cmd);
                     let _ = response_tx.send(response);
+                }
+                ShardMessage::BatchCommand { cmd, virtual_time } => {
+                    // Fire-and-forget: execute without sending response
+                    self.executor.set_time(virtual_time);
+                    let _ = self.executor.execute(&cmd);
                 }
                 ShardMessage::EvictExpired { virtual_time, response_tx } => {
                     let evicted = self.executor.evict_expired_direct(virtual_time);
@@ -77,6 +87,13 @@ impl ShardHandle {
             debug_assert!(false, "Shard {} response channel dropped", self.shard_id);
             RespValue::Error("ERR shard response failed".to_string())
         })
+    }
+
+    /// Fire-and-forget execution - no response channel allocation
+    #[inline]
+    fn execute_fire_and_forget(&self, cmd: Command, virtual_time: VirtualTime) {
+        let msg = ShardMessage::BatchCommand { cmd, virtual_time };
+        let _ = self.tx.send(msg);
     }
 
     #[inline]
@@ -201,44 +218,55 @@ impl ShardedActorState {
                     self.shards[shard_idx].execute(Command::Get(key.clone()), virtual_time)
                 }).collect();
 
-                let mut results = Vec::with_capacity(keys.len());
-                for future in futures {
-                    results.push(future.await);
-                }
+                // Execute all GET operations concurrently
+                let results = futures::future::join_all(futures).await;
                 RespValue::Array(Some(results))
             }
 
             Command::MSet(pairs) => {
-                let mut futures = Vec::with_capacity(pairs.len());
+                // Group key-value pairs by target shard
+                let mut shard_batches: [Vec<(String, crate::redis::SDS)>; NUM_SHARDS] = Default::default();
                 for (key, value) in pairs {
                     let shard_idx = hash_key(key);
-                    futures.push(self.shards[shard_idx].execute(
-                        Command::Set(key.clone(), value.clone()),
-                        virtual_time,
-                    ));
+                    shard_batches[shard_idx].push((key.clone(), value.clone()));
                 }
-                for future in futures {
-                    let _ = future.await;
+
+                // Collect non-empty batches with their shard indices
+                let batches: Vec<_> = shard_batches.into_iter()
+                    .enumerate()
+                    .filter(|(_, b)| !b.is_empty())
+                    .collect();
+
+                if batches.is_empty() {
+                    return RespValue::SimpleString("OK".to_string());
                 }
+
+                // For single-shard MSET (common case), execute directly
+                if batches.len() == 1 {
+                    let (shard_idx, batch) = batches.into_iter().next().unwrap();
+                    self.shards[shard_idx].execute(Command::BatchSet(batch), virtual_time).await;
+                } else {
+                    // Multi-shard: send all concurrently
+                    let futures: Vec<_> = batches.into_iter().map(|(shard_idx, batch)| {
+                        self.shards[shard_idx].execute(Command::BatchSet(batch), virtual_time)
+                    }).collect();
+                    futures::future::join_all(futures).await;
+                }
+
                 RespValue::SimpleString("OK".to_string())
             }
 
             Command::Exists(keys) => {
-                let mut futures = Vec::with_capacity(keys.len());
-                for key in keys {
+                let futures: Vec<_> = keys.iter().map(|key| {
                     let shard_idx = hash_key(key);
-                    futures.push(self.shards[shard_idx].execute(
-                        Command::Exists(vec![key.clone()]),
-                        virtual_time,
-                    ));
-                }
+                    self.shards[shard_idx].execute(Command::Exists(vec![key.clone()]), virtual_time)
+                }).collect();
 
-                let mut count = 0i64;
-                for future in futures {
-                    if let RespValue::Integer(n) = future.await {
-                        count = count.saturating_add(n);
-                    }
-                }
+                // Execute all EXISTS operations concurrently
+                let results = futures::future::join_all(futures).await;
+                let count: i64 = results.into_iter().filter_map(|r| {
+                    if let RespValue::Integer(n) = r { Some(n) } else { None }
+                }).sum();
                 RespValue::Integer(count)
             }
 
