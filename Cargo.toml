@@ -30,10 +30,6 @@ name = "redis-sim"
 path = "src/main.rs"
 
 [[bin]]
-name = "redis-server"
-path = "src/bin/server.rs"
-
-[[bin]]
 name = "test-client"
 path = "src/bin/test_client.rs"
 
