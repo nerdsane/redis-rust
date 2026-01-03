@@ -49,7 +49,7 @@ N/A (Backend project)
 - **Redis Commands**: Implements a comprehensive set of Redis commands including `GET`, `SET`, `SETEX`, `EXPIRE`, `INCR`, `DECR`, `LPUSH`, `RPUSH`, `SADD`, `HSET`, `ZADD`, `EXISTS`, `TYPE`, `KEYS`, `FLUSHDB`, `FLUSHALL`, `PING`, `INFO`, and more.
 - **Data Structures**: Binary-safe SDS (Simple Dynamic String), `VecDeque`-based Lists, `HashSet`-based Sets, `HashMap`-based Hashes, and a Skip List-based Sorted Set.
 - **Expiration**: Full support for `TTL`, `PTTL`, `EXPIRE`, `EXPIREAT`, `PEXPIREAT`, and `PERSIST` commands, with `EXPIREAT`/`PEXPIREAT` handling Unix epoch timestamps relative to a configurable `simulation_start_epoch`.
-- **Performance**: The sharded production server achieves approximately 25,000 operations/second with sub-millisecond latency.
+- **Performance**: The optimized production server achieves approximately 40,000 operations/second with sub-millisecond latency.
 
 ### System Design Choices
 
