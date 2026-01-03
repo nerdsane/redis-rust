@@ -3,6 +3,8 @@ mod resp;
 mod resp_optimized;
 mod commands;
 mod server;
+#[cfg(test)]
+mod tests;
 
 pub use data::{Value, SDS, RedisList, RedisSet, RedisHash, RedisSortedSet};
 pub use resp::{RespParser, RespValue};
