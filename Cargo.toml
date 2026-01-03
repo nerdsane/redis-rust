@@ -43,6 +43,10 @@ path = "src/bin/quick_benchmark.rs"
 name = "maelstrom-kv"
 path = "src/bin/maelstrom_kv.rs"
 
+[[bin]]
+name = "maelstrom-kv-replicated"
+path = "src/bin/maelstrom_kv_replicated.rs"
+
 [lib]
 name = "redis_sim"
 path = "src/lib.rs"
