@@ -12,22 +12,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Run Redis Simulator"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "Redis Production Server"
-
-[[workflows.workflow]]
-name = "Run Redis Simulator"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cargo run --release"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [[workflows.workflow]]
 name = "Redis Production Server"
