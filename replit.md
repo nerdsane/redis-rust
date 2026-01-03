@@ -117,3 +117,25 @@ Key production files:
 - `src/production/sharded_actor.rs` - Actor-per-shard with ShardMessage enum
 - `src/production/connection_optimized.rs` - Zero-copy connection handler
 - `src/production/ttl_manager.rs` - TtlManagerActor for key expiration
+
+### Deterministic Simulation Harness (FDB/TigerBeetle Style)
+- `SimulationHarness` - Wraps CommandExecutor with VirtualTime for deterministic testing
+- `SimulatedRedisNode` - Single Redis node with explicit time control
+- `ScenarioBuilder` - Ergonomic test authoring with time-based scheduling
+- `run_with_eviction()` - Interleaves TTL eviction cycles for expiration testing
+- History recording for linearizability verification
+
+Simulation tests (8 tests):
+- `test_basic_set_get` - Baseline operations
+- `test_ttl_expiration_with_fast_forward` - Virtual time fast-forward
+- `test_ttl_boundary_race` - Expiration edge cases at exact boundary
+- `test_concurrent_increments` - Multiple clients at same timestamp
+- `test_deterministic_replay` - Same seed produces identical results
+- `test_buggify_chaos` - Probabilistic delay injection
+- `test_persist_cancels_expiration` - PERSIST command behavior
+- `test_multi_seed_invariants` - 100 seeds verify invariants hold
+
+Key simulation files:
+- `src/simulator/harness.rs` - SimulationHarness, ScenarioBuilder, tests
+- `src/simulator/rng.rs` - ChaCha8-based DeterministicRng, buggify()
+- `src/simulator/time.rs` - VirtualTime with deterministic ordering
