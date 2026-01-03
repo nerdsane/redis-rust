@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::cmp::Ordering;
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SDS {
     data: Vec<u8>,
 }

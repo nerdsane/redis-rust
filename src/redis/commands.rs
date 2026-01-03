@@ -531,6 +531,43 @@ impl CommandExecutor {
         self.execute(cmd)
     }
 
+    /// Execute a read-only command without updating access times
+    /// This can be used when we only have immutable access to the executor
+    pub fn execute_readonly(&self, cmd: &Command) -> RespValue {
+        match cmd {
+            Command::Get(key) => {
+                if self.is_expired(key) {
+                    return RespValue::BulkString(None);
+                }
+                match self.data.get(key) {
+                    Some(Value::String(s)) => RespValue::BulkString(Some(s.as_bytes().to_vec())),
+                    Some(_) => RespValue::Error("WRONGTYPE".to_string()),
+                    None => RespValue::BulkString(None),
+                }
+            }
+            Command::Exists(keys) => {
+                let count = keys.iter().filter(|k| {
+                    !self.is_expired(k) && self.data.contains_key(*k)
+                }).count();
+                RespValue::Integer(count as i64)
+            }
+            Command::Keys(pattern) => {
+                let matching: Vec<RespValue> = self.data.keys()
+                    .filter(|k| !self.is_expired(k) && self.matches_glob_pattern(k, pattern))
+                    .map(|k| RespValue::BulkString(Some(k.as_bytes().to_vec())))
+                    .collect();
+                RespValue::Array(Some(matching))
+            }
+            Command::Ping => RespValue::SimpleString("PONG".to_string()),
+            _ => RespValue::Error("ERR command not supported in readonly mode".to_string()),
+        }
+    }
+
+    /// Get read-only access to the data store
+    pub fn get_data(&self) -> &HashMap<String, Value> {
+        &self.data
+    }
+
     fn get_value(&mut self, key: &str) -> Option<&Value> {
         if self.is_expired(key) {
             self.data.remove(key);

@@ -61,6 +61,23 @@ N/A (Backend project)
 - `parking_lot`: Provides efficient synchronization primitives, specifically `RwLock`, for thread-safe state management in the production server.
 - `serde` / `serde_json`: JSON serialization for Maelstrom protocol support.
 
+## Anna KVS-Style Replication
+
+The project includes Anna KVS-inspired replication with configurable consistency:
+
+- **Lattice-based CRDTs**: LWW (Last-Writer-Wins) registers with Lamport clocks for conflict resolution
+- **Vector clocks**: For causal consistency tracking (optional)
+- **Gossip protocol**: Periodic state synchronization between nodes
+- **Configurable consistency levels**: Eventual (default) or Causal
+- **Sharded replication**: Each of 16 shards maintains independent replica state
+
+Key files:
+- `src/replication/lattice.rs` - CRDT primitives (LwwRegister, VectorClock, LamportClock)
+- `src/replication/state.rs` - Shard replica state management
+- `src/replication/gossip.rs` - Gossip message types
+- `src/production/replicated_state.rs` - Replicated sharded state
+- `src/production/gossip_manager.rs` - Peer-to-peer gossip networking
+
 ## Correctness Testing (Maelstrom/Jepsen)
 
 The project includes Maelstrom integration for formal linearizability testing:
