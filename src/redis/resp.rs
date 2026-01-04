@@ -1,5 +1,3 @@
-use super::SDS;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum RespValue {
     SimpleString(String),

@@ -619,6 +619,7 @@ pub struct CommandExecutor {
     expirations: HashMap<String, VirtualTime>,
     current_time: VirtualTime,
     access_times: HashMap<String, VirtualTime>,
+    #[allow(dead_code)]
     key_count: usize,
     commands_processed: usize,
     simulation_start_epoch: i64,
@@ -1334,8 +1335,8 @@ impl CommandExecutor {
             return true;
         }
         
-        let mut key_chars: Vec<char> = key.chars().collect();
-        let mut pattern_chars: Vec<char> = pattern.chars().collect();
+        let key_chars: Vec<char> = key.chars().collect();
+        let pattern_chars: Vec<char> = pattern.chars().collect();
         
         self.glob_match(&key_chars, &pattern_chars, 0, 0)
     }

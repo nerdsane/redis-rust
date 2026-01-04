@@ -8,9 +8,8 @@
 //! - Writes during partition
 //! - Asymmetric partitions
 
-use super::multi_node::{MultiNodeSimulation, LinearizabilityResult, check_single_key_linearizability};
+use super::multi_node::{MultiNodeSimulation, check_single_key_linearizability};
 use crate::redis::{Command, SDS};
-use crate::buggify::FaultConfig;
 use std::collections::HashSet;
 
 /// Partition configuration for tests

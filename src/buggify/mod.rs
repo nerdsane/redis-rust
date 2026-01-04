@@ -106,7 +106,7 @@ impl BuggifyStats {
     }
 }
 
-/// Thread-local buggify context for tracking and configuration
+// Thread-local buggify context for tracking and configuration
 thread_local! {
     static BUGGIFY_CONTEXT: RefCell<BuggifyContext> = RefCell::new(BuggifyContext::default());
 }

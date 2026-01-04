@@ -21,7 +21,6 @@ pub use dst::{DSTSimulation, DSTConfig, BatchRunner, BatchResult, SimulationResu
 pub use partition_tests::{PartitionConfig, PartitionTestResult, PartitionBatchResult, run_partition_test, run_partition_test_batch};
 pub use connection::{SimulatedConnection, SimulatedReadBuffer, SimulatedWriteBuffer, PipelineSimulator, PipelineResult, ExecutionRecord};
 
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

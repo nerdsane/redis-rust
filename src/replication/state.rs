@@ -1,10 +1,10 @@
 use super::lattice::{
-    GCounter, GSet, LamportClock, LwwRegister, ORSet, PNCounter, ReplicaId, UniqueTag, VectorClock,
+    GCounter, GSet, LamportClock, LwwRegister, ORSet, PNCounter, ReplicaId, VectorClock,
 };
 use super::config::ConsistencyLevel;
 use crate::redis::SDS;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // ============================================================================
 // CrdtValue - Union type for all supported CRDT types

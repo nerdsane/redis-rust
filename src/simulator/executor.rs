@@ -18,6 +18,7 @@ impl Default for SimulationConfig {
     }
 }
 
+#[allow(dead_code)]
 pub struct Simulation {
     config: SimulationConfig,
     current_time: VirtualTime,

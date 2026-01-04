@@ -148,7 +148,7 @@ impl<'a> QueryExecutor<'a> {
 
         for key in keys {
             // Parse key to check if it matches
-            if let Some((name, metric_type, tags_hash)) = MetricKeyEncoder::decode(&key) {
+            if let Some((name, metric_type, _tags_hash)) = MetricKeyEncoder::decode(&key) {
                 // Check name match (simple contains for now, could add wildcard support)
                 if !self.name_matches(&name, &query.name) {
                     continue;
@@ -279,10 +279,12 @@ impl<'a> QueryExecutor<'a> {
 }
 
 /// Builder for grouped queries (for dashboards)
+#[allow(dead_code)]
 pub struct DashboardQuery {
     queries: Vec<MetricsQuery>,
 }
 
+#[allow(dead_code)]
 impl DashboardQuery {
     /// Create a new dashboard query builder
     pub fn new() -> Self {

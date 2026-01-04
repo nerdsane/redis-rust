@@ -66,9 +66,11 @@ struct ResponseBody {
 
 struct NodeState {
     node_id: String,
+    #[allow(dead_code)]
     replica_id: u64,
     peers: Vec<String>,
     state: ReplicatedShardedState,
+    #[allow(dead_code)]
     pending_deltas: Vec<ReplicationDelta>,
 }
 

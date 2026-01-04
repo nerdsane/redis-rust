@@ -868,7 +868,7 @@ mod tests {
         let mut os2: ORSet<String> = ORSet::new();
 
         // r1 adds element
-        let tag = os1.add("a".to_string(), r1);
+        let _tag = os1.add("a".to_string(), r1);
 
         // Sync to os2
         os2 = os1.merge(&os2);

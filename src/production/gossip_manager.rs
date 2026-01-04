@@ -12,6 +12,7 @@ use tracing::{debug, info, warn, error};
 
 pub type DeltaCallback = Arc<dyn Fn(Vec<ReplicationDelta>) + Send + Sync>;
 
+#[allow(dead_code)]
 pub struct GossipManager {
     config: ReplicationConfig,
     gossip_state: Arc<RwLock<GossipState>>,
@@ -220,6 +221,7 @@ impl GossipManager {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PeerState {
     pub replica_id: ReplicaId,
     pub address: String,
@@ -227,6 +229,7 @@ pub struct PeerState {
     pub connected: bool,
 }
 
+#[allow(dead_code)]
 impl PeerState {
     pub fn new(replica_id: ReplicaId, address: String) -> Self {
         PeerState {

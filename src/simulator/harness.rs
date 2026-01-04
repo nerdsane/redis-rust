@@ -20,6 +20,7 @@ pub struct OperationResult {
 pub struct SimulatedRedisNode {
     executor: CommandExecutor,
     current_time: VirtualTime,
+    #[allow(dead_code)]
     simulation_start_epoch: i64,
 }
 
@@ -157,7 +158,7 @@ impl ScenarioBuilder {
         self
     }
 
-    pub fn at_time(mut self, time_ms: u64) -> ScenarioAtTime {
+    pub fn at_time(self, time_ms: u64) -> ScenarioAtTime {
         ScenarioAtTime {
             builder: self,
             time: VirtualTime::from_millis(time_ms),

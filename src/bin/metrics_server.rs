@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use redis_sim::metrics::{MetricsCommand, MetricsCommandExecutor, MetricsResult};
+use redis_sim::metrics::{MetricsCommand, MetricsCommandExecutor};
 
 /// Metrics server configuration
 #[derive(Debug, Clone)]
@@ -51,6 +51,7 @@ impl Default for MetricsServerConfig {
 /// Metrics server state shared across connections
 struct ServerState {
     executor: MetricsCommandExecutor,
+    #[allow(dead_code)]
     config: MetricsServerConfig,
 }
 

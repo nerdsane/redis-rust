@@ -69,6 +69,7 @@ pub enum ShardMessage {
         response_tx: oneshot::Sender<RespValue>,
     },
     /// Fire-and-forget batch command (no response needed)
+    #[allow(dead_code)]
     BatchCommand {
         cmd: Command,
         virtual_time: VirtualTime,
@@ -82,6 +83,7 @@ pub enum ShardMessage {
 pub struct ShardActor {
     executor: CommandExecutor,
     rx: mpsc::UnboundedReceiver<ShardMessage>,
+    #[allow(dead_code)]
     shard_id: usize,
     #[allow(dead_code)]
     num_shards: usize,
@@ -146,6 +148,7 @@ impl ShardHandle {
 
     /// Fire-and-forget execution - no response channel allocation
     #[inline]
+    #[allow(dead_code)]
     fn execute_fire_and_forget(&self, cmd: Command, virtual_time: VirtualTime) {
         let msg = ShardMessage::BatchCommand { cmd, virtual_time };
         let _ = self.tx.send(msg);

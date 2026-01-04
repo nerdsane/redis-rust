@@ -4,7 +4,7 @@
 //! without requiring new writes.
 
 use redis_sim::redis::{Command, SDS};
-use redis_sim::replication::{AntiEntropyConfig, AntiEntropyManager, ReplicaId, StateDigest};
+use redis_sim::replication::{ReplicaId, StateDigest};
 use redis_sim::replication::state::ReplicatedValue;
 use redis_sim::replication::lattice::LamportClock;
 use redis_sim::simulator::multi_node::MultiNodeSimulation;

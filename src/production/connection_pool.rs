@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use crossbeam::queue::ArrayQueue;
 use bytes::BytesMut;
-use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 
 pub struct ConnectionPool {

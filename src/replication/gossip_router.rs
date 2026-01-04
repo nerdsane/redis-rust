@@ -282,7 +282,7 @@ mod tests {
         let router = create_test_router(10, 1, true);
         let deltas: Vec<_> = (0..100).map(|i| create_test_delta(&format!("key{}", i))).collect();
 
-        let (routing, stats) = router.route_with_stats(deltas);
+        let (_routing, stats) = router.route_with_stats(deltas);
 
         assert_eq!(stats.total_deltas, 100);
         assert!(stats.unique_targets <= 9); // At most 9 other nodes

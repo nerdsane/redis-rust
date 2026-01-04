@@ -7,7 +7,7 @@
 //! - In-flight operation handling
 
 use super::{HostId, VirtualTime};
-use crate::buggify::{self, faults, FaultConfig};
+use crate::buggify::{self, faults};
 use crate::io::Rng;
 use std::collections::HashMap;
 
@@ -400,6 +400,7 @@ fn check_buggify<R: Rng>(rng: &mut R, fault_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buggify::FaultConfig;
     use crate::io::simulation::SimulatedRng;
 
     #[test]

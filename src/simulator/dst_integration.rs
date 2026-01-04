@@ -3,25 +3,25 @@
 //! Demonstrates the full DST framework with simulated Redis operations,
 //! fault injection, crash/recovery, and linearizability checking.
 
-use super::crash::{CrashReason, OperationType as CrashOpType, PendingOperation};
 use super::dst::{
-    BatchRunner, DSTConfig, DSTSimulation, OperationResult, OperationType, RecordedOperation,
+    DSTConfig, DSTSimulation, OperationResult, OperationType, RecordedOperation,
     SimulationResult,
 };
-use super::{HostId, VirtualTime};
-use crate::buggify::{self, faults, FaultConfig};
-use crate::io::simulation::SimulatedRng;
+use super::VirtualTime;
+use crate::buggify::{self, FaultConfig};
 use crate::io::Rng;
 use crate::redis::{Command, CommandExecutor, RespValue, SDS};
 use std::collections::HashMap;
 
 /// Simulated node state for DST testing
+#[allow(dead_code)]
 struct SimulatedNode {
     id: usize,
     executor: CommandExecutor,
     pending_writes: Vec<(String, String)>,
 }
 
+#[allow(dead_code)]
 impl SimulatedNode {
     fn new(id: usize) -> Self {
         SimulatedNode {
@@ -64,6 +64,7 @@ pub struct RedisDSTSimulation {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct WriteEvent {
     time: VirtualTime,
     node: usize,

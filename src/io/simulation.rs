@@ -99,6 +99,7 @@ pub struct SimulationContext {
     /// Deterministic RNG
     rng: Mutex<SimulatedRng>,
     /// Fault configuration
+    #[allow(dead_code)]
     fault_config: FaultConfig,
     /// Pending timers (min-heap by wake time)
     timers: Mutex<BinaryHeap<TimerEntry>>,
@@ -382,6 +383,7 @@ struct PendingConnection {
     stream_id: u64,
 }
 
+#[allow(dead_code)]
 struct InFlightPacket {
     from: NodeId,
     to: NodeId,

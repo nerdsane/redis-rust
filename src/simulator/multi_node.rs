@@ -7,13 +7,13 @@
 //! - CRDT convergence verification
 
 use super::{DeterministicRng, Duration, VirtualTime};
-use crate::redis::{Command, CommandExecutor, RespValue, SDS};
+use crate::redis::{Command, CommandExecutor, RespValue};
 use crate::replication::anti_entropy::{AntiEntropyConfig, AntiEntropyManager, StateDigest};
 use crate::replication::gossip::GossipState;
 use crate::replication::gossip_router::GossipRouter;
 use crate::replication::hash_ring::HashRing;
 use crate::replication::state::{ReplicationDelta, ShardReplicaState};
-use crate::replication::{ConsistencyLevel, ReplicaId, ReplicationConfig};
+use crate::replication::{ReplicaId, ReplicationConfig};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 
@@ -576,6 +576,7 @@ pub fn check_single_key_linearizability(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::redis::SDS;
 
     #[test]
     fn test_basic_replication() {

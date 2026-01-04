@@ -1,11 +1,9 @@
 use super::state::ReplicationDelta;
 use super::config::ReplicationConfig;
-use super::gossip_router::{GossipRouter, RoutingTable};
-use super::hash_ring::HashRing;
+use super::gossip_router::GossipRouter;
 use super::lattice::ReplicaId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

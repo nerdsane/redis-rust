@@ -1,4 +1,4 @@
-use crate::redis::{Command, CommandExecutor, RespValue, SDS};
+use crate::redis::{Command, CommandExecutor, RespValue};
 use crate::replication::{
     ReplicaId, ReplicationConfig, ConsistencyLevel,
     ReplicationDelta,
@@ -187,7 +187,7 @@ impl ReplicatedShardedState {
                 }
                 RespValue::Integer(count)
             }
-            Command::Keys(pattern) => {
+            Command::Keys(_pattern) => {
                 let mut all_keys = Vec::new();
                 for shard in &self.shards {
                     let s = shard.read();

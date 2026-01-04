@@ -269,7 +269,8 @@ mod tests {
         manager.force_recalculate(2000);
         // Key should be demoted (depending on cleanup)
         let stats = manager.stats();
-        assert!(stats.total_demotions >= 0); // May or may not be demoted yet
+        // total_demotions is usize, always >= 0, so just check it exists
+        let _ = stats.total_demotions; // May or may not be demoted yet
     }
 
     #[test]

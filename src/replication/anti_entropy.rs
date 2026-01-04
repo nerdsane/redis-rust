@@ -14,9 +14,9 @@
 //! - Bandwidth-efficient: only sync divergent keys
 //! - Crdt-aware: merges values rather than overwriting
 
-use super::lattice::{LamportClock, ReplicaId};
+use super::lattice::ReplicaId;
 use super::state::{ReplicatedValue, ReplicationDelta};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
@@ -475,6 +475,7 @@ pub enum AntiEntropyMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::lattice::LamportClock;
     use crate::redis::SDS;
 
     fn make_value(s: &str, timestamp: u64, replica: ReplicaId) -> ReplicatedValue {

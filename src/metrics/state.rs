@@ -14,7 +14,7 @@ use crate::replication::lattice::{
 };
 
 use super::key_encoder::MetricKeyEncoder;
-use super::types::{MetricPoint, MetricType, MetricValue, TagSet};
+use super::types::{MetricPoint, MetricType};
 
 /// Delta representing a change to metrics state (for replication)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,6 +469,7 @@ impl MetricsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::types::TagSet;
 
     #[test]
     fn test_counter_increment() {

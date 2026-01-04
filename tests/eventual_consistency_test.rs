@@ -3,8 +3,8 @@
 //! Tests that verify multi-node CRDT-based replication converges correctly.
 //! These tests validate the Anna-style eventual consistency guarantees.
 
-use redis_sim::redis::{Command, RespValue, SDS};
-use redis_sim::replication::state::{ReplicatedValue, ReplicationDelta, ShardReplicaState};
+use redis_sim::redis::SDS;
+use redis_sim::replication::state::{ReplicationDelta, ShardReplicaState};
 use redis_sim::replication::lattice::{GCounter, PNCounter, ReplicaId};
 use redis_sim::replication::config::ConsistencyLevel;
 
