@@ -1,0 +1,101 @@
+# Shadow Testing Configuration
+#
+# Runs both official Redis and Rust implementation side-by-side
+# with a proxy that compares responses for compatibility testing.
+#
+# Usage:
+#   docker-compose -f docker-compose.shadow.yml up -d
+#
+# Connect to the shadow proxy (port 6381):
+#   redis-cli -p 6381
+#   redis-benchmark -p 6381 -n 10000
+#
+# All commands go to both servers, responses are compared.
+# Mismatches are logged. Statistics shown on Ctrl+C.
+#
+# Ports:
+#   6379 - Official Redis (primary)
+#   6380 - Rust implementation (secondary)
+#   6381 - Shadow proxy (connect here for testing)
+
+services:
+  # Official Redis - the "source of truth"
+  redis-official:
+    image: redis:7.4-alpine
+    container_name: redis-official
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-official-data:/data
+    command: redis-server --appendonly yes
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Rust implementation - shadow target
+  redis-rust:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: redis-rust
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-rust-data:/data
+    environment:
+      REDIS_PORT: "6379"
+      REDIS_STORE_TYPE: "localfs"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "sh", "-c", "printf '*1\\r\\n$$4\\r\\nPING\\r\\n' | nc -q1 localhost 6379 | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Shadow proxy - compares responses
+  shadow-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.shadow
+    container_name: shadow-proxy
+    ports:
+      - "6381:6381"
+    environment:
+      SHADOW_LISTEN_PORT: "6381"
+      SHADOW_PRIMARY: "redis-official:6379"
+      SHADOW_SECONDARY: "redis-rust:6379"
+      SHADOW_LOG_MISMATCHES: "true"
+      SHADOW_FAIL_ON_MISMATCH: "false"
+    depends_on:
+      redis-official:
+        condition: service_healthy
+      redis-rust:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+volumes:
+  redis-official-data:
+    driver: local
+  redis-rust-data:
+    driver: local
+
+networks:
+  default:
+    name: redis-shadow-network

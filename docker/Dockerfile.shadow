@@ -1,0 +1,49 @@
+# Shadow Proxy Dockerfile
+#
+# Lightweight image for the shadow testing proxy
+
+FROM rust:1.83-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+
+RUN mkdir -p src/bin && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/bin/shadow_proxy.rs && \
+    echo "" > src/lib.rs && \
+    cargo build --release 2>/dev/null || true && \
+    rm -rf src target/release/.fingerprint/redis-sim-* \
+           target/release/shadow-proxy \
+           target/release/deps/redis_sim-* target/release/deps/libredis_sim* \
+           target/release/incremental/redis_sim-*
+
+COPY src ./src
+RUN cargo build --release --bin shadow-proxy
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r -g 999 redis && useradd -r -g redis -u 999 redis
+
+COPY --from=builder /app/target/release/shadow-proxy /usr/local/bin/
+
+USER redis
+
+ENV SHADOW_LISTEN_PORT=6381 \
+    SHADOW_PRIMARY=localhost:6379 \
+    SHADOW_SECONDARY=localhost:6380 \
+    SHADOW_LOG_MISMATCHES=true \
+    SHADOW_FAIL_ON_MISMATCH=false
+
+EXPOSE 6381
+
+CMD ["shadow-proxy"]

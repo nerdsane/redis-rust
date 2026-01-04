@@ -1,0 +1,50 @@
+# Docker Compose for Redis Rust with LocalFs persistence
+#
+# Simple deployment without external dependencies.
+# Data is persisted to a Docker volume.
+#
+# Usage:
+#   cd docker
+#   docker-compose -f docker-compose.localfs.yml up -d
+#
+# Ports:
+#   - 3000: Redis server
+#   - 3001: Health check
+
+version: '3.8'
+
+services:
+  redis-persistent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.persistent
+    container_name: redis-persistent
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      REDIS_PORT: "3000"
+      REDIS_STORE_TYPE: "localfs"
+      REDIS_DATA_PATH: "/data"
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  default:
+    name: redis-network

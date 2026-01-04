@@ -1,0 +1,42 @@
+# Redis Rust - Drop-in Replacement
+#
+# Use exactly like the official Redis Docker image:
+#
+#   docker-compose up -d
+#   redis-cli -h localhost -p 6379
+#
+# This is a direct replacement for:
+#   docker run -p 6379:6379 redis
+
+version: '3.8'
+
+services:
+  redis:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    environment:
+      REDIS_PORT: "6379"
+      REDIS_STORE_TYPE: "localfs"
+      REDIS_DATA_PATH: "/data"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo PING | nc -q1 localhost 6379 | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local

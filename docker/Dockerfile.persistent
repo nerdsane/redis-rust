@@ -1,0 +1,84 @@
+# Dockerfile for Redis Rust persistent server only
+#
+# Smaller image focused on the persistent server with S3 support
+#
+# Usage:
+#   docker build -f docker/Dockerfile.persistent -t redis-rust-persistent:latest .
+#   docker run -p 3000:3000 -v /data:/data redis-rust-persistent:latest
+
+# Build stage
+FROM rust:1.83-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy manifests first for better caching
+COPY Cargo.toml Cargo.lock* ./
+
+# Create dummy src to build dependencies
+RUN mkdir -p src/bin && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/bin/server_persistent.rs && \
+    echo "" > src/lib.rs
+
+# Build dependencies (this layer will be cached)
+RUN cargo build --release --features s3 2>/dev/null || true && \
+    rm -rf src target/release/.fingerprint/redis-sim-* \
+           target/release/server-persistent \
+           target/release/deps/redis_sim-* target/release/deps/libredis_sim* \
+           target/release/incremental/redis_sim-*
+
+# Copy real source code
+COPY src ./src
+
+# Build release binary with S3 support
+RUN cargo build --release --features s3 --bin server-persistent
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r redis && useradd -r -g redis -u 1000 redis
+
+# Create data directory
+RUN mkdir -p /data && chown redis:redis /data
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/server-persistent /usr/local/bin/
+
+# Set ownership
+RUN chown redis:redis /usr/local/bin/server-persistent
+
+# Default environment variables
+ENV REDIS_PORT=3000 \
+    REDIS_STORE_TYPE=localfs \
+    REDIS_DATA_PATH=/data \
+    AWS_REGION=us-east-1
+
+# Switch to non-root user
+USER redis
+
+# Expose ports (main + health check)
+EXPOSE 3000 3001
+
+# Default data volume
+VOLUME ["/data"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3001/ || exit 1
+
+# Run persistent server
+CMD ["server-persistent"]

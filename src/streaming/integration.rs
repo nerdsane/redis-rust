@@ -22,6 +22,8 @@ use crate::streaming::{
     StreamingConfig, ObjectStoreType, StreamingPersistence,
     delta_sink_channel,
 };
+#[cfg(feature = "s3")]
+use crate::streaming::S3ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -368,7 +370,14 @@ pub async fn create_integration(
         }
         #[cfg(feature = "s3")]
         ObjectStoreType::S3 => {
-            Err(IntegrationError::Config("S3 store not yet implemented".to_string()))
+            let s3_config = config.s3.clone().ok_or_else(|| {
+                IntegrationError::Config("S3 configuration required for S3 store type".to_string())
+            })?;
+            let store = S3ObjectStore::new(s3_config).await.map_err(|e| {
+                IntegrationError::Config(format!("Failed to create S3 store: {}", e))
+            })?;
+            let integration = StreamingIntegration::with_store(Arc::new(store), config, replica_id);
+            Ok(Box::new(StreamingIntegrationWrapper::S3(integration)))
         }
     }
 }
@@ -391,6 +400,8 @@ pub trait StreamingIntegrationTrait: Send + Sync {
 enum StreamingIntegrationWrapper {
     InMemory(StreamingIntegration<InMemoryObjectStore>),
     LocalFs(StreamingIntegration<LocalFsObjectStore>),
+    #[cfg(feature = "s3")]
+    S3(StreamingIntegration<S3ObjectStore>),
 }
 
 impl StreamingIntegrationTrait for StreamingIntegrationWrapper {
@@ -401,6 +412,8 @@ impl StreamingIntegrationTrait for StreamingIntegrationWrapper {
         match self {
             StreamingIntegrationWrapper::InMemory(i) => Box::pin(i.recover(state)),
             StreamingIntegrationWrapper::LocalFs(i) => Box::pin(i.recover(state)),
+            #[cfg(feature = "s3")]
+            StreamingIntegrationWrapper::S3(i) => Box::pin(i.recover(state)),
         }
     }
 
@@ -410,6 +423,8 @@ impl StreamingIntegrationTrait for StreamingIntegrationWrapper {
         match self {
             StreamingIntegrationWrapper::InMemory(i) => Box::pin(i.start_workers()),
             StreamingIntegrationWrapper::LocalFs(i) => Box::pin(i.start_workers()),
+            #[cfg(feature = "s3")]
+            StreamingIntegrationWrapper::S3(i) => Box::pin(i.start_workers()),
         }
     }
 }

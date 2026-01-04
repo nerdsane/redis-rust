@@ -33,6 +33,8 @@ pub mod compaction;
 pub mod integration;
 pub mod clock;
 pub mod dst;
+#[cfg(feature = "s3")]
+pub mod s3_store;
 
 pub use object_store::{ObjectStore, ObjectMeta, ListResult, ObjectStoreError};
 pub use object_store::{InMemoryObjectStore, LocalFsObjectStore};
@@ -75,3 +77,7 @@ pub use dst::{
     StreamingWorkload, StreamingOperation, OperationOutcome,
     run_dst_batch, summarize_batch,
 };
+#[cfg(feature = "s3")]
+pub use s3_store::S3ObjectStore;
+#[cfg(feature = "s3")]
+pub use config::S3Config;
