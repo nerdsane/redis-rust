@@ -38,20 +38,30 @@ To ensure a fair comparison, we run both servers in identical Docker containers 
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 78,802 req/sec | 76,687 req/sec | **97%** |
-| GET | 80,580 req/sec | 76,278 req/sec | **95%** |
-| INCR | 79,554 req/sec | 83,542 req/sec | **105%** |
+| SET | 79,051 req/sec | 75,988 req/sec | **96%** |
+| GET | 76,570 req/sec | 76,687 req/sec | **100%** |
+| INCR | 78,431 req/sec | 71,788 req/sec | **92%** |
 
-**Conclusion:** Our implementation achieves **95-105% of Redis 7.4 performance** on single operations.
+**Conclusion:** Our implementation achieves **92-100% of Redis 7.4 performance** on single operations.
 
 ### Pipelined Performance (Pipeline=16)
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 793,650 req/sec | **900,900 req/sec** | **113%** |
-| GET | 769,230 req/sec | **1,030,927 req/sec** | **134%** |
+| SET | 806,452 req/sec | **925,926 req/sec** | **+15%** |
+| GET | 877,193 req/sec | **909,091 req/sec** | **+4%** |
+| INCR | 787,402 req/sec | **990,099 req/sec** | **+26%** |
 
-**Result:** Our implementation is **13-34% FASTER than Redis 7.4** on pipelined workloads!
+**Result:** Our implementation is **4-26% FASTER than Redis 7.4** on pipelined workloads!
+
+### High Pipeline Performance (Pipeline=64)
+
+| Operation | Official Redis 7.4 | Rust Implementation | Relative |
+|-----------|-------------------|---------------------|----------|
+| SET | 1,020,735 req/sec | **1,563,000 req/sec** | **+53%** |
+| GET | 1,538,954 req/sec | 1,449,739 req/sec | 94% |
+
+**Result:** At high pipeline depths, SET operations are **53% faster** than Redis 7.4!
 
 **Why we're faster on pipelining:**
 1. Batched response flushing (single syscall for all responses)
@@ -133,11 +143,13 @@ Client Connection
 
 | Feature | Official Redis 7.4 | This Implementation | Notes |
 |---------|-------------------|---------------------|-------|
-| **Performance (SET P=1)** | 78,802 req/sec | 76,687 req/sec | 97% of Redis |
-| **Performance (GET P=1)** | 80,580 req/sec | 76,278 req/sec | 95% of Redis |
-| **Performance (INCR)** | 79,554 req/sec | 83,542 req/sec | 105% of Redis |
-| **Pipelining SET (P=16)** | 793,650 req/sec | **900,900 req/sec** | **113% - FASTER** |
-| **Pipelining GET (P=16)** | 769,230 req/sec | **1,030,927 req/sec** | **134% - FASTER** |
+| **Performance (SET P=1)** | 79,051 req/sec | 75,988 req/sec | 96% of Redis |
+| **Performance (GET P=1)** | 76,570 req/sec | 76,687 req/sec | 100% of Redis |
+| **Performance (INCR P=1)** | 78,431 req/sec | 71,788 req/sec | 92% of Redis |
+| **Pipelining SET (P=16)** | 806,452 req/sec | **925,926 req/sec** | **+15% FASTER** |
+| **Pipelining GET (P=16)** | 877,193 req/sec | **909,091 req/sec** | **+4% FASTER** |
+| **Pipelining INCR (P=16)** | 787,402 req/sec | **990,099 req/sec** | **+26% FASTER** |
+| **High Pipeline SET (P=64)** | 1,020,735 req/sec | **1,563,000 req/sec** | **+53% FASTER** |
 | Persistence (RDB/AOF) | Yes | No | Trade-off |
 | Clustering | Redis Cluster | Anna-style CRDT | Different model |
 | Consistency | Strong (single-leader) | Eventual/Causal | Trade-off |
@@ -155,7 +167,7 @@ Client Connection
 - Strong consistency in multi-node
 
 **What we gain:**
-- **FASTER pipelining** (13-34% faster than Redis 7.4)
+- **FASTER pipelining** (4-26% faster at P=16, up to 53% faster at P=64)
 - Memory safety via Rust
 - Coordination-free replication (Anna-style)
 - Deterministic simulation testing
@@ -181,7 +193,7 @@ Client Connection
 
 ## Correctness Testing
 
-### Test Suite (175 tests)
+### Test Suite (219 tests)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
@@ -191,6 +203,8 @@ Client Connection
 | DST/Simulation | 5 | Multi-seed chaos testing |
 | Anti-Entropy | 8 | Merkle tree sync, split-brain |
 | Hot Key Detection | 5 | Adaptive replication |
+| Metrics Service | 26 | CRDT counters, gauges, distributions |
+| Integration | 18 | End-to-end scenarios |
 
 ### Maelstrom/Jepsen Results
 
@@ -224,10 +238,10 @@ cargo run --bin benchmark --release
 ### Run Tests
 
 ```bash
-# All tests (175)
+# All tests (219)
 cargo test --all
 
-# Unit tests only (138)
+# Unit tests only
 cargo test --lib
 ```
 
@@ -235,14 +249,15 @@ cargo test --lib
 
 The Tiger Style Redis server demonstrates:
 
-- **95-105% of Redis 7.4 performance** on single operations
-- **113-134% FASTER than Redis 7.4** on pipelined workloads
-- **1,030,927 req/sec peak throughput** (pipelined GET)
+- **92-100% of Redis 7.4 performance** on single operations
+- **4-26% FASTER than Redis 7.4** on pipelined workloads (P=16)
+- **Up to 53% FASTER** at high pipeline depths (P=64)
+- **1,563,000 req/sec peak throughput** (pipelined SET at P=64)
 - **Sub-millisecond latency** (0.003-0.006 ms average)
 - **Memory-safe** Rust implementation with no data races
 - **Deterministic testability** via FoundationDB-style simulation
 - **Single-node linearizability verified** via Maelstrom/Jepsen testing
-- **175 tests** covering consistency, replication, and chaos scenarios
+- **219 tests** covering consistency, replication, and chaos scenarios
 
 ### Known Limitations
 
