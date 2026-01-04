@@ -202,16 +202,19 @@ impl RedisList {
         self.items.push_front(value.clone());
 
         // TigerStyle: Postconditions
-        debug_assert_eq!(
-            self.items.len(),
-            pre_len + 1,
-            "Postcondition violated: len must increase by 1 after lpush"
-        );
-        debug_assert_eq!(
-            self.items.front().map(|v| v.to_string()),
-            Some(value.to_string()),
-            "Postcondition violated: pushed value must be at front"
-        );
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.items.len(),
+                pre_len + 1,
+                "Postcondition violated: len must increase by 1 after lpush"
+            );
+            debug_assert_eq!(
+                self.items.front().map(|v| v.to_string()),
+                Some(value.to_string()),
+                "Postcondition violated: pushed value must be at front"
+            );
+        }
 
         self.verify_invariants();
     }
@@ -223,16 +226,19 @@ impl RedisList {
         self.items.push_back(value.clone());
 
         // TigerStyle: Postconditions
-        debug_assert_eq!(
-            self.items.len(),
-            pre_len + 1,
-            "Postcondition violated: len must increase by 1 after rpush"
-        );
-        debug_assert_eq!(
-            self.items.back().map(|v| v.to_string()),
-            Some(value.to_string()),
-            "Postcondition violated: pushed value must be at back"
-        );
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.items.len(),
+                pre_len + 1,
+                "Postcondition violated: len must increase by 1 after rpush"
+            );
+            debug_assert_eq!(
+                self.items.back().map(|v| v.to_string()),
+                Some(value.to_string()),
+                "Postcondition violated: pushed value must be at back"
+            );
+        }
 
         self.verify_invariants();
     }
