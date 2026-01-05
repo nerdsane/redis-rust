@@ -288,18 +288,42 @@ impl ReplicatedShardActor {
             }
             // Hash commands
             Command::HSet(key, pairs) => {
+                // TigerStyle: Preconditions
+                debug_assert!(!key.is_empty(), "Precondition: HSet key must not be empty");
+                debug_assert!(!pairs.is_empty(), "Precondition: HSet pairs must not be empty");
+
                 let fields: Vec<(String, crate::redis::SDS)> = pairs.iter()
                     .map(|(f, v)| (f.to_string(), v.clone()))
                     .collect();
-                Some(self.replica_state.record_hash_write(key.clone(), fields))
+                let delta = self.replica_state.record_hash_write(key.clone(), fields);
+
+                // TigerStyle: Postconditions
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(self.replica_state.replicated_keys.contains_key(key),
+                        "Postcondition: key must exist in replicated_keys after HSet");
+                    debug_assert!(self.replica_state.replicated_keys.get(key)
+                        .map(|v| v.is_hash()).unwrap_or(false),
+                        "Postcondition: value must be hash type after HSet");
+                }
+
+                Some(delta)
             }
             Command::HDel(key, fields) => {
+                // TigerStyle: Preconditions
+                debug_assert!(!key.is_empty(), "Precondition: HDel key must not be empty");
+                debug_assert!(!fields.is_empty(), "Precondition: HDel fields must not be empty");
+
                 let field_names: Vec<String> = fields.iter()
                     .map(|f| f.to_string())
                     .collect();
                 self.replica_state.record_hash_delete(key.clone(), field_names)
             }
             Command::HIncrBy(key, field, _) => {
+                // TigerStyle: Preconditions
+                debug_assert!(!key.is_empty(), "Precondition: HIncrBy key must not be empty");
+                debug_assert!(!field.is_empty(), "Precondition: HIncrBy field must not be empty");
+
                 // After HIncrBy, read the resulting hash value and record it
                 if let Some(value) = self.executor.get_data().get(key) {
                     if let Some(hash) = value.as_hash() {
@@ -321,10 +345,21 @@ impl ReplicatedShardActor {
     }
 
     /// Apply a remote delta from another replica
+    /// TigerStyle: Applies remote delta and syncs executor state
     fn apply_remote_delta_impl(&mut self, delta: ReplicationDelta) {
+        // TigerStyle: Preconditions
+        debug_assert!(!delta.key.is_empty(), "Precondition: delta key must not be empty");
+
         self.replica_state.apply_remote_delta(delta.clone());
 
         if delta.value.is_hash() {
+            // TigerStyle: Postcondition - replica_state should have the hash
+            #[cfg(debug_assertions)]
+            {
+                debug_assert!(self.replica_state.replicated_keys.contains_key(&delta.key),
+                    "Postcondition: key must exist after applying hash delta");
+            }
+
             // Apply hash delta
             if let Some(hash) = delta.value.get_hash() {
                 let pairs: Vec<(crate::redis::SDS, crate::redis::SDS)> = hash.iter()
@@ -333,8 +368,17 @@ impl ReplicatedShardActor {
                     })
                     .collect();
                 if !pairs.is_empty() {
-                    let cmd = Command::HSet(delta.key.clone(), pairs);
+                    let cmd = Command::HSet(delta.key.clone(), pairs.clone());
                     self.executor.execute(&cmd);
+
+                    // TigerStyle: Postcondition - executor should have the hash fields
+                    #[cfg(debug_assertions)]
+                    {
+                        if let Some(executor_value) = self.executor.get_data().get(&delta.key) {
+                            debug_assert!(executor_value.as_hash().is_some(),
+                                "Postcondition: executor must have hash after HSet");
+                        }
+                    }
                 }
                 // Handle tombstoned fields by deleting them
                 let tombstones: Vec<crate::redis::SDS> = hash.iter()
@@ -342,8 +386,21 @@ impl ReplicatedShardActor {
                     .map(|(field, _)| crate::redis::SDS::from_str(field))
                     .collect();
                 if !tombstones.is_empty() {
-                    let cmd = Command::HDel(delta.key.clone(), tombstones);
+                    let cmd = Command::HDel(delta.key.clone(), tombstones.clone());
                     self.executor.execute(&cmd);
+
+                    // TigerStyle: Postcondition - tombstoned fields should be removed
+                    #[cfg(debug_assertions)]
+                    {
+                        if let Some(executor_value) = self.executor.get_data().get(&delta.key) {
+                            if let Some(exec_hash) = executor_value.as_hash() {
+                                for tombstone_field in &tombstones {
+                                    debug_assert!(exec_hash.get(tombstone_field).is_none(),
+                                        "Postcondition: tombstoned field must be deleted from executor");
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } else if let Some(value) = delta.value.get() {
