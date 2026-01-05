@@ -30,10 +30,12 @@ Every new component must be:
 - DST tests with fault injection for I/O components
 - Multiple seeds (minimum 10) for simulation tests
 
-### 5. VOPR (Verification-Oriented Programming)
+### 5. Design-by-Contract (TigerStyle Assertions)
 - State invariants must be checkable at any point
 - Add `verify_invariants()` methods to stateful structs
 - Run invariant checks in debug builds after every mutation
+
+Note: VOPR (Viewstamped Operation Replicator) is TigerBeetle's name for DST (Deterministic Simulation Testing) - see Phase 3 in the plan. The `verify_invariants()` pattern is a separate TigerStyle concept.
 
 ---
 
@@ -119,7 +121,7 @@ fn hincrby(&mut self, field: &str, increment: i64) -> i64 {
 - Functions that assert: prefix with `debug_assert!`
 - Unsafe blocks: document why they're safe
 
-### 4. VOPR (Verification-Oriented Programming)
+### 4. Design-by-Contract (TigerStyle Assertions)
 
 Every stateful struct should be verifiable:
 
@@ -154,7 +156,7 @@ impl RedisSortedSet {
 }
 ```
 
-**VOPR Checklist for New Structs:**
+**Design-by-Contract Checklist for New Structs:**
 - [ ] Define all invariants in comments
 - [ ] Implement `verify_invariants()` method
 - [ ] Call verification after every public mutation method
