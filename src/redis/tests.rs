@@ -859,3 +859,1049 @@ mod lua_scripting_tests {
         }
     }
 }
+
+/// Unit tests for new commands (SET options, list operations, sorted sets, transactions, scan)
+#[cfg(test)]
+mod new_command_tests {
+    use super::super::{Command, CommandExecutor, RespValue, SDS};
+
+    // ============================================
+    // SET with Options Tests
+    // ============================================
+
+    #[test]
+    fn test_set_nx_when_key_not_exists() {
+        let mut executor = CommandExecutor::new();
+
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("myvalue"),
+            ex: None,
+            px: None,
+            nx: true,
+            xx: false,
+            get: false,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        // Verify the value was set
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"myvalue".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_set_nx_when_key_exists() {
+        let mut executor = CommandExecutor::new();
+
+        // First set the key
+        executor.execute(&Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("original"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        // NX should fail when key exists
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("newvalue"),
+            ex: None,
+            px: None,
+            nx: true,
+            xx: false,
+            get: false,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(None));
+
+        // Value should be unchanged
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"original".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_set_xx_when_key_exists() {
+        let mut executor = CommandExecutor::new();
+
+        // First set the key
+        executor.execute(&Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("original"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        // XX should succeed when key exists
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("newvalue"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: true,
+            get: false,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        // Value should be updated
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"newvalue".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_set_xx_when_key_not_exists() {
+        let mut executor = CommandExecutor::new();
+
+        // XX should fail when key doesn't exist
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("myvalue"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: true,
+            get: false,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(None));
+
+        // Key should not exist
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(executor.execute(&get_cmd), RespValue::BulkString(None));
+    }
+
+    #[test]
+    fn test_set_get_returns_old_value() {
+        let mut executor = CommandExecutor::new();
+
+        // First set the key
+        executor.execute(&Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("original"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        // SET with GET should return old value
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("newvalue"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: true,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(Some(b"original".to_vec())));
+
+        // Value should be updated
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"newvalue".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_set_get_returns_nil_when_key_not_exists() {
+        let mut executor = CommandExecutor::new();
+
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("myvalue"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: true,
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+
+    #[test]
+    fn test_set_ex_sets_expiration() {
+        use crate::simulator::VirtualTime;
+
+        let mut executor = CommandExecutor::new();
+        executor.set_time(VirtualTime::from_millis(0));
+
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("myvalue"),
+            ex: Some(10), // 10 seconds
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        };
+        executor.execute(&cmd);
+
+        // Key should exist immediately
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"myvalue".to_vec()))
+        );
+
+        // Advance time past expiration
+        executor.set_time(VirtualTime::from_millis(11000));
+
+        // Key should be expired
+        assert_eq!(executor.execute(&get_cmd), RespValue::BulkString(None));
+    }
+
+    #[test]
+    fn test_set_px_sets_expiration_milliseconds() {
+        use crate::simulator::VirtualTime;
+
+        let mut executor = CommandExecutor::new();
+        executor.set_time(VirtualTime::from_millis(0));
+
+        let cmd = Command::Set {
+            key: "mykey".to_string(),
+            value: SDS::from_str("myvalue"),
+            ex: None,
+            px: Some(500), // 500 milliseconds
+            nx: false,
+            xx: false,
+            get: false,
+        };
+        executor.execute(&cmd);
+
+        // Key should exist at 400ms
+        executor.set_time(VirtualTime::from_millis(400));
+        let get_cmd = Command::Get("mykey".to_string());
+        assert_eq!(
+            executor.execute(&get_cmd),
+            RespValue::BulkString(Some(b"myvalue".to_vec()))
+        );
+
+        // Key should be expired at 600ms
+        executor.set_time(VirtualTime::from_millis(600));
+        assert_eq!(executor.execute(&get_cmd), RespValue::BulkString(None));
+    }
+
+    // ============================================
+    // Multi-key DEL Tests
+    // ============================================
+
+    #[test]
+    fn test_del_multiple_keys() {
+        let mut executor = CommandExecutor::new();
+
+        // Set multiple keys
+        for key in ["key1", "key2", "key3"] {
+            executor.execute(&Command::Set {
+                key: key.to_string(),
+                value: SDS::from_str("value"),
+                ex: None,
+                px: None,
+                nx: false,
+                xx: false,
+                get: false,
+            });
+        }
+
+        // Delete all at once
+        let cmd = Command::Del(vec![
+            "key1".to_string(),
+            "key2".to_string(),
+            "key3".to_string(),
+            "nonexistent".to_string(),
+        ]);
+        let result = executor.execute(&cmd);
+
+        // Should return count of deleted keys (3, not 4)
+        assert_eq!(result, RespValue::Integer(3));
+
+        // All keys should be gone
+        for key in ["key1", "key2", "key3"] {
+            assert_eq!(
+                executor.execute(&Command::Get(key.to_string())),
+                RespValue::BulkString(None)
+            );
+        }
+    }
+
+    // ============================================
+    // LSET Tests
+    // ============================================
+
+    #[test]
+    fn test_lset_positive_index() {
+        let mut executor = CommandExecutor::new();
+
+        // Create list
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+
+        // Set element at index 1
+        let cmd = Command::LSet("mylist".to_string(), 1, SDS::from_str("B"));
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        // Verify
+        let lrange = Command::LRange("mylist".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"B".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_lset_negative_index() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+
+        // Set last element using negative index
+        let cmd = Command::LSet("mylist".to_string(), -1, SDS::from_str("C"));
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        let lrange = Command::LRange("mylist".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements[2], RespValue::BulkString(Some(b"C".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_lset_out_of_range() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![SDS::from_str("a")],
+        ));
+
+        let cmd = Command::LSet("mylist".to_string(), 5, SDS::from_str("X"));
+        let result = executor.execute(&cmd);
+
+        assert!(matches!(result, RespValue::Error(_)));
+    }
+
+    // ============================================
+    // LTRIM Tests
+    // ============================================
+
+    #[test]
+    fn test_ltrim_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![
+                SDS::from_str("a"),
+                SDS::from_str("b"),
+                SDS::from_str("c"),
+                SDS::from_str("d"),
+                SDS::from_str("e"),
+            ],
+        ));
+
+        // Keep only elements 1-3 (b, c, d)
+        let cmd = Command::LTrim("mylist".to_string(), 1, 3);
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        let lrange = Command::LRange("mylist".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"b".to_vec())));
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"c".to_vec())));
+            assert_eq!(elements[2], RespValue::BulkString(Some(b"d".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_ltrim_negative_indices() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![
+                SDS::from_str("a"),
+                SDS::from_str("b"),
+                SDS::from_str("c"),
+            ],
+        ));
+
+        // Keep last 2 elements
+        let cmd = Command::LTrim("mylist".to_string(), -2, -1);
+        executor.execute(&cmd);
+
+        let lrange = Command::LRange("mylist".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 2);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"b".to_vec())));
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"c".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // RPOPLPUSH Tests
+    // ============================================
+
+    #[test]
+    fn test_rpoplpush_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "source".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+
+        let cmd = Command::RPopLPush("source".to_string(), "dest".to_string());
+        let result = executor.execute(&cmd);
+
+        // Should return the popped element
+        assert_eq!(result, RespValue::BulkString(Some(b"c".to_vec())));
+
+        // Source should have [a, b]
+        let lrange = Command::LRange("source".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 2);
+        } else {
+            panic!("Expected array");
+        }
+
+        // Dest should have [c]
+        let lrange = Command::LRange("dest".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"c".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_rpoplpush_same_list() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "mylist".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+
+        // Rotate: pop from right, push to left
+        let cmd = Command::RPopLPush("mylist".to_string(), "mylist".to_string());
+        executor.execute(&cmd);
+
+        let lrange = Command::LRange("mylist".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"c".to_vec())));
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"a".to_vec())));
+            assert_eq!(elements[2], RespValue::BulkString(Some(b"b".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_rpoplpush_empty_source() {
+        let mut executor = CommandExecutor::new();
+
+        let cmd = Command::RPopLPush("empty".to_string(), "dest".to_string());
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+
+    // ============================================
+    // LMOVE Tests
+    // ============================================
+
+    #[test]
+    fn test_lmove_left_left() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "src".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+
+        let cmd = Command::LMove {
+            source: "src".to_string(),
+            dest: "dst".to_string(),
+            wherefrom: "LEFT".to_string(),
+            whereto: "LEFT".to_string(),
+        };
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::BulkString(Some(b"a".to_vec())));
+
+        // src should be [b, c]
+        let llen = Command::LLen("src".to_string());
+        assert_eq!(executor.execute(&llen), RespValue::Integer(2));
+
+        // dst should be [a]
+        let lrange = Command::LRange("dst".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"a".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_lmove_right_right() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::RPush(
+            "src".to_string(),
+            vec![SDS::from_str("a"), SDS::from_str("b"), SDS::from_str("c")],
+        ));
+        executor.execute(&Command::RPush(
+            "dst".to_string(),
+            vec![SDS::from_str("x")],
+        ));
+
+        let cmd = Command::LMove {
+            source: "src".to_string(),
+            dest: "dst".to_string(),
+            wherefrom: "RIGHT".to_string(),
+            whereto: "RIGHT".to_string(),
+        };
+        executor.execute(&cmd);
+
+        // dst should be [x, c]
+        let lrange = Command::LRange("dst".to_string(), 0, -1);
+        if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
+            assert_eq!(elements.len(), 2);
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"c".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // ZCOUNT Tests
+    // ============================================
+
+    #[test]
+    fn test_zcount_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("one")),
+                (2.0, SDS::from_str("two")),
+                (3.0, SDS::from_str("three")),
+            ],
+        ));
+
+        let cmd = Command::ZCount("myzset".to_string(), "1".to_string(), "2".to_string());
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::Integer(2));
+    }
+
+    #[test]
+    fn test_zcount_infinity() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("one")),
+                (2.0, SDS::from_str("two")),
+                (3.0, SDS::from_str("three")),
+            ],
+        ));
+
+        let cmd = Command::ZCount("myzset".to_string(), "-inf".to_string(), "+inf".to_string());
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::Integer(3));
+    }
+
+    #[test]
+    fn test_zcount_exclusive() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("one")),
+                (2.0, SDS::from_str("two")),
+                (3.0, SDS::from_str("three")),
+            ],
+        ));
+
+        // Exclusive min: (1 means > 1, not >= 1
+        let cmd = Command::ZCount("myzset".to_string(), "(1".to_string(), "3".to_string());
+        let result = executor.execute(&cmd);
+
+        assert_eq!(result, RespValue::Integer(2)); // two and three
+    }
+
+    // ============================================
+    // ZRANGEBYSCORE Tests
+    // ============================================
+
+    #[test]
+    fn test_zrangebyscore_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("one")),
+                (2.0, SDS::from_str("two")),
+                (3.0, SDS::from_str("three")),
+            ],
+        ));
+
+        let cmd = Command::ZRangeByScore {
+            key: "myzset".to_string(),
+            min: "1".to_string(),
+            max: "2".to_string(),
+            with_scores: false,
+            limit: None,
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 2);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"one".to_vec())));
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"two".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_zrangebyscore_with_scores() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![(1.5, SDS::from_str("one")), (2.5, SDS::from_str("two"))],
+        ));
+
+        let cmd = Command::ZRangeByScore {
+            key: "myzset".to_string(),
+            min: "-inf".to_string(),
+            max: "+inf".to_string(),
+            with_scores: true,
+            limit: None,
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 4); // 2 members * 2 (member + score)
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_zrangebyscore_with_limit() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("a")),
+                (2.0, SDS::from_str("b")),
+                (3.0, SDS::from_str("c")),
+                (4.0, SDS::from_str("d")),
+            ],
+        ));
+
+        let cmd = Command::ZRangeByScore {
+            key: "myzset".to_string(),
+            min: "-inf".to_string(),
+            max: "+inf".to_string(),
+            with_scores: false,
+            limit: Some((1, 2)), // skip 1, take 2
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 2);
+            assert_eq!(elements[0], RespValue::BulkString(Some(b"b".to_vec())));
+            assert_eq!(elements[1], RespValue::BulkString(Some(b"c".to_vec())));
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // SCAN Tests
+    // ============================================
+
+    #[test]
+    fn test_scan_basic() {
+        let mut executor = CommandExecutor::new();
+
+        for i in 0..25 {
+            executor.execute(&Command::Set {
+                key: format!("key:{}", i),
+                value: SDS::from_str("value"),
+                ex: None,
+                px: None,
+                nx: false,
+                xx: false,
+                get: false,
+            });
+        }
+
+        let cmd = Command::Scan {
+            cursor: 0,
+            pattern: None,
+            count: Some(10),
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 2);
+            // First element is cursor
+            // Second element is array of keys
+            if let RespValue::Array(Some(keys)) = &elements[1] {
+                assert!(keys.len() <= 11); // count + 1 for cursor logic
+            }
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    #[test]
+    fn test_scan_with_pattern() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::Set {
+            key: "user:1".to_string(),
+            value: SDS::from_str("alice"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+        executor.execute(&Command::Set {
+            key: "user:2".to_string(),
+            value: SDS::from_str("bob"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+        executor.execute(&Command::Set {
+            key: "session:1".to_string(),
+            value: SDS::from_str("data"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        let cmd = Command::Scan {
+            cursor: 0,
+            pattern: Some("user:*".to_string()),
+            count: Some(100),
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            if let RespValue::Array(Some(keys)) = &elements[1] {
+                assert_eq!(keys.len(), 2);
+            }
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // HSCAN Tests
+    // ============================================
+
+    #[test]
+    fn test_hscan_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::HSet(
+            "myhash".to_string(),
+            vec![
+                (SDS::from_str("field1"), SDS::from_str("value1")),
+                (SDS::from_str("field2"), SDS::from_str("value2")),
+                (SDS::from_str("field3"), SDS::from_str("value3")),
+            ],
+        ));
+
+        let cmd = Command::HScan {
+            key: "myhash".to_string(),
+            cursor: 0,
+            pattern: None,
+            count: Some(10),
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 2);
+            if let RespValue::Array(Some(fields)) = &elements[1] {
+                // Returns field/value pairs
+                assert_eq!(fields.len(), 6); // 3 fields * 2
+            }
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // ZSCAN Tests
+    // ============================================
+
+    #[test]
+    fn test_zscan_basic() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::ZAdd(
+            "myzset".to_string(),
+            vec![
+                (1.0, SDS::from_str("one")),
+                (2.0, SDS::from_str("two")),
+                (3.0, SDS::from_str("three")),
+            ],
+        ));
+
+        let cmd = Command::ZScan {
+            key: "myzset".to_string(),
+            cursor: 0,
+            pattern: None,
+            count: Some(10),
+        };
+        let result = executor.execute(&cmd);
+
+        if let RespValue::Array(Some(elements)) = result {
+            assert_eq!(elements.len(), 2);
+            if let RespValue::Array(Some(members)) = &elements[1] {
+                // Returns member/score pairs
+                assert_eq!(members.len(), 6); // 3 members * 2
+            }
+        } else {
+            panic!("Expected array");
+        }
+    }
+
+    // ============================================
+    // Transaction Tests (MULTI/EXEC/DISCARD)
+    // ============================================
+
+    #[test]
+    fn test_multi_exec_basic() {
+        let mut executor = CommandExecutor::new();
+
+        // Start transaction
+        executor.execute(&Command::Multi);
+
+        // Queue commands
+        let r1 = executor.execute(&Command::Set {
+            key: "foo".to_string(),
+            value: SDS::from_str("bar"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+        assert_eq!(r1, RespValue::SimpleString("QUEUED".to_string()));
+
+        let r2 = executor.execute(&Command::Incr("counter".to_string()));
+        assert_eq!(r2, RespValue::SimpleString("QUEUED".to_string()));
+
+        // Execute transaction
+        let result = executor.execute(&Command::Exec);
+
+        if let RespValue::Array(Some(results)) = result {
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0], RespValue::SimpleString("OK".to_string()));
+            assert_eq!(results[1], RespValue::Integer(1));
+        } else {
+            panic!("Expected array result from EXEC");
+        }
+
+        // Values should be set
+        assert_eq!(
+            executor.execute(&Command::Get("foo".to_string())),
+            RespValue::BulkString(Some(b"bar".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_multi_discard() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::Multi);
+        executor.execute(&Command::Set {
+            key: "foo".to_string(),
+            value: SDS::from_str("bar"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        let result = executor.execute(&Command::Discard);
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        // Value should NOT be set
+        assert_eq!(
+            executor.execute(&Command::Get("foo".to_string())),
+            RespValue::BulkString(None)
+        );
+    }
+
+    #[test]
+    fn test_exec_without_multi() {
+        let mut executor = CommandExecutor::new();
+
+        let result = executor.execute(&Command::Exec);
+        assert!(matches!(result, RespValue::Error(_)));
+    }
+
+    #[test]
+    fn test_nested_multi_error() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::Multi);
+        let result = executor.execute(&Command::Multi);
+        assert!(matches!(result, RespValue::Error(_)));
+    }
+
+    // ============================================
+    // WATCH Tests
+    // ============================================
+
+    #[test]
+    fn test_watch_unmodified_key() {
+        let mut executor = CommandExecutor::new();
+
+        // Set initial value
+        executor.execute(&Command::Set {
+            key: "watched".to_string(),
+            value: SDS::from_str("initial"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        // Watch the key
+        executor.execute(&Command::Watch(vec!["watched".to_string()]));
+
+        // Start transaction
+        executor.execute(&Command::Multi);
+        executor.execute(&Command::Set {
+            key: "watched".to_string(),
+            value: SDS::from_str("updated"),
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        });
+
+        // Execute - should succeed since key wasn't modified
+        let result = executor.execute(&Command::Exec);
+        assert!(matches!(result, RespValue::Array(Some(_))));
+
+        // Value should be updated
+        assert_eq!(
+            executor.execute(&Command::Get("watched".to_string())),
+            RespValue::BulkString(Some(b"updated".to_vec()))
+        );
+    }
+
+    #[test]
+    fn test_unwatch() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::Watch(vec!["key".to_string()]));
+        let result = executor.execute(&Command::Unwatch);
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+    }
+
+    // ============================================
+    // HINCRBY Error Handling Tests
+    // ============================================
+
+    #[test]
+    fn test_hincrby_non_integer_value() {
+        let mut executor = CommandExecutor::new();
+
+        // Set hash field to non-integer string
+        executor.execute(&Command::HSet(
+            "myhash".to_string(),
+            vec![(SDS::from_str("field"), SDS::from_str("notanumber"))],
+        ));
+
+        // HINCRBY should fail
+        let result = executor.execute(&Command::HIncrBy("myhash".to_string(), SDS::from_str("field"), 1));
+        assert!(matches!(result, RespValue::Error(_)));
+    }
+
+    #[test]
+    fn test_hincrby_overflow() {
+        let mut executor = CommandExecutor::new();
+
+        executor.execute(&Command::HSet(
+            "myhash".to_string(),
+            vec![(SDS::from_str("field"), SDS::from_str(&i64::MAX.to_string()))],
+        ));
+
+        // This should overflow
+        let result = executor.execute(&Command::HIncrBy("myhash".to_string(), SDS::from_str("field"), 1));
+        assert!(matches!(result, RespValue::Error(_)));
+    }
+}
