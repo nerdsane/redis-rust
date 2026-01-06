@@ -37,27 +37,20 @@ cargo test --all
 cargo run --bin benchmark --release
 ```
 
-## Performance vs Official Redis 7.4
+## Performance vs Redis 8.0
 
 Docker-based benchmark (2 CPUs, 1GB RAM per container, 50 clients, 100K requests):
 
-### Non-Pipelined (Pipeline=1)
+| Operation | Redis 8.0 | Rust | Relative |
+|-----------|-----------|------|----------|
+| SET (P=1) | 196,464 req/s | 173,010 req/s | **88%** |
+| GET (P=1) | 190,476 req/s | 180,180 req/s | **95%** |
+| SET (P=16) | 1,282,051 req/s | 1,098,901 req/s | **86%** |
+| GET (P=16) | 1,315,790 req/s | 1,123,596 req/s | **85%** |
 
-| Operation | Official Redis 7.4 | Rust Implementation | Relative |
-|-----------|-------------------|---------------------|----------|
-| SET | 77,882 req/sec | 74,963 req/sec | **96%** |
-| GET | 79,618 req/sec | 74,239 req/sec | **93%** |
+Achieves **85-95% of Redis 8.0** out of the box. With [RedisEvolve](evolve/README.md) optimization: **99.1%**.
 
-### Pipelined (Pipeline=16)
-
-| Operation | Official Redis 7.4 | Rust Implementation | Relative |
-|-----------|-------------------|---------------------|----------|
-| SET | 763,359 req/sec | **1,020,408 req/sec** | **+34%** |
-| GET | 854,701 req/sec | **980,392 req/sec** | **+15%** |
-
-Our implementation achieves **~93-96%** of Redis on single operations and **15-34% FASTER** on pipelined workloads!
-
-See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for full details and methodology.
+See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for full details, methodology, and Redis 7.4 comparisons.
 
 ## Architecture
 
