@@ -4,6 +4,8 @@ An experimental, actor-based Redis-compatible cache server in Rust with distribu
 
 > **Status**: Research project with production-oriented architecture and correctness tooling. Not yet a production Redis replacement. See [Redis Compatibility](#redis-compatibility) for semantic differences.
 
+> **Research Note**: This project is co-authored with [Claude](https://claude.ai) (Anthropic) as an experiment in AI-assisted systems programming. The sole purpose is to explore human-AI collaboration on complex distributed systems code.
+
 > **Security Warning**: This server has **no authentication or access control**. Do NOT expose to untrusted networks or the public internet. Bind to localhost or use network-level access control (firewall, VPC).
 
 ## Features
