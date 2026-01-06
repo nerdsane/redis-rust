@@ -6,7 +6,7 @@
 **Binary:** `redis-server-optimized`
 **Port:** 3000
 **Shards:** Dynamic (default: num_cpus)
-**Date:** January 4, 2026
+**Date:** January 6, 2026
 
 ### System Configuration
 
@@ -288,6 +288,21 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 **Note:** Multi-node linearizability tests FAIL by design. We use Anna-style eventual consistency, not Raft/Paxos consensus.
 
+### Convergence Tests (January 6, 2026)
+
+| Test Category | Tests | Result |
+|---------------|-------|--------|
+| CRDT Convergence | 16 | **PASS** |
+| Multi-Node Replication | 9 | **PASS** |
+| Partition Tolerance | 14 | **PASS** |
+| **Total** | **39** | **100% PASS** |
+
+Tests verify:
+- LWW (Last-Writer-Wins) register convergence across nodes
+- Vector clock causality tracking
+- Partition healing and anti-entropy sync
+- Gossip protocol state propagation
+
 ## Running Benchmarks
 
 ### Docker Benchmark (Recommended for Fair Comparison)
@@ -394,42 +409,34 @@ Different environment for comparison - Docker Desktop on macOS (runs through VM)
 
 **Optimization Applied:** Batched GET pipelining - multiple GET commands are grouped by shard and executed concurrently, reducing actor channel round-trips from N to num_shards.
 
-### Redis 8.0 Comparison (January 5, 2026)
+### Redis 8.0 Comparison (January 6, 2026)
 
-Redis 8.0 includes significant performance improvements, especially on pipelined workloads.
+Three-way comparison: Redis 7.4 vs Redis 8.0 vs Rust implementation.
 
-**System:** macOS Darwin 24.4.0, Docker Desktop
+**System:** macOS Darwin 24.4.0, Docker Desktop (2 CPUs, 1GB RAM per container)
 
-#### After Phase 0.2 (SET batching added)
+#### Non-Pipelined Performance (P=1)
 
 | Operation | Redis 7.4 | Redis 8.0 | Rust | Rust vs R7 | Rust vs R8 |
 |-----------|-----------|-----------|------|------------|------------|
-| SET (P=1) | 184,162 | 174,825 | 160,772 | **87.3%** | **92.0%** |
-| GET (P=1) | 191,571 | 153,374 | 177,620 | **92.7%** | **115.8%** |
-| SET (P=16) | 1,428,571 | 1,538,462 | 1,190,476 | **83.3%** | **77.4%** |
-| GET (P=16) | 1,666,667 | 1,851,852 | 1,538,462 | **92.3%** | **83.1%** |
+| SET | 195,312 | 196,464 | 173,010 | **88.5%** | **88.0%** |
+| GET | 185,874 | 190,476 | 180,180 | **96.9%** | **94.5%** |
 
-**Key Results (Phase 0.2 Complete):**
+#### Pipelined Performance (P=16)
 
-1. **GET P=1: BEATS Redis 8.0 by 16%!** 🎉
-   - 177,620 req/s vs Redis 8.0's 153,374 req/s
-   - Single-command GETs are now our strength
+| Operation | Redis 7.4 | Redis 8.0 | Rust | Rust vs R7 | Rust vs R8 |
+|-----------|-----------|-----------|------|------------|------------|
+| SET | 1,265,823 | 1,282,051 | 1,098,901 | **86.8%** | **85.7%** |
+| GET | 1,190,476 | 1,315,790 | 1,123,596 | **94.3%** | **85.3%** |
 
-2. **SET P=16: Improved from 59% → 77%** ✅
-   - SET batching now groups consecutive SETs by shard
-   - Reduced actor channel round-trips significantly
+**Key Results:**
 
-3. **All operations above 75% of Redis 8.0**
-   - Competitive across the board
-   - P=1 performance is excellent
+1. **GET P=1: 94.5% of Redis 8.0** - Excellent single-operation performance
+2. **SET P=1: 88.0% of Redis 8.0** - Good baseline performance
+3. **Pipelined: 85-86% of Redis 8.0** - Competitive on batch workloads
+4. **Redis 8.0 is ~1-10% faster than Redis 7.4** - New baseline to target
 
-**Phase Improvements:**
-| Metric | Before Phase 0 | After 0.1 | After 0.2 |
-|--------|----------------|-----------|-----------|
-| GET P=1 vs R8 | ~84% | 96% | **116%** |
-| SET P=1 vs R8 | ~82% | 92% | 92% |
-| SET P=16 vs R8 | ~59% | 59% | **77%** |
-| GET P=16 vs R8 | ~83% | 83% | 83% |
+**Note:** With RedisEvolve optimization (4 shards instead of 16), performance reaches **99.1% of Redis 8.0**. See [evolve/README.md](evolve/README.md).
 
 **How to Run:**
 ```bash
