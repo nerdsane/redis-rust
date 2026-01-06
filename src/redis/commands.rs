@@ -8,9 +8,16 @@ use crate::simulator::VirtualTime;
 pub enum Command {
     // String commands
     Get(String),
-    Set(String, SDS),
-    SetEx(String, i64, SDS),
-    SetNx(String, SDS),
+    /// SET key value [NX|XX] [EX seconds|PX milliseconds] [GET]
+    Set {
+        key: String,
+        value: SDS,
+        ex: Option<i64>,      // EX seconds
+        px: Option<i64>,      // PX milliseconds
+        nx: bool,             // Only set if NOT exists
+        xx: bool,             // Only set if exists
+        get: bool,            // Return old value
+    },
     Append(String, SDS),
     GetSet(String, SDS),
     StrLen(String),
@@ -26,7 +33,7 @@ pub enum Command {
     IncrBy(String, i64),
     DecrBy(String, i64),
     // Key commands
-    Del(String),
+    Del(Vec<String>),
     Exists(Vec<String>),
     TypeOf(String),
     Keys(String),
@@ -47,6 +54,15 @@ pub enum Command {
     LLen(String),
     LIndex(String, isize),
     LRange(String, isize, isize),
+    LSet(String, isize, SDS),              // key, index, value
+    LTrim(String, isize, isize),           // key, start, stop
+    RPopLPush(String, String),             // source, dest
+    LMove {
+        source: String,
+        dest: String,
+        wherefrom: String,  // LEFT or RIGHT
+        whereto: String,    // LEFT or RIGHT
+    },
     // Set commands
     SAdd(String, Vec<SDS>),
     SRem(String, Vec<SDS>),
@@ -71,6 +87,49 @@ pub enum Command {
     ZScore(String, SDS),
     ZRank(String, SDS),
     ZCard(String),
+    ZCount(String, String, String),  // key, min, max (strings to support -inf, +inf, exclusive)
+    ZRangeByScore {
+        key: String,
+        min: String,
+        max: String,
+        with_scores: bool,
+        limit: Option<(isize, usize)>,  // offset, count
+    },
+    // Scan commands
+    Scan {
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+    HScan {
+        key: String,
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+    ZScan {
+        key: String,
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+    // Transaction commands
+    Multi,
+    Exec,
+    Discard,
+    Watch(Vec<String>),
+    Unwatch,
+    // Script commands
+    Eval {
+        script: String,
+        keys: Vec<String>,
+        args: Vec<SDS>,
+    },
+    EvalSha {
+        sha1: String,
+        keys: Vec<String>,
+        args: Vec<SDS>,
+    },
     // Server commands
     Info,
     Ping,
@@ -78,6 +137,50 @@ pub enum Command {
 }
 
 impl Command {
+    /// Helper constructor for basic SET (no options)
+    pub fn set(key: String, value: SDS) -> Self {
+        Command::Set {
+            key,
+            value,
+            ex: None,
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        }
+    }
+
+    /// Helper constructor for SETEX (SET with EX option)
+    pub fn setex(key: String, seconds: i64, value: SDS) -> Self {
+        Command::Set {
+            key,
+            value,
+            ex: Some(seconds),
+            px: None,
+            nx: false,
+            xx: false,
+            get: false,
+        }
+    }
+
+    /// Helper constructor for SETNX (SET with NX option)
+    pub fn setnx(key: String, value: SDS) -> Self {
+        Command::Set {
+            key,
+            value,
+            ex: None,
+            px: None,
+            nx: true,
+            xx: false,
+            get: false,
+        }
+    }
+
+    /// Helper constructor for single-key DEL
+    pub fn del(key: String) -> Self {
+        Command::Del(vec![key])
+    }
+
     pub fn from_resp(value: &RespValue) -> Result<Command, String> {
         match value {
             RespValue::Array(Some(elements)) if !elements.is_empty() => {
@@ -93,6 +196,68 @@ impl Command {
                     "INFO" => Ok(Command::Info),
                     "FLUSHDB" => Ok(Command::FlushDb),
                     "FLUSHALL" => Ok(Command::FlushAll),
+                    "MULTI" => Ok(Command::Multi),
+                    "EXEC" => Ok(Command::Exec),
+                    "DISCARD" => Ok(Command::Discard),
+                    "WATCH" => {
+                        if elements.len() < 2 {
+                            return Err("WATCH requires at least 1 argument".to_string());
+                        }
+                        let keys: Vec<String> = elements[1..]
+                            .iter()
+                            .map(Self::extract_string)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Watch(keys))
+                    }
+                    "UNWATCH" => Ok(Command::Unwatch),
+                    "EVAL" => {
+                        if elements.len() < 3 {
+                            return Err("EVAL requires at least 2 arguments".to_string());
+                        }
+                        let script = Self::extract_string(&elements[1])?;
+                        let numkeys = Self::extract_integer(&elements[2])? as usize;
+
+                        // Validate we have enough arguments
+                        if elements.len() < 3 + numkeys {
+                            return Err("EVAL wrong number of keys".to_string());
+                        }
+
+                        let keys: Vec<String> = elements[3..3 + numkeys]
+                            .iter()
+                            .map(Self::extract_string)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        let args: Vec<SDS> = elements[3 + numkeys..]
+                            .iter()
+                            .map(Self::extract_sds)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        Ok(Command::Eval { script, keys, args })
+                    }
+                    "EVALSHA" => {
+                        if elements.len() < 3 {
+                            return Err("EVALSHA requires at least 2 arguments".to_string());
+                        }
+                        let sha1 = Self::extract_string(&elements[1])?;
+                        let numkeys = Self::extract_integer(&elements[2])? as usize;
+
+                        // Validate we have enough arguments
+                        if elements.len() < 3 + numkeys {
+                            return Err("EVALSHA wrong number of keys".to_string());
+                        }
+
+                        let keys: Vec<String> = elements[3..3 + numkeys]
+                            .iter()
+                            .map(Self::extract_string)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        let args: Vec<SDS> = elements[3 + numkeys..]
+                            .iter()
+                            .map(Self::extract_sds)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        Ok(Command::EvalSha { sha1, keys, args })
+                    }
                     "GET" => {
                         if elements.len() != 2 {
                             return Err("GET requires 1 argument".to_string());
@@ -101,12 +266,53 @@ impl Command {
                         Ok(Command::Get(key))
                     }
                     "SET" => {
-                        if elements.len() != 3 {
-                            return Err("SET requires 2 arguments".to_string());
+                        if elements.len() < 3 {
+                            return Err("SET requires at least 2 arguments".to_string());
                         }
                         let key = Self::extract_string(&elements[1])?;
                         let value = Self::extract_sds(&elements[2])?;
-                        Ok(Command::Set(key, value))
+
+                        let mut ex = None;
+                        let mut px = None;
+                        let mut nx = false;
+                        let mut xx = false;
+                        let mut get = false;
+
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "NX" => nx = true,
+                                "XX" => xx = true,
+                                "GET" => get = true,
+                                "EX" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET EX requires a value".to_string());
+                                    }
+                                    ex = Some(Self::extract_i64(&elements[i])?);
+                                }
+                                "PX" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET PX requires a value".to_string());
+                                    }
+                                    px = Some(Self::extract_i64(&elements[i])?);
+                                }
+                                "EXAT" | "PXAT" | "KEEPTTL" | "IFEQ" | "IFGT" => {
+                                    return Err(format!("SET {} option not yet supported", opt));
+                                }
+                                _ => return Err(format!("ERR syntax error")),
+                            }
+                            i += 1;
+                        }
+
+                        // NX and XX are mutually exclusive
+                        if nx && xx {
+                            return Err("ERR XX and NX options at the same time are not compatible".to_string());
+                        }
+
+                        Ok(Command::Set { key, value, ex, px, nx, xx, get })
                     }
                     "SETEX" => {
                         if elements.len() != 4 {
@@ -115,7 +321,7 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         let seconds = Self::extract_integer(&elements[2])? as i64;
                         let value = Self::extract_sds(&elements[3])?;
-                        Ok(Command::SetEx(key, seconds, value))
+                        Ok(Command::Set { key, value, ex: Some(seconds), px: None, nx: false, xx: false, get: false })
                     }
                     "SETNX" => {
                         if elements.len() != 3 {
@@ -123,14 +329,17 @@ impl Command {
                         }
                         let key = Self::extract_string(&elements[1])?;
                         let value = Self::extract_sds(&elements[2])?;
-                        Ok(Command::SetNx(key, value))
+                        Ok(Command::Set { key, value, ex: None, px: None, nx: true, xx: false, get: false })
                     }
                     "DEL" => {
-                        if elements.len() != 2 {
-                            return Err("DEL requires 1 argument".to_string());
+                        if elements.len() < 2 {
+                            return Err("DEL requires at least 1 argument".to_string());
                         }
-                        let key = Self::extract_string(&elements[1])?;
-                        Ok(Command::Del(key))
+                        let keys: Vec<String> = elements[1..]
+                            .iter()
+                            .map(Self::extract_string)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Del(keys))
                     }
                     "EXISTS" => {
                         if elements.len() < 2 {
@@ -325,6 +534,48 @@ impl Command {
                         let index = Self::extract_integer(&elements[2])?;
                         Ok(Command::LIndex(key, index))
                     }
+                    "LSET" => {
+                        if elements.len() != 4 {
+                            return Err("LSET requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let index = Self::extract_integer(&elements[2])?;
+                        let value = Self::extract_sds(&elements[3])?;
+                        Ok(Command::LSet(key, index, value))
+                    }
+                    "LTRIM" => {
+                        if elements.len() != 4 {
+                            return Err("LTRIM requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let start = Self::extract_integer(&elements[2])?;
+                        let stop = Self::extract_integer(&elements[3])?;
+                        Ok(Command::LTrim(key, start, stop))
+                    }
+                    "RPOPLPUSH" => {
+                        if elements.len() != 3 {
+                            return Err("RPOPLPUSH requires 2 arguments".to_string());
+                        }
+                        let source = Self::extract_string(&elements[1])?;
+                        let dest = Self::extract_string(&elements[2])?;
+                        Ok(Command::RPopLPush(source, dest))
+                    }
+                    "LMOVE" => {
+                        if elements.len() != 5 {
+                            return Err("LMOVE requires 4 arguments".to_string());
+                        }
+                        let source = Self::extract_string(&elements[1])?;
+                        let dest = Self::extract_string(&elements[2])?;
+                        let wherefrom = Self::extract_string(&elements[3])?.to_uppercase();
+                        let whereto = Self::extract_string(&elements[4])?.to_uppercase();
+                        if wherefrom != "LEFT" && wherefrom != "RIGHT" {
+                            return Err("LMOVE wherefrom must be LEFT or RIGHT".to_string());
+                        }
+                        if whereto != "LEFT" && whereto != "RIGHT" {
+                            return Err("LMOVE whereto must be LEFT or RIGHT".to_string());
+                        }
+                        Ok(Command::LMove { source, dest, wherefrom, whereto })
+                    }
                     "SADD" => {
                         if elements.len() < 3 {
                             return Err("SADD requires at least 2 arguments".to_string());
@@ -507,6 +758,121 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         Ok(Command::ZCard(key))
                     }
+                    "ZCOUNT" => {
+                        if elements.len() != 4 {
+                            return Err("ZCOUNT requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let min = Self::extract_string(&elements[2])?;
+                        let max = Self::extract_string(&elements[3])?;
+                        Ok(Command::ZCount(key, min, max))
+                    }
+                    "ZRANGEBYSCORE" => {
+                        if elements.len() < 4 {
+                            return Err("ZRANGEBYSCORE requires at least 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let min = Self::extract_string(&elements[2])?;
+                        let max = Self::extract_string(&elements[3])?;
+                        let mut with_scores = false;
+                        let mut limit = None;
+                        let mut i = 4;
+                        while i < elements.len() {
+                            let opt = Self::extract_string(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "WITHSCORES" => with_scores = true,
+                                "LIMIT" => {
+                                    if i + 2 >= elements.len() {
+                                        return Err("LIMIT requires offset and count".to_string());
+                                    }
+                                    let offset = Self::extract_integer(&elements[i + 1])?;
+                                    let count = Self::extract_integer(&elements[i + 2])? as usize;
+                                    limit = Some((offset, count));
+                                    i += 2;
+                                }
+                                _ => return Err(format!("Unknown ZRANGEBYSCORE option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::ZRangeByScore { key, min, max, with_scores, limit })
+                    }
+                    "SCAN" => {
+                        if elements.len() < 2 {
+                            return Err("SCAN requires at least 1 argument".to_string());
+                        }
+                        let cursor = Self::extract_u64(&elements[1])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 2;
+                        while i < elements.len() {
+                            let opt = Self::extract_string(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown SCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::Scan { cursor, pattern, count })
+                    }
+                    "HSCAN" => {
+                        if elements.len() < 3 {
+                            return Err("HSCAN requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let cursor = Self::extract_u64(&elements[2])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown HSCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::HScan { key, cursor, pattern, count })
+                    }
+                    "ZSCAN" => {
+                        if elements.len() < 3 {
+                            return Err("ZSCAN requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let cursor = Self::extract_u64(&elements[2])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown ZSCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::ZScan { key, cursor, pattern, count })
+                    }
                     _ => Ok(Command::Unknown(cmd_name)),
                 }
             }
@@ -562,6 +928,17 @@ impl Command {
         }
     }
 
+    fn extract_u64(value: &RespValue) -> Result<u64, String> {
+        match value {
+            RespValue::BulkString(Some(data)) => {
+                let s = String::from_utf8_lossy(data);
+                s.parse::<u64>().map_err(|e| e.to_string())
+            }
+            RespValue::Integer(n) => Ok(*n as u64),
+            _ => Err("Expected unsigned integer".to_string()),
+        }
+    }
+
     pub fn from_resp_zero_copy(value: &RespValueZeroCopy) -> Result<Command, String> {
         match value {
             RespValueZeroCopy::Array(Some(elements)) if !elements.is_empty() => {
@@ -577,25 +954,137 @@ impl Command {
                     "INFO" => Ok(Command::Info),
                     "FLUSHDB" => Ok(Command::FlushDb),
                     "FLUSHALL" => Ok(Command::FlushAll),
+                    "MULTI" => Ok(Command::Multi),
+                    "EXEC" => Ok(Command::Exec),
+                    "DISCARD" => Ok(Command::Discard),
+                    "WATCH" => {
+                        if elements.len() < 2 {
+                            return Err("WATCH requires at least 1 argument".to_string());
+                        }
+                        let keys: Vec<String> = elements[1..]
+                            .iter()
+                            .map(Self::extract_string_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Watch(keys))
+                    }
+                    "UNWATCH" => Ok(Command::Unwatch),
+                    "EVAL" => {
+                        if elements.len() < 3 {
+                            return Err("EVAL requires at least 2 arguments".to_string());
+                        }
+                        let script = Self::extract_string_zc(&elements[1])?;
+                        let numkeys = Self::extract_integer_zc(&elements[2])? as usize;
+
+                        if elements.len() < 3 + numkeys {
+                            return Err("EVAL wrong number of keys".to_string());
+                        }
+
+                        let keys: Vec<String> = elements[3..3 + numkeys]
+                            .iter()
+                            .map(Self::extract_string_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        let args: Vec<SDS> = elements[3 + numkeys..]
+                            .iter()
+                            .map(Self::extract_sds_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        Ok(Command::Eval { script, keys, args })
+                    }
+                    "EVALSHA" => {
+                        if elements.len() < 3 {
+                            return Err("EVALSHA requires at least 2 arguments".to_string());
+                        }
+                        let sha1 = Self::extract_string_zc(&elements[1])?;
+                        let numkeys = Self::extract_integer_zc(&elements[2])? as usize;
+
+                        if elements.len() < 3 + numkeys {
+                            return Err("EVALSHA wrong number of keys".to_string());
+                        }
+
+                        let keys: Vec<String> = elements[3..3 + numkeys]
+                            .iter()
+                            .map(Self::extract_string_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        let args: Vec<SDS> = elements[3 + numkeys..]
+                            .iter()
+                            .map(Self::extract_sds_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+
+                        Ok(Command::EvalSha { sha1, keys, args })
+                    }
                     "GET" => {
                         if elements.len() != 2 { return Err("GET requires 1 argument".to_string()); }
                         Ok(Command::Get(Self::extract_string_zc(&elements[1])?))
                     }
                     "SET" => {
-                        if elements.len() != 3 { return Err("SET requires 2 arguments".to_string()); }
-                        Ok(Command::Set(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
+                        if elements.len() < 3 { return Err("SET requires at least 2 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let value = Self::extract_sds_zc(&elements[2])?;
+
+                        let mut ex = None;
+                        let mut px = None;
+                        let mut nx = false;
+                        let mut xx = false;
+                        let mut get = false;
+
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "NX" => nx = true,
+                                "XX" => xx = true,
+                                "GET" => get = true,
+                                "EX" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET EX requires a value".to_string());
+                                    }
+                                    ex = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "PX" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET PX requires a value".to_string());
+                                    }
+                                    px = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "EXAT" | "PXAT" | "KEEPTTL" | "IFEQ" | "IFGT" => {
+                                    return Err(format!("SET {} option not yet supported", opt));
+                                }
+                                _ => return Err(format!("ERR syntax error")),
+                            }
+                            i += 1;
+                        }
+
+                        // NX and XX are mutually exclusive
+                        if nx && xx {
+                            return Err("ERR XX and NX options at the same time are not compatible".to_string());
+                        }
+
+                        Ok(Command::Set { key, value, ex, px, nx, xx, get })
                     }
                     "SETEX" => {
                         if elements.len() != 4 { return Err("SETEX requires 3 arguments".to_string()); }
-                        Ok(Command::SetEx(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])? as i64, Self::extract_sds_zc(&elements[3])?))
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let seconds = Self::extract_integer_zc(&elements[2])? as i64;
+                        let value = Self::extract_sds_zc(&elements[3])?;
+                        Ok(Command::Set { key, value, ex: Some(seconds), px: None, nx: false, xx: false, get: false })
                     }
                     "SETNX" => {
                         if elements.len() != 3 { return Err("SETNX requires 2 arguments".to_string()); }
-                        Ok(Command::SetNx(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let value = Self::extract_sds_zc(&elements[2])?;
+                        Ok(Command::Set { key, value, ex: None, px: None, nx: true, xx: false, get: false })
                     }
                     "DEL" => {
-                        if elements.len() != 2 { return Err("DEL requires 1 argument".to_string()); }
-                        Ok(Command::Del(Self::extract_string_zc(&elements[1])?))
+                        if elements.len() < 2 { return Err("DEL requires at least 1 argument".to_string()); }
+                        let keys: Vec<String> = elements[1..]
+                            .iter()
+                            .map(Self::extract_string_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Del(keys))
                     }
                     "EXISTS" => {
                         if elements.len() < 2 { return Err("EXISTS requires at least 1 argument".to_string()); }
@@ -705,6 +1194,28 @@ impl Command {
                     "LINDEX" => {
                         if elements.len() != 3 { return Err("LINDEX requires 2 arguments".to_string()); }
                         Ok(Command::LIndex(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?))
+                    }
+                    "LSET" => {
+                        if elements.len() != 4 { return Err("LSET requires 3 arguments".to_string()); }
+                        Ok(Command::LSet(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?, Self::extract_sds_zc(&elements[3])?))
+                    }
+                    "LTRIM" => {
+                        if elements.len() != 4 { return Err("LTRIM requires 3 arguments".to_string()); }
+                        Ok(Command::LTrim(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?, Self::extract_integer_zc(&elements[3])?))
+                    }
+                    "RPOPLPUSH" => {
+                        if elements.len() != 3 { return Err("RPOPLPUSH requires 2 arguments".to_string()); }
+                        Ok(Command::RPopLPush(Self::extract_string_zc(&elements[1])?, Self::extract_string_zc(&elements[2])?))
+                    }
+                    "LMOVE" => {
+                        if elements.len() != 5 { return Err("LMOVE requires 4 arguments".to_string()); }
+                        let source = Self::extract_string_zc(&elements[1])?;
+                        let dest = Self::extract_string_zc(&elements[2])?;
+                        let wherefrom = Self::extract_string_zc(&elements[3])?.to_uppercase();
+                        let whereto = Self::extract_string_zc(&elements[4])?.to_uppercase();
+                        if wherefrom != "LEFT" && wherefrom != "RIGHT" { return Err("LMOVE wherefrom must be LEFT or RIGHT".to_string()); }
+                        if whereto != "LEFT" && whereto != "RIGHT" { return Err("LMOVE whereto must be LEFT or RIGHT".to_string()); }
+                        Ok(Command::LMove { source, dest, wherefrom, whereto })
                     }
                     "SADD" => {
                         if elements.len() < 3 { return Err("SADD requires key and members".to_string()); }
@@ -822,6 +1333,112 @@ impl Command {
                         if elements.len() != 2 { return Err("ZCARD requires 1 argument".to_string()); }
                         Ok(Command::ZCard(Self::extract_string_zc(&elements[1])?))
                     }
+                    "ZCOUNT" => {
+                        if elements.len() != 4 { return Err("ZCOUNT requires 3 arguments".to_string()); }
+                        Ok(Command::ZCount(Self::extract_string_zc(&elements[1])?, Self::extract_string_zc(&elements[2])?, Self::extract_string_zc(&elements[3])?))
+                    }
+                    "ZRANGEBYSCORE" => {
+                        if elements.len() < 4 { return Err("ZRANGEBYSCORE requires at least 3 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let min = Self::extract_string_zc(&elements[2])?;
+                        let max = Self::extract_string_zc(&elements[3])?;
+                        let mut with_scores = false;
+                        let mut limit = None;
+                        let mut i = 4;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "WITHSCORES" => with_scores = true,
+                                "LIMIT" => {
+                                    if i + 2 >= elements.len() { return Err("LIMIT requires offset and count".to_string()); }
+                                    let offset = Self::extract_integer_zc(&elements[i + 1])?;
+                                    let count = Self::extract_integer_zc(&elements[i + 2])? as usize;
+                                    limit = Some((offset, count));
+                                    i += 2;
+                                }
+                                _ => return Err(format!("Unknown ZRANGEBYSCORE option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::ZRangeByScore { key, min, max, with_scores, limit })
+                    }
+                    "SCAN" => {
+                        if elements.len() < 2 {
+                            return Err("SCAN requires at least 1 argument".to_string());
+                        }
+                        let cursor = Self::extract_u64_zc(&elements[1])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 2;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string_zc(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer_zc(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown SCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::Scan { cursor, pattern, count })
+                    }
+                    "HSCAN" => {
+                        if elements.len() < 3 {
+                            return Err("HSCAN requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let cursor = Self::extract_u64_zc(&elements[2])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string_zc(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer_zc(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown HSCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::HScan { key, cursor, pattern, count })
+                    }
+                    "ZSCAN" => {
+                        if elements.len() < 3 {
+                            return Err("ZSCAN requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let cursor = Self::extract_u64_zc(&elements[2])?;
+                        let mut pattern = None;
+                        let mut count = None;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "MATCH" => {
+                                    i += 1;
+                                    pattern = Some(Self::extract_string_zc(&elements[i])?);
+                                }
+                                "COUNT" => {
+                                    i += 1;
+                                    count = Some(Self::extract_integer_zc(&elements[i])? as usize);
+                                }
+                                _ => return Err(format!("Unknown ZSCAN option: {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::ZScan { key, cursor, pattern, count })
+                    }
                     _ => Ok(Command::Unknown(cmd_name)),
                 }
             }
@@ -874,6 +1491,17 @@ impl Command {
             _ => Err("Expected integer".to_string()),
         }
     }
+
+    fn extract_u64_zc(value: &RespValueZeroCopy) -> Result<u64, String> {
+        match value {
+            RespValueZeroCopy::BulkString(Some(data)) => {
+                let s = String::from_utf8_lossy(data);
+                s.parse::<u64>().map_err(|e| e.to_string())
+            }
+            RespValueZeroCopy::Integer(n) => Ok(*n as u64),
+            _ => Err("Expected unsigned integer".to_string()),
+        }
+    }
 }
 
 pub struct CommandExecutor {
@@ -885,6 +1513,12 @@ pub struct CommandExecutor {
     key_count: usize,
     commands_processed: usize,
     simulation_start_epoch: i64,
+    // Transaction state
+    in_transaction: bool,
+    queued_commands: Vec<Command>,
+    watched_keys: AHashMap<String, Option<Value>>,  // key -> value at watch time
+    // Lua scripting (only script cache - engine created per-execution)
+    script_cache: super::lua::ScriptCache,
 }
 
 impl Command {
@@ -916,6 +1550,11 @@ impl Command {
             Command::ZScore(_, _) |
             Command::ZRank(_, _) |
             Command::ZCard(_) |
+            Command::ZCount(_, _, _) |
+            Command::ZRangeByScore { .. } |
+            Command::Scan { .. } |
+            Command::HScan { .. } |
+            Command::ZScan { .. } |
             Command::Info |
             Command::Ping
         )
@@ -924,8 +1563,7 @@ impl Command {
     /// Returns the key(s) this command operates on (for sharding)
     pub fn get_primary_key(&self) -> Option<&str> {
         match self {
-            Command::Get(k) | Command::Set(k, _) | Command::SetEx(k, _, _) |
-            Command::SetNx(k, _) | Command::Del(k) | Command::TypeOf(k) |
+            Command::Get(k) | Command::Set { key: k, .. } | Command::TypeOf(k) |
             Command::Expire(k, _) | Command::ExpireAt(k, _) | Command::PExpireAt(k, _) |
             Command::Ttl(k) | Command::Pttl(k) | Command::Persist(k) |
             Command::Incr(k) | Command::Decr(k) | Command::IncrBy(k, _) |
@@ -933,6 +1571,8 @@ impl Command {
             Command::StrLen(k) |
             Command::LPush(k, _) | Command::RPush(k, _) | Command::LPop(k) |
             Command::RPop(k) | Command::LLen(k) | Command::LIndex(k, _) | Command::LRange(k, _, _) |
+            Command::LSet(k, _, _) | Command::LTrim(k, _, _) |
+            Command::RPopLPush(k, _) | Command::LMove { source: k, .. } |
             Command::SAdd(k, _) | Command::SRem(k, _) | Command::SMembers(k) |
             Command::SIsMember(k, _) | Command::SCard(k) |
             Command::HSet(k, _) | Command::HGet(k, _) | Command::HDel(k, _) |
@@ -940,13 +1580,18 @@ impl Command {
             Command::HLen(k) | Command::HExists(k, _) | Command::HIncrBy(k, _, _) |
             Command::ZAdd(k, _) | Command::ZRem(k, _) | Command::ZRange(k, _, _) |
             Command::ZRevRange(k, _, _, _) | Command::ZScore(k, _) |
-            Command::ZRank(k, _) | Command::ZCard(k) => Some(k.as_str()),
-            Command::Exists(keys) => keys.first().map(|s| s.as_str()),
+            Command::ZRank(k, _) | Command::ZCard(k) | Command::ZCount(k, _, _) |
+            Command::ZRangeByScore { key: k, .. } |
+            Command::HScan { key: k, .. } | Command::ZScan { key: k, .. } => Some(k.as_str()),
+            Command::Del(keys) | Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
             Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::BatchSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::BatchGet(keys) => keys.first().map(|s| s.as_str()),
-            Command::Keys(_) | Command::FlushDb | Command::FlushAll |
+            Command::Watch(keys) => keys.first().map(|s| s.as_str()),
+            Command::Eval { keys, .. } | Command::EvalSha { keys, .. } => keys.first().map(|s| s.as_str()),
+            Command::Scan { .. } | Command::Keys(_) | Command::FlushDb | Command::FlushAll |
+            Command::Multi | Command::Exec | Command::Discard | Command::Unwatch |
             Command::Info | Command::Ping | Command::Unknown(_) => None,
         }
     }
@@ -956,9 +1601,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Get(_) => "GET",
-            Command::Set(_, _) => "SET",
-            Command::SetEx(_, _, _) => "SETEX",
-            Command::SetNx(_, _) => "SETNX",
+            Command::Set { .. } => "SET",
             Command::Append(_, _) => "APPEND",
             Command::GetSet(_, _) => "GETSET",
             Command::StrLen(_) => "STRLEN",
@@ -989,6 +1632,10 @@ impl Command {
             Command::LLen(_) => "LLEN",
             Command::LIndex(_, _) => "LINDEX",
             Command::LRange(_, _, _) => "LRANGE",
+            Command::LSet(_, _, _) => "LSET",
+            Command::LTrim(_, _, _) => "LTRIM",
+            Command::RPopLPush(_, _) => "RPOPLPUSH",
+            Command::LMove { .. } => "LMOVE",
             Command::SAdd(_, _) => "SADD",
             Command::SRem(_, _) => "SREM",
             Command::SMembers(_) => "SMEMBERS",
@@ -1010,6 +1657,18 @@ impl Command {
             Command::ZScore(_, _) => "ZSCORE",
             Command::ZRank(_, _) => "ZRANK",
             Command::ZCard(_) => "ZCARD",
+            Command::ZCount(_, _, _) => "ZCOUNT",
+            Command::ZRangeByScore { .. } => "ZRANGEBYSCORE",
+            Command::Scan { .. } => "SCAN",
+            Command::HScan { .. } => "HSCAN",
+            Command::ZScan { .. } => "ZSCAN",
+            Command::Multi => "MULTI",
+            Command::Exec => "EXEC",
+            Command::Discard => "DISCARD",
+            Command::Watch(_) => "WATCH",
+            Command::Unwatch => "UNWATCH",
+            Command::Eval { .. } => "EVAL",
+            Command::EvalSha { .. } => "EVALSHA",
             Command::Info => "INFO",
             Command::Ping => "PING",
             Command::Unknown(_) => "UNKNOWN",
@@ -1027,6 +1686,10 @@ impl CommandExecutor {
             key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
+            in_transaction: false,
+            queued_commands: Vec::new(),
+            watched_keys: AHashMap::new(),
+            script_cache: super::lua::ScriptCache::new(),
         }
     }
     
@@ -1236,6 +1899,20 @@ impl CommandExecutor {
 
     pub fn execute(&mut self, cmd: &Command) -> RespValue {
         self.commands_processed += 1;
+
+        // Handle command queueing when in transaction
+        if self.in_transaction {
+            match cmd {
+                // These commands are executed immediately even in transaction
+                Command::Exec | Command::Discard | Command::Multi => {}
+                // All other commands get queued
+                _ => {
+                    self.queued_commands.push(cmd.clone());
+                    return RespValue::SimpleString("QUEUED".to_string());
+                }
+            }
+        }
+
         match cmd {
             Command::Ping => RespValue::SimpleString("PONG".to_string()),
             
@@ -1265,40 +1942,81 @@ impl CommandExecutor {
                 }
             }
             
-            Command::Set(key, value) => {
-                self.data.insert(key.clone(), Value::String(value.clone()));
-                self.expirations.remove(key);
-                self.access_times.insert(key.clone(), self.current_time);
-                RespValue::SimpleString("OK".to_string())
-            }
-            
-            Command::SetEx(key, seconds, value) => {
-                if *seconds <= 0 {
-                    return RespValue::Error("ERR invalid expire time in setex".to_string());
+            Command::Set { key, value, ex, px, nx, xx, get } => {
+                // Validate expiration values
+                if let Some(seconds) = ex {
+                    if *seconds <= 0 {
+                        return RespValue::Error("ERR invalid expire time in 'set' command".to_string());
+                    }
                 }
-                self.data.insert(key.clone(), Value::String(value.clone()));
-                let expiration = self.current_time + crate::simulator::Duration::from_secs(*seconds as u64);
-                self.expirations.insert(key.clone(), expiration);
-                self.access_times.insert(key.clone(), self.current_time);
-                RespValue::SimpleString("OK".to_string())
-            }
-            
-            Command::SetNx(key, value) => {
-                if !self.is_expired(key) && self.data.contains_key(key) {
-                    RespValue::Integer(0)
+                if let Some(millis) = px {
+                    if *millis <= 0 {
+                        return RespValue::Error("ERR invalid expire time in 'set' command".to_string());
+                    }
+                }
+
+                // Get old value if GET option specified
+                let old_value = if *get {
+                    match self.get_value(key) {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    }
                 } else {
-                    self.data.insert(key.clone(), Value::String(value.clone()));
+                    None
+                };
+
+                // Check key existence for NX/XX
+                let key_exists = !self.is_expired(key) && self.data.contains_key(key);
+
+                // NX: only set if key doesn't exist
+                if *nx && key_exists {
+                    return match old_value {
+                        Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
+                        None => RespValue::BulkString(None),
+                    };
+                }
+
+                // XX: only set if key exists
+                if *xx && !key_exists {
+                    return RespValue::BulkString(None);
+                }
+
+                // Set the value
+                self.data.insert(key.clone(), Value::String(value.clone()));
+                self.access_times.insert(key.clone(), self.current_time);
+
+                // Handle expiration
+                if let Some(seconds) = ex {
+                    let expiration = self.current_time + crate::simulator::Duration::from_secs(*seconds as u64);
+                    self.expirations.insert(key.clone(), expiration);
+                } else if let Some(millis) = px {
+                    let expiration = self.current_time + crate::simulator::Duration::from_millis(*millis as u64);
+                    self.expirations.insert(key.clone(), expiration);
+                } else {
                     self.expirations.remove(key);
-                    self.access_times.insert(key.clone(), self.current_time);
-                    RespValue::Integer(1)
+                }
+
+                // Return appropriate response
+                if *get {
+                    match old_value {
+                        Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
+                        None => RespValue::BulkString(None),
+                    }
+                } else {
+                    RespValue::SimpleString("OK".to_string())
                 }
             }
-            
-            Command::Del(key) => {
-                let removed = self.data.remove(key).is_some();
-                self.expirations.remove(key);
-                self.access_times.remove(key);
-                RespValue::Integer(if removed { 1 } else { 0 })
+
+            Command::Del(keys) => {
+                let mut count = 0;
+                for key in keys {
+                    if self.data.remove(key).is_some() {
+                        count += 1;
+                    }
+                    self.expirations.remove(key);
+                    self.access_times.remove(key);
+                }
+                RespValue::Integer(count)
             }
             
             Command::Exists(keys) => {
@@ -1598,7 +2316,145 @@ impl CommandExecutor {
                     None => RespValue::Array(Some(Vec::new())),
                 }
             }
-            
+
+            Command::LSet(key, index, value) => {
+                if self.is_expired(key) {
+                    self.data.remove(key);
+                    self.expirations.remove(key);
+                }
+                match self.data.get_mut(key) {
+                    Some(Value::List(list)) => {
+                        match list.set(*index, value.clone()) {
+                            Ok(()) => {
+                                self.access_times.insert(key.clone(), self.current_time);
+                                RespValue::SimpleString("OK".to_string())
+                            }
+                            Err(e) => RespValue::Error(e),
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Error("ERR no such key".to_string()),
+                }
+            }
+
+            Command::LTrim(key, start, stop) => {
+                if self.is_expired(key) {
+                    self.data.remove(key);
+                    self.expirations.remove(key);
+                }
+                match self.data.get_mut(key) {
+                    Some(Value::List(list)) => {
+                        list.trim(*start, *stop);
+                        self.access_times.insert(key.clone(), self.current_time);
+                        // Remove key if list becomes empty
+                        if list.is_empty() {
+                            self.data.remove(key);
+                            self.access_times.remove(key);
+                            self.expirations.remove(key);
+                        }
+                        RespValue::SimpleString("OK".to_string())
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::SimpleString("OK".to_string()), // No-op if key doesn't exist
+                }
+            }
+
+            Command::RPopLPush(source, dest) => {
+                if self.is_expired(source) {
+                    self.data.remove(source);
+                    self.expirations.remove(source);
+                }
+                // Pop from source
+                let popped = match self.data.get_mut(source) {
+                    Some(Value::List(list)) => list.rpop(),
+                    Some(_) => return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => None,
+                };
+
+                match popped {
+                    Some(value) => {
+                        // Remove source if now empty
+                        if let Some(Value::List(list)) = self.data.get(source) {
+                            if list.is_empty() {
+                                self.data.remove(source);
+                                self.access_times.remove(source);
+                                self.expirations.remove(source);
+                            }
+                        }
+
+                        // Push to dest
+                        if self.is_expired(dest) {
+                            self.data.remove(dest);
+                            self.expirations.remove(dest);
+                        }
+                        let dest_list = self.data.entry(dest.clone())
+                            .or_insert_with(|| Value::List(RedisList::new()));
+                        match dest_list {
+                            Value::List(list) => {
+                                list.lpush(value.clone());
+                                self.access_times.insert(dest.clone(), self.current_time);
+                                RespValue::BulkString(Some(value.as_bytes().to_vec()))
+                            }
+                            _ => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                        }
+                    }
+                    None => RespValue::BulkString(None),
+                }
+            }
+
+            Command::LMove { source, dest, wherefrom, whereto } => {
+                if self.is_expired(source) {
+                    self.data.remove(source);
+                    self.expirations.remove(source);
+                }
+                // Pop from source
+                let popped = match self.data.get_mut(source) {
+                    Some(Value::List(list)) => {
+                        if wherefrom == "LEFT" {
+                            list.lpop()
+                        } else {
+                            list.rpop()
+                        }
+                    }
+                    Some(_) => return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => None,
+                };
+
+                match popped {
+                    Some(value) => {
+                        // Remove source if now empty
+                        if let Some(Value::List(list)) = self.data.get(source) {
+                            if list.is_empty() {
+                                self.data.remove(source);
+                                self.access_times.remove(source);
+                                self.expirations.remove(source);
+                            }
+                        }
+
+                        // Push to dest
+                        if self.is_expired(dest) {
+                            self.data.remove(dest);
+                            self.expirations.remove(dest);
+                        }
+                        let dest_list = self.data.entry(dest.clone())
+                            .or_insert_with(|| Value::List(RedisList::new()));
+                        match dest_list {
+                            Value::List(list) => {
+                                if whereto == "LEFT" {
+                                    list.lpush(value.clone());
+                                } else {
+                                    list.rpush(value.clone());
+                                }
+                                self.access_times.insert(dest.clone(), self.current_time);
+                                RespValue::BulkString(Some(value.as_bytes().to_vec()))
+                            }
+                            _ => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                        }
+                    }
+                    None => RespValue::BulkString(None),
+                }
+            }
+
             Command::SAdd(key, members) => {
                 if self.is_expired(key) {
                     self.data.remove(key);
@@ -1696,18 +2552,45 @@ impl CommandExecutor {
             }
 
             Command::HIncrBy(key, field, increment) => {
+                // Handle expiration first
+                if self.is_expired(key) {
+                    self.data.remove(key);
+                    self.expirations.remove(key);
+                    self.access_times.remove(key);
+                }
+
+                // Check if key exists and is wrong type before inserting
+                if let Some(existing) = self.data.get(key) {
+                    if !matches!(existing, Value::Hash(_)) {
+                        return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string());
+                    }
+                }
+
                 let hash = self.data.entry(key.clone()).or_insert_with(|| {
                     Value::Hash(RedisHash::new())
                 });
+                self.access_times.insert(key.clone(), self.current_time);
 
                 match hash {
                     Value::Hash(h) => {
-                        let current = h.get(field).map(|v| v.to_string().parse::<i64>().ok()).flatten().unwrap_or(0);
+                        // Get current value, parse as i64, return error if not an integer
+                        let current: i64 = match h.get(field) {
+                            Some(v) => {
+                                let s = v.to_string();
+                                match s.parse::<i64>() {
+                                    Ok(n) => n,
+                                    Err(_) => return RespValue::Error(
+                                        "ERR hash value is not an integer".to_string()
+                                    ),
+                                }
+                            }
+                            None => 0,
+                        };
 
                         // TigerStyle: Use checked arithmetic to detect overflow
                         let new_value = match current.checked_add(*increment) {
                             Some(v) => v,
-                            None => return RespValue::Error("ERR increment would produce overflow".to_string()),
+                            None => return RespValue::Error("ERR increment or decrement would overflow".to_string()),
                         };
 
                         h.set(field.clone(), SDS::from_str(&new_value.to_string()));
@@ -2058,9 +2941,831 @@ impl CommandExecutor {
                 }
             }
 
+            Command::ZCount(key, min, max) => {
+                match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        match zs.count_in_range(min, max) {
+                            Ok(count) => RespValue::Integer(count as i64),
+                            Err(e) => RespValue::Error(e),
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::ZRangeByScore { key, min, max, with_scores, limit } => {
+                match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        match zs.range_by_score(min, max, *with_scores, *limit) {
+                            Ok(results) => {
+                                let elements: Vec<RespValue> = results.iter()
+                                    .flat_map(|(member, score)| {
+                                        let mut v = vec![RespValue::BulkString(Some(member.as_bytes().to_vec()))];
+                                        if let Some(s) = score {
+                                            v.push(RespValue::BulkString(Some(s.to_string().into_bytes())));
+                                        }
+                                        v
+                                    })
+                                    .collect();
+                                RespValue::Array(Some(elements))
+                            }
+                            Err(e) => RespValue::Error(e),
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Array(Some(vec![])),
+                }
+            }
+
+            Command::Scan { cursor, pattern, count } => {
+                let count = count.unwrap_or(10);
+                // Collect all non-expired keys
+                let mut keys: Vec<String> = self.data.keys()
+                    .filter(|k| !self.is_expired(k))
+                    .filter(|k| pattern.as_ref().map_or(true, |p| self.matches_glob_pattern(k, p)))
+                    .cloned()
+                    .collect();
+                // Sort for deterministic iteration
+                keys.sort();
+
+                // Skip to cursor position and take count+1 to know if there's more
+                let results: Vec<String> = keys.into_iter()
+                    .skip(*cursor as usize)
+                    .take(count + 1)
+                    .collect();
+
+                let (next_cursor, result_keys) = if results.len() > count {
+                    (*cursor + count as u64, &results[..count])
+                } else {
+                    (0u64, &results[..])
+                };
+
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
+                    RespValue::Array(Some(
+                        result_keys.iter()
+                            .map(|k| RespValue::BulkString(Some(k.as_bytes().to_vec())))
+                            .collect()
+                    )),
+                ]))
+            }
+
+            Command::HScan { key, cursor, pattern, count } => {
+                // Handle expiration
+                if self.is_expired(key) {
+                    self.data.remove(key);
+                    self.expirations.remove(key);
+                }
+
+                // First collect all fields from the hash
+                let raw_fields: Option<Vec<(String, String)>> = match self.get_value(key) {
+                    Some(Value::Hash(h)) => {
+                        Some(h.iter().map(|(f, v)| (f.clone(), v.to_string())).collect())
+                    }
+                    Some(_) => return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => None,
+                };
+
+                match raw_fields {
+                    Some(all_fields) => {
+                        let count = count.unwrap_or(10);
+                        // Filter by pattern
+                        let mut fields: Vec<(String, String)> = all_fields.into_iter()
+                            .filter(|(f, _)| pattern.as_ref().map_or(true, |p| self.matches_glob_pattern(f, p)))
+                            .collect();
+                        // Sort for deterministic iteration
+                        fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        // Skip to cursor position and take count+1
+                        let results: Vec<(String, String)> = fields.into_iter()
+                            .skip(*cursor as usize)
+                            .take(count + 1)
+                            .collect();
+
+                        let (next_cursor, result_fields) = if results.len() > count {
+                            (*cursor + count as u64, &results[..count])
+                        } else {
+                            (0u64, &results[..])
+                        };
+
+                        // Flatten field-value pairs into array
+                        let elements: Vec<RespValue> = result_fields.iter()
+                            .flat_map(|(f, v)| {
+                                vec![
+                                    RespValue::BulkString(Some(f.as_bytes().to_vec())),
+                                    RespValue::BulkString(Some(v.as_bytes().to_vec())),
+                                ]
+                            })
+                            .collect();
+
+                        RespValue::Array(Some(vec![
+                            RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
+                            RespValue::Array(Some(elements)),
+                        ]))
+                    }
+                    None => {
+                        // Empty result for non-existent key
+                        RespValue::Array(Some(vec![
+                            RespValue::BulkString(Some(b"0".to_vec())),
+                            RespValue::Array(Some(vec![])),
+                        ]))
+                    }
+                }
+            }
+
+            Command::ZScan { key, cursor, pattern, count } => {
+                // Handle expiration
+                if self.is_expired(key) {
+                    self.data.remove(key);
+                    self.expirations.remove(key);
+                }
+
+                // First collect all members from the sorted set
+                let raw_members: Option<Vec<(String, f64)>> = match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        Some(zs.iter().map(|(m, s)| (m.clone(), *s)).collect())
+                    }
+                    Some(_) => return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => None,
+                };
+
+                match raw_members {
+                    Some(all_members) => {
+                        let count = count.unwrap_or(10);
+                        // Filter by pattern
+                        let mut members: Vec<(String, f64)> = all_members.into_iter()
+                            .filter(|(m, _)| pattern.as_ref().map_or(true, |p| self.matches_glob_pattern(m, p)))
+                            .collect();
+                        // Sort by member for deterministic iteration
+                        members.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        // Skip to cursor position and take count+1
+                        let results: Vec<(String, f64)> = members.into_iter()
+                            .skip(*cursor as usize)
+                            .take(count + 1)
+                            .collect();
+
+                        let (next_cursor, result_members) = if results.len() > count {
+                            (*cursor + count as u64, &results[..count])
+                        } else {
+                            (0u64, &results[..])
+                        };
+
+                        // Flatten member-score pairs into array
+                        let elements: Vec<RespValue> = result_members.iter()
+                            .flat_map(|(m, s)| {
+                                vec![
+                                    RespValue::BulkString(Some(m.as_bytes().to_vec())),
+                                    RespValue::BulkString(Some(s.to_string().into_bytes())),
+                                ]
+                            })
+                            .collect();
+
+                        RespValue::Array(Some(vec![
+                            RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
+                            RespValue::Array(Some(elements)),
+                        ]))
+                    }
+                    None => {
+                        // Empty result for non-existent key
+                        RespValue::Array(Some(vec![
+                            RespValue::BulkString(Some(b"0".to_vec())),
+                            RespValue::Array(Some(vec![])),
+                        ]))
+                    }
+                }
+            }
+
+            Command::Multi => {
+                if self.in_transaction {
+                    return RespValue::Error("ERR MULTI calls can not be nested".to_string());
+                }
+                self.in_transaction = true;
+                self.queued_commands.clear();
+                RespValue::SimpleString("OK".to_string())
+            }
+
+            Command::Exec => {
+                if !self.in_transaction {
+                    return RespValue::Error("ERR EXEC without MULTI".to_string());
+                }
+
+                // Check if any watched keys have changed
+                let watch_violated = self.watched_keys.iter().any(|(key, original_value)| {
+                    let current_value = self.data.get(key).cloned();
+                    &current_value != original_value
+                });
+
+                // Clear transaction state
+                self.in_transaction = false;
+                let commands = std::mem::take(&mut self.queued_commands);
+                self.watched_keys.clear();
+
+                if watch_violated {
+                    // WATCH detected a change, abort the transaction
+                    return RespValue::BulkString(None);
+                }
+
+                // Execute all queued commands
+                let results: Vec<RespValue> = commands.into_iter()
+                    .map(|cmd| self.execute(&cmd))
+                    .collect();
+
+                RespValue::Array(Some(results))
+            }
+
+            Command::Discard => {
+                if !self.in_transaction {
+                    return RespValue::Error("ERR DISCARD without MULTI".to_string());
+                }
+                self.in_transaction = false;
+                self.queued_commands.clear();
+                self.watched_keys.clear();
+                RespValue::SimpleString("OK".to_string())
+            }
+
+            Command::Watch(keys) => {
+                if self.in_transaction {
+                    return RespValue::Error("ERR WATCH inside MULTI is not allowed".to_string());
+                }
+                // Store current values of watched keys
+                for key in keys {
+                    let current_value = self.data.get(key).cloned();
+                    self.watched_keys.insert(key.clone(), current_value);
+                }
+                RespValue::SimpleString("OK".to_string())
+            }
+
+            Command::Unwatch => {
+                self.watched_keys.clear();
+                RespValue::SimpleString("OK".to_string())
+            }
+
+            Command::Eval { script, keys, args } => {
+                #[cfg(feature = "lua")]
+                {
+                    self.execute_lua_script(script, keys, args)
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    let _ = (script, keys, args);
+                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                }
+            }
+
+            Command::EvalSha { sha1, keys, args } => {
+                #[cfg(feature = "lua")]
+                {
+                    // Look up script in cache
+                    match self.script_cache.get_script(sha1) {
+                        Some(script) => {
+                            let script = script.clone();
+                            self.execute_lua_script(&script, keys, args)
+                        }
+                        None => RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string()),
+                    }
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    let _ = (sha1, keys, args);
+                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                }
+            }
+
             Command::Unknown(cmd) => {
                 RespValue::Error(format!("ERR unknown command '{}'", cmd))
             }
+        }
+    }
+
+    /// Execute a Lua script with KEYS and ARGV
+    ///
+    /// TigerStyle: This function executes Redis commands immediately during Lua execution,
+    /// matching real Redis semantics. math.random is seeded deterministically for DST.
+    #[cfg(feature = "lua")]
+    fn execute_lua_script(&mut self, script: &str, keys: &[String], args: &[SDS]) -> RespValue {
+        use mlua::{Lua, MultiValue, Result as LuaResult, Value as LuaValue};
+        use std::cell::RefCell;
+
+        // TigerStyle: Preconditions
+        debug_assert!(!script.is_empty(), "Precondition: script must not be empty");
+
+        // Track initial state for postcondition verification
+        #[cfg(debug_assertions)]
+        let initial_key_count = self.data.len();
+
+        // Cache the script for EVALSHA
+        #[allow(unused_variables)]
+        let script_sha = self.script_cache.cache_script(script);
+
+        // Create a new Lua instance for this execution
+        let lua = Lua::new();
+
+        // DST: Seed math.random deterministically using current_time
+        // This ensures Lua scripts produce deterministic results for simulation testing
+        let seed = self.current_time.as_millis();
+        if let Err(e) = lua.load(&format!("math.randomseed({})", seed)).exec() {
+            return RespValue::Error(format!("ERR Failed to seed RNG: {}", e));
+        }
+
+        // Sandbox: Remove dangerous/non-deterministic functions
+        if let Err(e) = (|| -> LuaResult<()> {
+            lua.globals().set("os", LuaValue::Nil)?;
+            lua.globals().set("io", LuaValue::Nil)?;
+            lua.globals().set("loadfile", LuaValue::Nil)?;
+            lua.globals().set("dofile", LuaValue::Nil)?;
+            lua.globals().set("debug", LuaValue::Nil)?;
+            Ok(())
+        })() {
+            return RespValue::Error(format!("ERR Lua sandbox error: {}", e));
+        }
+
+        // Create KEYS table
+        if let Err(e) = (|| -> LuaResult<()> {
+            let keys_table = lua.create_table()?;
+            for (i, key) in keys.iter().enumerate() {
+                keys_table.set(i + 1, key.as_str())?;
+            }
+            lua.globals().set("KEYS", keys_table)?;
+            Ok(())
+        })() {
+            return RespValue::Error(format!("ERR Failed to set KEYS: {}", e));
+        }
+
+        // Create ARGV table
+        if let Err(e) = (|| -> LuaResult<()> {
+            let argv_table = lua.create_table()?;
+            for (i, arg) in args.iter().enumerate() {
+                argv_table.set(i + 1, arg.to_string())?;
+            }
+            lua.globals().set("ARGV", argv_table)?;
+            Ok(())
+        })() {
+            return RespValue::Error(format!("ERR Failed to set ARGV: {}", e));
+        }
+
+        // Use RefCell to allow mutable borrow from within Lua callbacks
+        // This enables immediate command execution with results returned to Lua
+        // Note: We reborrow self to allow using self again after the scope
+        let executor = RefCell::new(&mut *self);
+
+        // Execute script within a scope that allows borrowing executor
+        let result = lua.scope(|scope| {
+            // Create redis.call - executes command immediately, propagates errors
+            let executor_call = &executor;
+            let call_fn = scope.create_function_mut(|lua, args: MultiValue| {
+                let cmd_parts = Self::parse_multivalue_to_strings(args)?;
+                if cmd_parts.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "redis.call requires at least one argument".to_string(),
+                    ));
+                }
+
+                let mut exec = executor_call.borrow_mut();
+                match exec.parse_lua_command(&cmd_parts) {
+                    Ok(cmd) => {
+                        let resp = exec.execute(&cmd);
+                        // redis.call propagates errors
+                        if let RespValue::Error(e) = &resp {
+                            return Err(mlua::Error::RuntimeError(e.clone()));
+                        }
+                        Self::resp_to_lua_value(lua, resp)
+                    }
+                    Err(e) => Err(mlua::Error::RuntimeError(e)),
+                }
+            })?;
+
+            // Create redis.pcall - executes command immediately, returns errors as tables
+            let executor_pcall = &executor;
+            let pcall_fn = scope.create_function_mut(|lua, args: MultiValue| {
+                let cmd_parts = Self::parse_multivalue_to_strings(args)?;
+                if cmd_parts.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "redis.pcall requires at least one argument".to_string(),
+                    ));
+                }
+
+                let mut exec = executor_pcall.borrow_mut();
+                match exec.parse_lua_command(&cmd_parts) {
+                    Ok(cmd) => {
+                        let resp = exec.execute(&cmd);
+                        // redis.pcall returns errors as {err = "message"} tables
+                        if let RespValue::Error(e) = &resp {
+                            let err_table = lua.create_table()?;
+                            err_table.set("err", e.as_str())?;
+                            return Ok(LuaValue::Table(err_table));
+                        }
+                        Self::resp_to_lua_value(lua, resp)
+                    }
+                    Err(e) => {
+                        // Return error as table for pcall
+                        let err_table = lua.create_table()?;
+                        err_table.set("err", e.as_str())?;
+                        Ok(LuaValue::Table(err_table))
+                    }
+                }
+            })?;
+
+            // Set up redis table with call/pcall
+            let redis_table = lua.create_table()?;
+            redis_table.set("call", call_fn)?;
+            redis_table.set("pcall", pcall_fn)?;
+            lua.globals().set("redis", redis_table)?;
+
+            // Execute the script
+            lua.load(script).eval::<LuaValue>()
+        });
+
+        // Convert result - use a separate method call to convert Lua result
+        let resp = match result {
+            Ok(lua_value) => self.lua_to_resp(&lua, lua_value),
+            Err(e) => RespValue::Error(format!("ERR {}", e)),
+        };
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            // Verify script was cached
+            debug_assert!(
+                self.script_cache.has_script(&script_sha),
+                "Postcondition: script must be cached after execution"
+            );
+
+            // Verify data integrity - no negative counts possible
+            debug_assert!(
+                self.data.len() >= 0,
+                "Postcondition: data count must be non-negative"
+            );
+        }
+
+        resp
+    }
+
+    /// Parse MultiValue arguments to strings for redis.call/pcall
+    #[cfg(feature = "lua")]
+    fn parse_multivalue_to_strings(args: mlua::MultiValue) -> mlua::Result<Vec<String>> {
+        use mlua::Value as LuaValue;
+
+        let mut cmd_parts = Vec::new();
+        for arg in args {
+            match arg {
+                LuaValue::String(s) => cmd_parts.push(s.to_str()?.to_string()),
+                LuaValue::Integer(i) => cmd_parts.push(i.to_string()),
+                LuaValue::Number(n) => cmd_parts.push(n.to_string()),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "Invalid argument type for redis command".to_string(),
+                    ))
+                }
+            }
+        }
+        Ok(cmd_parts)
+    }
+
+    /// Convert RespValue to Lua Value for returning results to Lua scripts
+    #[cfg(feature = "lua")]
+    fn resp_to_lua_value(lua: &mlua::Lua, resp: RespValue) -> mlua::Result<mlua::Value> {
+        use mlua::Value as LuaValue;
+
+        Ok(match resp {
+            RespValue::SimpleString(s) => {
+                // Return as {ok = "message"} table for status replies
+                let t = lua.create_table()?;
+                t.set("ok", s.as_str())?;
+                LuaValue::Table(t)
+            }
+            RespValue::Error(e) => {
+                // Should not reach here for redis.call (errors propagate)
+                // For pcall, caller handles this
+                let t = lua.create_table()?;
+                t.set("err", e.as_str())?;
+                LuaValue::Table(t)
+            }
+            RespValue::Integer(i) => LuaValue::Integer(i),
+            RespValue::BulkString(Some(bytes)) => {
+                let s = String::from_utf8_lossy(&bytes);
+                LuaValue::String(lua.create_string(s.as_bytes())?)
+            }
+            RespValue::BulkString(None) => LuaValue::Nil,
+            RespValue::Array(Some(elements)) => {
+                let t = lua.create_table()?;
+                for (i, elem) in elements.into_iter().enumerate() {
+                    let lua_val = Self::resp_to_lua_value(lua, elem)?;
+                    t.set(i + 1, lua_val)?;
+                }
+                LuaValue::Table(t)
+            }
+            RespValue::Array(None) => LuaValue::Nil,
+        })
+    }
+
+    /// Parse a command from Lua script arguments
+    #[cfg(feature = "lua")]
+    fn parse_lua_command(&self, parts: &[String]) -> Result<Command, String> {
+        if parts.is_empty() {
+            return Err("Empty command".to_string());
+        }
+
+        let cmd_name = parts[0].to_uppercase();
+        let args = &parts[1..];
+
+        match cmd_name.as_str() {
+            "GET" => {
+                if args.len() != 1 {
+                    return Err("GET requires 1 argument".to_string());
+                }
+                Ok(Command::Get(args[0].clone()))
+            }
+            "SET" => {
+                if args.len() < 2 {
+                    return Err("SET requires at least 2 arguments".to_string());
+                }
+                Ok(Command::set(args[0].clone(), SDS::from_str(&args[1])))
+            }
+            "DEL" => {
+                if args.is_empty() {
+                    return Err("DEL requires at least 1 argument".to_string());
+                }
+                Ok(Command::Del(args.iter().cloned().collect()))
+            }
+            "INCR" => {
+                if args.len() != 1 {
+                    return Err("INCR requires 1 argument".to_string());
+                }
+                Ok(Command::Incr(args[0].clone()))
+            }
+            "DECR" => {
+                if args.len() != 1 {
+                    return Err("DECR requires 1 argument".to_string());
+                }
+                Ok(Command::Decr(args[0].clone()))
+            }
+            "INCRBY" => {
+                if args.len() != 2 {
+                    return Err("INCRBY requires 2 arguments".to_string());
+                }
+                let incr: i64 = args[1]
+                    .parse()
+                    .map_err(|_| "INCRBY increment must be integer".to_string())?;
+                Ok(Command::IncrBy(args[0].clone(), incr))
+            }
+            "HGET" => {
+                if args.len() != 2 {
+                    return Err("HGET requires 2 arguments".to_string());
+                }
+                Ok(Command::HGet(args[0].clone(), SDS::from_str(&args[1])))
+            }
+            "HSET" => {
+                if args.len() < 3 || args.len() % 2 == 0 {
+                    return Err("HSET requires key and field-value pairs".to_string());
+                }
+                let key = args[0].clone();
+                let pairs: Vec<(SDS, SDS)> = args[1..]
+                    .chunks(2)
+                    .map(|chunk| (SDS::from_str(&chunk[0]), SDS::from_str(&chunk[1])))
+                    .collect();
+                Ok(Command::HSet(key, pairs))
+            }
+            "HDEL" => {
+                if args.len() < 2 {
+                    return Err("HDEL requires key and at least 1 field".to_string());
+                }
+                let key = args[0].clone();
+                let fields: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::HDel(key, fields))
+            }
+            "HINCRBY" => {
+                if args.len() != 3 {
+                    return Err("HINCRBY requires 3 arguments".to_string());
+                }
+                let incr: i64 = args[2]
+                    .parse()
+                    .map_err(|_| "HINCRBY increment must be integer".to_string())?;
+                Ok(Command::HIncrBy(
+                    args[0].clone(),
+                    SDS::from_str(&args[1]),
+                    incr,
+                ))
+            }
+            "LPUSH" => {
+                if args.len() < 2 {
+                    return Err("LPUSH requires key and at least 1 value".to_string());
+                }
+                let key = args[0].clone();
+                let values: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::LPush(key, values))
+            }
+            "RPUSH" => {
+                if args.len() < 2 {
+                    return Err("RPUSH requires key and at least 1 value".to_string());
+                }
+                let key = args[0].clone();
+                let values: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::RPush(key, values))
+            }
+            "LPOP" => {
+                if args.len() != 1 {
+                    return Err("LPOP requires 1 argument".to_string());
+                }
+                Ok(Command::LPop(args[0].clone()))
+            }
+            "RPOP" => {
+                if args.len() != 1 {
+                    return Err("RPOP requires 1 argument".to_string());
+                }
+                Ok(Command::RPop(args[0].clone()))
+            }
+            "LLEN" => {
+                if args.len() != 1 {
+                    return Err("LLEN requires 1 argument".to_string());
+                }
+                Ok(Command::LLen(args[0].clone()))
+            }
+            "LRANGE" => {
+                if args.len() != 3 {
+                    return Err("LRANGE requires 3 arguments".to_string());
+                }
+                let start: isize = args[1]
+                    .parse()
+                    .map_err(|_| "LRANGE start must be integer".to_string())?;
+                let stop: isize = args[2]
+                    .parse()
+                    .map_err(|_| "LRANGE stop must be integer".to_string())?;
+                Ok(Command::LRange(args[0].clone(), start, stop))
+            }
+            "RPOPLPUSH" => {
+                if args.len() != 2 {
+                    return Err("RPOPLPUSH requires 2 arguments".to_string());
+                }
+                Ok(Command::RPopLPush(args[0].clone(), args[1].clone()))
+            }
+            "SADD" => {
+                if args.len() < 2 {
+                    return Err("SADD requires key and at least 1 member".to_string());
+                }
+                let key = args[0].clone();
+                let members: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::SAdd(key, members))
+            }
+            "SREM" => {
+                if args.len() < 2 {
+                    return Err("SREM requires key and at least 1 member".to_string());
+                }
+                let key = args[0].clone();
+                let members: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::SRem(key, members))
+            }
+            "SMEMBERS" => {
+                if args.len() != 1 {
+                    return Err("SMEMBERS requires 1 argument".to_string());
+                }
+                Ok(Command::SMembers(args[0].clone()))
+            }
+            "SISMEMBER" => {
+                if args.len() != 2 {
+                    return Err("SISMEMBER requires 2 arguments".to_string());
+                }
+                Ok(Command::SIsMember(args[0].clone(), SDS::from_str(&args[1])))
+            }
+            "ZADD" => {
+                if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+                    return Err("ZADD requires key and score-member pairs".to_string());
+                }
+                let key = args[0].clone();
+                let mut pairs: Vec<(f64, SDS)> = Vec::new();
+                for chunk in args[1..].chunks(2) {
+                    let score: f64 = chunk[0]
+                        .parse()
+                        .map_err(|_| "ZADD score must be a number".to_string())?;
+                    pairs.push((score, SDS::from_str(&chunk[1])));
+                }
+                Ok(Command::ZAdd(key, pairs))
+            }
+            "ZREM" => {
+                if args.len() < 2 {
+                    return Err("ZREM requires key and at least 1 member".to_string());
+                }
+                let key = args[0].clone();
+                let members: Vec<SDS> = args[1..].iter().map(|s| SDS::from_str(s)).collect();
+                Ok(Command::ZRem(key, members))
+            }
+            "ZRANGE" => {
+                if args.len() != 3 {
+                    return Err("ZRANGE requires 3 arguments".to_string());
+                }
+                let start: isize = args[1]
+                    .parse()
+                    .map_err(|_| "ZRANGE start must be integer".to_string())?;
+                let stop: isize = args[2]
+                    .parse()
+                    .map_err(|_| "ZRANGE stop must be integer".to_string())?;
+                Ok(Command::ZRange(args[0].clone(), start, stop))
+            }
+            "ZSCORE" => {
+                if args.len() != 2 {
+                    return Err("ZSCORE requires 2 arguments".to_string());
+                }
+                Ok(Command::ZScore(args[0].clone(), SDS::from_str(&args[1])))
+            }
+            "ZCARD" => {
+                if args.len() != 1 {
+                    return Err("ZCARD requires 1 argument".to_string());
+                }
+                Ok(Command::ZCard(args[0].clone()))
+            }
+            "EXISTS" => {
+                if args.is_empty() {
+                    return Err("EXISTS requires at least 1 argument".to_string());
+                }
+                Ok(Command::Exists(args.iter().cloned().collect()))
+            }
+            "EXPIRE" => {
+                if args.len() != 2 {
+                    return Err("EXPIRE requires 2 arguments".to_string());
+                }
+                let seconds: i64 = args[1]
+                    .parse()
+                    .map_err(|_| "EXPIRE seconds must be integer".to_string())?;
+                Ok(Command::Expire(args[0].clone(), seconds))
+            }
+            "TTL" => {
+                if args.len() != 1 {
+                    return Err("TTL requires 1 argument".to_string());
+                }
+                Ok(Command::Ttl(args[0].clone()))
+            }
+            "TYPE" => {
+                if args.len() != 1 {
+                    return Err("TYPE requires 1 argument".to_string());
+                }
+                Ok(Command::TypeOf(args[0].clone()))
+            }
+            _ => Err(format!("ERR Unknown Redis command '{}' called from Lua", cmd_name)),
+        }
+    }
+
+    /// Convert a Lua value to a RespValue
+    #[cfg(feature = "lua")]
+    fn lua_to_resp(&self, lua: &mlua::Lua, value: mlua::Value) -> RespValue {
+        use mlua::Value as LuaValue;
+
+        match value {
+            LuaValue::Nil => RespValue::BulkString(None),
+            LuaValue::Boolean(b) => {
+                // Redis convention: true = 1, false = nil
+                if b {
+                    RespValue::Integer(1)
+                } else {
+                    RespValue::BulkString(None)
+                }
+            }
+            LuaValue::Integer(i) => RespValue::Integer(i),
+            LuaValue::Number(n) => {
+                // Redis converts floats to bulk strings
+                RespValue::BulkString(Some(n.to_string().into_bytes()))
+            }
+            LuaValue::String(s) => {
+                match s.as_bytes() {
+                    b => RespValue::BulkString(Some(b.to_vec())),
+                }
+            }
+            LuaValue::Table(t) => {
+                // Check for Redis error/ok convention first
+                if let Ok(err) = t.get::<String>("err") {
+                    return RespValue::Error(err);
+                }
+                if let Ok(ok) = t.get::<String>("ok") {
+                    return RespValue::SimpleString(ok);
+                }
+
+                // Check if it's a sequential array
+                let mut elements = Vec::new();
+                let mut is_array = true;
+                let mut idx = 1i64;
+
+                loop {
+                    match t.get::<LuaValue>(idx) {
+                        Ok(LuaValue::Nil) => break,
+                        Ok(v) => {
+                            elements.push(self.lua_to_resp(lua, v));
+                            idx += 1;
+                        }
+                        Err(_) => {
+                            is_array = false;
+                            break;
+                        }
+                    }
+                }
+
+                if is_array && !elements.is_empty() {
+                    RespValue::Array(Some(elements))
+                } else {
+                    // Return empty array for non-array tables
+                    RespValue::Array(Some(vec![]))
+                }
+            }
+            _ => RespValue::BulkString(None),
         }
     }
 
