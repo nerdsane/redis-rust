@@ -33,6 +33,7 @@ pub mod compaction;
 pub mod integration;
 pub mod clock;
 pub mod dst;
+pub mod compaction_dst;
 #[cfg(feature = "s3")]
 pub mod s3_store;
 
@@ -76,6 +77,11 @@ pub use dst::{
     StreamingDSTConfig, StreamingDSTHarness, StreamingDSTResult,
     StreamingWorkload, StreamingOperation, OperationOutcome,
     run_dst_batch, summarize_batch,
+};
+pub use compaction_dst::{
+    CompactionDSTConfig, CompactionDSTHarness, CompactionDSTResult,
+    CompactionWorkload, CompactionOperation, CompactionOutcome,
+    run_compaction_dst_batch, summarize_compaction_batch,
 };
 #[cfg(feature = "s3")]
 pub use s3_store::S3ObjectStore;
