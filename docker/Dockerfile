@@ -25,7 +25,7 @@
 #   AWS_SECRET_ACCESS_KEY
 
 # Build stage
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -42,14 +42,14 @@ RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/server_optimized.rs && \
     echo "fn main() {}" > src/bin/server_persistent.rs && \
     echo "" > src/lib.rs && \
-    cargo build --release --features s3 2>/dev/null || true && \
+    cargo build --release --features "s3,datadog" 2>/dev/null || true && \
     rm -rf src target/release/.fingerprint/redis-sim-* \
            target/release/server-persistent target/release/redis-server-optimized \
            target/release/deps/redis_sim-* target/release/deps/libredis_sim* \
            target/release/incremental/redis_sim-*
 
 COPY src ./src
-RUN cargo build --release --features s3 \
+RUN cargo build --release --features "s3,datadog" \
     --bin redis-server-optimized \
     --bin server-persistent
 

@@ -244,32 +244,98 @@ impl<S: ObjectStore + Clone + 'static, T: TimeSource> Compactor<S, T> {
         let current_time = self.time_source.now_millis();
         let tombstone_cutoff = current_time.saturating_sub(self.config.tombstone_ttl.as_millis() as u64);
 
-        // Load all deltas from selected segments
+        // Load all deltas from selected segments, handling missing files gracefully
         let mut deltas_before = 0u64;
         let mut key_to_delta: HashMap<String, ReplicationDelta> = HashMap::new();
         let mut bytes_before = 0u64;
+        let mut actually_compacted: Vec<&SegmentInfo> = Vec::new();
+        let mut missing_segments: Vec<String> = Vec::new();
 
         for segment_info in &segments_to_compact {
-            let data = self.store.get(&segment_info.key).await?;
-            bytes_before += data.len() as u64;
+            match self.store.get(&segment_info.key).await {
+                Ok(data) => {
+                    bytes_before += data.len() as u64;
 
-            let reader = SegmentReader::open(&data)?;
-            reader.validate()?;
+                    let reader = match SegmentReader::open(&data) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("Failed to open segment {}: {}", segment_info.key, e);
+                            continue;
+                        }
+                    };
 
-            for delta_result in reader.deltas()? {
-                let delta = delta_result?;
-                deltas_before += 1;
+                    if let Err(e) = reader.validate() {
+                        eprintln!("Invalid segment {}: {}", segment_info.key, e);
+                        continue;
+                    }
 
-                // Keep the latest delta for each key (last-writer-wins)
-                let should_insert = match key_to_delta.get(&delta.key) {
-                    Some(existing) => delta.value.timestamp.time > existing.value.timestamp.time,
-                    None => true,
-                };
+                    match reader.deltas() {
+                        Ok(deltas_iter) => {
+                            for delta_result in deltas_iter {
+                                match delta_result {
+                                    Ok(delta) => {
+                                        deltas_before += 1;
 
-                if should_insert {
-                    key_to_delta.insert(delta.key.clone(), delta);
+                                        // Keep latest delta for each key
+                                        let should_insert = match key_to_delta.get(&delta.key) {
+                                            Some(existing) => delta.value.timestamp.time > existing.value.timestamp.time,
+                                            None => true,
+                                        };
+
+                                        if should_insert {
+                                            key_to_delta.insert(delta.key.clone(), delta);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to read delta from {}: {}", segment_info.key, e);
+                                    }
+                                }
+                            }
+                            actually_compacted.push(segment_info);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read deltas from {}: {}", segment_info.key, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Segment missing (concurrent compaction or crash), mark for manifest cleanup
+                    eprintln!("Segment {} missing: {}", segment_info.key, e);
+                    missing_segments.push(segment_info.key.clone());
+                    actually_compacted.push(segment_info);
                 }
             }
+        }
+
+        // Clean up manifest if only missing segments found
+        if !missing_segments.is_empty() && key_to_delta.is_empty() && deltas_before == 0 {
+            let segments_removed: Vec<SegmentInfo> = actually_compacted
+                .iter()
+                .map(|s| (*s).clone())
+                .collect();
+
+            let mut new_manifest = manifest.clone();
+            let segment_ids: Vec<u64> = segments_removed.iter().map(|s| s.id).collect();
+            new_manifest.segments.retain(|s| !segment_ids.contains(&s.id));
+            new_manifest.version += 1;
+            self.manifest_manager.save(&new_manifest).await?;
+
+            self.stats.compactions_performed += 1;
+            self.stats.segments_removed += segments_removed.len() as u64;
+
+            return Ok(CompactionResult {
+                segments_removed,
+                segment_created: None,
+                deltas_before: 0,
+                deltas_after: 0,
+                tombstones_removed: 0,
+                bytes_reclaimed: 0,
+            });
+        }
+
+        // Check minimum segment requirement
+        if actually_compacted.len() < self.config.min_segments_to_compact {
+            return Err(CompactionError::NothingToCompact);
         }
 
         // Remove expired tombstones
@@ -291,7 +357,7 @@ impl<S: ObjectStore + Clone + 'static, T: TimeSource> Compactor<S, T> {
 
         // If nothing remains, just remove the segments
         if key_to_delta.is_empty() {
-            let segments_removed: Vec<SegmentInfo> = segments_to_compact
+            let segments_removed: Vec<SegmentInfo> = actually_compacted
                 .iter()
                 .map(|s| (*s).clone())
                 .collect();
@@ -303,7 +369,7 @@ impl<S: ObjectStore + Clone + 'static, T: TimeSource> Compactor<S, T> {
             new_manifest.version += 1;
             self.manifest_manager.save(&new_manifest).await?;
 
-            // Delete old segment files (best effort)
+            // Delete old segment files
             for segment in &segments_removed {
                 let _ = self.store.delete(&segment.key).await;
             }
@@ -376,7 +442,7 @@ impl<S: ObjectStore + Clone + 'static, T: TimeSource> Compactor<S, T> {
         };
 
         // Atomic manifest update
-        let segments_removed: Vec<SegmentInfo> = segments_to_compact
+        let segments_removed: Vec<SegmentInfo> = actually_compacted
             .iter()
             .map(|s| (*s).clone())
             .collect();
@@ -388,7 +454,7 @@ impl<S: ObjectStore + Clone + 'static, T: TimeSource> Compactor<S, T> {
         new_manifest.next_segment_id = new_segment_id + 1;
         self.manifest_manager.save(&new_manifest).await?;
 
-        // Delete old segment files (best effort)
+        // Delete old segment files (best effort, skip already-missing ones)
         for segment in &segments_removed {
             let _ = self.store.delete(&segment.key).await;
         }

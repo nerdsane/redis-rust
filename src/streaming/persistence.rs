@@ -266,6 +266,11 @@ impl<S: ObjectStore + Clone + 'static, C: StreamingClock> StreamingPersistence<S
             .max()
             .unwrap_or(0);
 
+        // IMPORTANT: Reload manifest from storage to get the latest next_segment_id.
+        // This prevents ID collisions when compaction has allocated new segment IDs.
+        // The trade-off is an extra I/O read per flush, but ensures correctness.
+        self.manifest = self.manifest_manager.load_or_create(self.manifest.replica_id).await?;
+
         // Allocate segment ID
         let segment_id = self.manifest.allocate_segment_id();
         let segment_key = format!("{}/segments/segment-{:08}.seg", self.prefix, segment_id);
