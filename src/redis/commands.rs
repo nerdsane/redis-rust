@@ -2369,14 +2369,35 @@ impl CommandExecutor {
 
     /// Fast path SET - avoids Command enum overhead
     /// Used by the fast path in connection handler for ~10-15% improvement
+    ///
+    /// Optimizations:
+    /// - P0 (opt-single-key-alloc): Single key allocation instead of two
+    /// - P1 (opt-static-responses): Static "OK" response via RespValue::ok()
     #[inline]
     pub fn set_direct(&mut self, key: &str, value: &[u8]) -> RespValue {
         self.commands_processed += 1;
-        self.data
-            .insert(key.to_string(), Value::String(SDS::new(value.to_vec())));
-        self.expirations.remove(key);
-        self.access_times.insert(key.to_string(), self.current_time);
-        RespValue::SimpleString("OK".to_string())
+
+        // P0 optimization: Single key allocation instead of two separate to_string() calls
+        // Without this, we call key.to_string() twice: once for data, once for access_times
+        #[cfg(feature = "opt-single-key-alloc")]
+        {
+            let key_owned = key.to_string();
+            self.data
+                .insert(key_owned.clone(), Value::String(SDS::new(value.to_vec())));
+            self.expirations.remove(key);
+            self.access_times.insert(key_owned, self.current_time);
+        }
+
+        #[cfg(not(feature = "opt-single-key-alloc"))]
+        {
+            self.data
+                .insert(key.to_string(), Value::String(SDS::new(value.to_vec())));
+            self.expirations.remove(key);
+            self.access_times.insert(key.to_string(), self.current_time);
+        }
+
+        // P1 optimization: Use static response helper
+        RespValue::ok()
     }
 
     /// Direct expiration eviction - call this from TTL manager

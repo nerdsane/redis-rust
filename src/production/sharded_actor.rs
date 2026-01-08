@@ -1,10 +1,16 @@
 use crate::io::{ProductionTimeSource, TimeSource};
 use crate::redis::{Command, CommandExecutor, RespValue};
 use crate::simulator::VirtualTime;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
+
+// P4 optimization: Use AHash for faster shard routing
+#[cfg(feature = "opt-fxhash-routing")]
+use ahash::AHasher;
+
+#[cfg(not(feature = "opt-fxhash-routing"))]
+use std::collections::hash_map::DefaultHasher;
 
 use super::adaptive_actor::{AdaptiveActor, AdaptiveActorConfig, AdaptiveActorHandle};
 use super::load_balancer::ScalingDecision;
@@ -412,10 +418,18 @@ impl ShardHandle {
     }
 }
 
+/// Hash key string to shard index
+/// P4 optimization: Use AHash when opt-fxhash-routing is enabled
 #[inline]
 fn hash_key(key: &str, num_shards: usize) -> usize {
     debug_assert!(num_shards > 0, "num_shards must be positive");
+
+    #[cfg(feature = "opt-fxhash-routing")]
+    let mut hasher = AHasher::default();
+
+    #[cfg(not(feature = "opt-fxhash-routing"))]
     let mut hasher = DefaultHasher::new();
+
     key.hash(&mut hasher);
     let idx = (hasher.finish() as usize) % num_shards;
     debug_assert!(idx < num_shards, "Hash produced invalid shard index");
@@ -423,10 +437,17 @@ fn hash_key(key: &str, num_shards: usize) -> usize {
 }
 
 /// Fast path: hash key bytes directly without UTF-8 validation overhead
+/// P4 optimization: Use AHash when opt-fxhash-routing is enabled
 #[inline]
 fn hash_key_bytes(key: &[u8], num_shards: usize) -> usize {
     debug_assert!(num_shards > 0, "num_shards must be positive");
+
+    #[cfg(feature = "opt-fxhash-routing")]
+    let mut hasher = AHasher::default();
+
+    #[cfg(not(feature = "opt-fxhash-routing"))]
     let mut hasher = DefaultHasher::new();
+
     key.hash(&mut hasher);
     let idx = (hasher.finish() as usize) % num_shards;
     debug_assert!(idx < num_shards, "Hash produced invalid shard index");

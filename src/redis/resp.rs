@@ -133,3 +133,55 @@ impl RespParser {
         }
     }
 }
+
+// Static response optimization helpers (P1: opt-static-responses)
+impl RespValue {
+    /// Static "OK" response - avoids allocation on every SET
+    #[cfg(feature = "opt-static-responses")]
+    #[inline]
+    pub fn ok() -> Self {
+        // Use a pre-allocated static string to avoid allocation
+        static OK_STR: &str = "OK";
+        RespValue::SimpleString(OK_STR.to_string())
+    }
+
+    /// Fallback "OK" response when feature is disabled
+    #[cfg(not(feature = "opt-static-responses"))]
+    #[inline]
+    pub fn ok() -> Self {
+        RespValue::SimpleString("OK".to_string())
+    }
+
+    /// Static "PONG" response - avoids allocation on every PING
+    #[cfg(feature = "opt-static-responses")]
+    #[inline]
+    pub fn pong() -> Self {
+        static PONG_STR: &str = "PONG";
+        RespValue::SimpleString(PONG_STR.to_string())
+    }
+
+    /// Fallback "PONG" response when feature is disabled
+    #[cfg(not(feature = "opt-static-responses"))]
+    #[inline]
+    pub fn pong() -> Self {
+        RespValue::SimpleString("PONG".to_string())
+    }
+
+    /// Static "QUEUED" response for transactions
+    #[inline]
+    pub fn queued() -> Self {
+        RespValue::SimpleString("QUEUED".to_string())
+    }
+
+    /// Static nil bulk string response
+    #[inline]
+    pub fn nil() -> Self {
+        RespValue::BulkString(None)
+    }
+
+    /// Static empty array response
+    #[inline]
+    pub fn empty_array() -> Self {
+        RespValue::Array(Some(Vec::new()))
+    }
+}

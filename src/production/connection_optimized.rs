@@ -10,6 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn, Instrument};
 
+// P3 optimization: Use itoa for fast integer encoding
+#[cfg(feature = "opt-itoa-encode")]
+use itoa;
+
 /// Connection configuration (from PerformanceConfig)
 #[derive(Clone)]
 pub struct ConnectionConfig {
@@ -600,6 +604,8 @@ impl OptimizedConnectionHandler {
         FastPathResult::Handled
     }
 
+    /// Encode RESP value into buffer
+    /// P3 optimization: Use itoa for fast integer encoding when opt-itoa-encode is enabled
     #[inline]
     fn encode_resp_into(value: &RespValue, buf: &mut BytesMut) {
         match value {
@@ -615,7 +621,17 @@ impl OptimizedConnectionHandler {
             }
             RespValue::Integer(n) => {
                 buf.put_u8(b':');
-                buf.extend_from_slice(n.to_string().as_bytes());
+                // P3 optimization: Use itoa for fast integer formatting
+                #[cfg(feature = "opt-itoa-encode")]
+                {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    let s = itoa_buf.format(*n);
+                    buf.extend_from_slice(s.as_bytes());
+                }
+                #[cfg(not(feature = "opt-itoa-encode"))]
+                {
+                    buf.extend_from_slice(n.to_string().as_bytes());
+                }
                 buf.extend_from_slice(b"\r\n");
             }
             RespValue::BulkString(None) => {
@@ -623,7 +639,17 @@ impl OptimizedConnectionHandler {
             }
             RespValue::BulkString(Some(data)) => {
                 buf.put_u8(b'$');
-                buf.extend_from_slice(data.len().to_string().as_bytes());
+                // P3 optimization: Use itoa for fast integer formatting
+                #[cfg(feature = "opt-itoa-encode")]
+                {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    let s = itoa_buf.format(data.len());
+                    buf.extend_from_slice(s.as_bytes());
+                }
+                #[cfg(not(feature = "opt-itoa-encode"))]
+                {
+                    buf.extend_from_slice(data.len().to_string().as_bytes());
+                }
                 buf.extend_from_slice(b"\r\n");
                 buf.extend_from_slice(data);
                 buf.extend_from_slice(b"\r\n");
@@ -633,7 +659,17 @@ impl OptimizedConnectionHandler {
             }
             RespValue::Array(Some(elements)) => {
                 buf.put_u8(b'*');
-                buf.extend_from_slice(elements.len().to_string().as_bytes());
+                // P3 optimization: Use itoa for fast integer formatting
+                #[cfg(feature = "opt-itoa-encode")]
+                {
+                    let mut itoa_buf = itoa::Buffer::new();
+                    let s = itoa_buf.format(elements.len());
+                    buf.extend_from_slice(s.as_bytes());
+                }
+                #[cfg(not(feature = "opt-itoa-encode"))]
+                {
+                    buf.extend_from_slice(elements.len().to_string().as_bytes());
+                }
                 buf.extend_from_slice(b"\r\n");
                 for elem in elements {
                     Self::encode_resp_into(elem, buf);
