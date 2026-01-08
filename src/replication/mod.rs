@@ -13,4 +13,4 @@ pub use gossip::{GossipMessage, GossipState, RoutedMessage};
 pub use gossip_router::{GossipRouter, RoutingStats, RoutingTable};
 pub use hash_ring::{HashRing, VirtualNode};
 pub use lattice::{GCounter, GSet, LamportClock, LwwRegister, ORSet, PNCounter, ReplicaId, UniqueTag, VectorClock};
-pub use state::{CrdtValue, ReplicatedValue, ReplicationDelta};
+pub use state::{CrdtTypeMismatchError, CrdtValue, ReplicatedValue, ReplicationDelta};

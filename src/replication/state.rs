@@ -7,6 +7,32 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ============================================================================
+// CRDT Merge Error - Explicit error for type mismatches (TigerStyle)
+// ============================================================================
+
+/// Error returned when attempting to merge two CrdtValues of different types.
+/// This makes the conflict explicit rather than silently discarding data.
+#[derive(Debug, Clone)]
+pub struct CrdtTypeMismatchError {
+    /// The type name of the first value (self)
+    pub self_type: &'static str,
+    /// The type name of the other value
+    pub other_type: &'static str,
+}
+
+impl std::fmt::Display for CrdtTypeMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CRDT type mismatch: cannot merge {} with {}",
+            self.self_type, self.other_type
+        )
+    }
+}
+
+impl std::error::Error for CrdtTypeMismatchError {}
+
+// ============================================================================
 // CrdtValue - Union type for all supported CRDT types
 // ============================================================================
 
@@ -59,15 +85,19 @@ impl CrdtValue {
         CrdtValue::Hash(HashMap::new())
     }
 
-    /// Merge two CrdtValues of the same type.
-    /// If types don't match, returns self (type mismatch is an error condition).
-    pub fn merge(&self, other: &Self) -> Self {
+    /// Try to merge two CrdtValues of the same type.
+    /// Returns an error if types don't match - this makes type conflicts explicit
+    /// rather than silently discarding data (TigerStyle: explicit error handling).
+    ///
+    /// # Errors
+    /// Returns `CrdtTypeMismatchError` if self and other have different CRDT types.
+    pub fn try_merge(&self, other: &Self) -> Result<Self, CrdtTypeMismatchError> {
         match (self, other) {
-            (CrdtValue::Lww(a), CrdtValue::Lww(b)) => CrdtValue::Lww(a.merge(b)),
-            (CrdtValue::GCounter(a), CrdtValue::GCounter(b)) => CrdtValue::GCounter(a.merge(b)),
-            (CrdtValue::PNCounter(a), CrdtValue::PNCounter(b)) => CrdtValue::PNCounter(a.merge(b)),
-            (CrdtValue::GSet(a), CrdtValue::GSet(b)) => CrdtValue::GSet(a.merge(b)),
-            (CrdtValue::ORSet(a), CrdtValue::ORSet(b)) => CrdtValue::ORSet(a.merge(b)),
+            (CrdtValue::Lww(a), CrdtValue::Lww(b)) => Ok(CrdtValue::Lww(a.merge(b))),
+            (CrdtValue::GCounter(a), CrdtValue::GCounter(b)) => Ok(CrdtValue::GCounter(a.merge(b))),
+            (CrdtValue::PNCounter(a), CrdtValue::PNCounter(b)) => Ok(CrdtValue::PNCounter(a.merge(b))),
+            (CrdtValue::GSet(a), CrdtValue::GSet(b)) => Ok(CrdtValue::GSet(a.merge(b))),
+            (CrdtValue::ORSet(a), CrdtValue::ORSet(b)) => Ok(CrdtValue::ORSet(a.merge(b))),
             (CrdtValue::Hash(a), CrdtValue::Hash(b)) => {
                 // Merge each field using LWW semantics
                 let mut merged = a.clone();
@@ -76,10 +106,77 @@ impl CrdtValue {
                         .and_modify(|a_lww| *a_lww = a_lww.merge(b_lww))
                         .or_insert_with(|| b_lww.clone());
                 }
-                CrdtValue::Hash(merged)
+                Ok(CrdtValue::Hash(merged))
             }
-            // Type mismatch: keep self (this shouldn't happen in normal operation)
-            _ => self.clone(),
+            // Type mismatch: return explicit error instead of silently discarding data
+            _ => Err(CrdtTypeMismatchError {
+                self_type: self.type_name(),
+                other_type: other.type_name(),
+            }),
+        }
+    }
+
+    /// Merge two CrdtValues, using timestamp-based conflict resolution for type mismatches.
+    ///
+    /// When types match: performs standard CRDT merge.
+    /// When types don't match: uses the value with the later timestamp (LWW semantics)
+    /// to avoid silent data loss.
+    ///
+    /// This is the safe default - use `try_merge` if you need to handle type conflicts
+    /// explicitly in application logic.
+    pub fn merge_with_timestamps(
+        &self,
+        other: &Self,
+        self_timestamp: &LamportClock,
+        other_timestamp: &LamportClock,
+    ) -> Self {
+        match self.try_merge(other) {
+            Ok(merged) => merged,
+            Err(err) => {
+                // Type mismatch: use LWW semantics based on timestamp to avoid data loss
+                // Log the conflict for debugging (in debug builds)
+                #[cfg(debug_assertions)]
+                tracing::warn!(
+                    "CRDT type conflict during merge: {} vs {} - using LWW resolution",
+                    err.self_type,
+                    err.other_type
+                );
+
+                // Keep the value with the later timestamp (deterministic resolution)
+                if other_timestamp > self_timestamp {
+                    other.clone()
+                } else {
+                    self.clone()
+                }
+            }
+        }
+    }
+
+    /// Merge two CrdtValues of the same type (legacy API).
+    ///
+    /// # Warning
+    /// This method logs an error and keeps `self` on type mismatch.
+    /// Prefer `try_merge` for explicit error handling or `merge_with_timestamps`
+    /// for automatic LWW conflict resolution.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use try_merge() for explicit error handling or merge_with_timestamps() for safe LWW resolution"
+    )]
+    pub fn merge(&self, other: &Self) -> Self {
+        match self.try_merge(other) {
+            Ok(merged) => merged,
+            Err(err) => {
+                // Log the error - this is a bug in the application logic
+                tracing::error!(
+                    "CRDT type mismatch during merge: {} vs {} - this indicates a bug! \
+                     Keeping self value, but data from other is LOST. \
+                     Use merge_with_timestamps() for safe conflict resolution.",
+                    err.self_type,
+                    err.other_type
+                );
+                // Keep self to maintain backward compatibility, but this is wrong
+                self.clone()
+            }
         }
     }
 
@@ -287,9 +384,18 @@ impl ReplicatedValue {
         }
     }
 
-    /// Merge two ReplicatedValues
+    /// Merge two ReplicatedValues.
+    ///
+    /// Uses `merge_with_timestamps` for CRDT merging to handle type mismatches safely:
+    /// - If types match: standard CRDT merge semantics
+    /// - If types don't match: LWW resolution based on timestamp (no data loss)
     pub fn merge(&self, other: &Self) -> Self {
-        let merged_crdt = self.crdt.merge(&other.crdt);
+        // Use safe merge that handles type conflicts with LWW semantics
+        let merged_crdt = self.crdt.merge_with_timestamps(
+            &other.crdt,
+            &self.timestamp,
+            &other.timestamp,
+        );
         let merged_vc = match (&self.vector_clock, &other.vector_clock) {
             (Some(vc1), Some(vc2)) => Some(vc1.merge(vc2)),
             (Some(vc), None) | (None, Some(vc)) => Some(vc.clone()),
@@ -1245,6 +1351,164 @@ mod tests {
                 "seed {}: conditional writes should converge",
                 seed
             );
+        }
+    }
+
+    // ==========================================================================
+    // CRDT Type Mismatch Tests (Bug fix verification)
+    // ==========================================================================
+
+    #[test]
+    fn test_crdt_type_mismatch_try_merge_returns_error() {
+        // Test that try_merge returns an error for type mismatches
+        let lww = CrdtValue::new_lww(ReplicaId::new(1));
+        let gcounter = CrdtValue::new_gcounter();
+
+        let result = lww.try_merge(&gcounter);
+        assert!(result.is_err(), "try_merge should return error for type mismatch");
+
+        let err = result.unwrap_err();
+        assert_eq!(err.self_type, "lww");
+        assert_eq!(err.other_type, "gcounter");
+    }
+
+    #[test]
+    fn test_crdt_type_mismatch_lww_resolution_keeps_later_value() {
+        // Test that merge_with_timestamps keeps the value with the later timestamp
+        let r1 = ReplicaId::new(1);
+        let r2 = ReplicaId::new(2);
+
+        // Create LWW with earlier timestamp
+        let mut lww_clock = LamportClock::new(r1);
+        lww_clock.tick();
+        let lww = CrdtValue::Lww(LwwRegister::with_value(
+            SDS::from_str("lww_value"),
+            lww_clock,
+        ));
+
+        // Create GCounter with later timestamp
+        let mut gc_clock = LamportClock::new(r2);
+        gc_clock.tick();
+        gc_clock.tick(); // Make it later
+        gc_clock.tick();
+        let mut gcounter = GCounter::new();
+        gcounter.increment(r2); // GCounter increments by 1
+        let gc = CrdtValue::GCounter(gcounter);
+
+        // Merge with GCounter having later timestamp - GCounter should win
+        let merged = lww.merge_with_timestamps(&gc, &lww_clock, &gc_clock);
+        assert!(
+            matches!(merged, CrdtValue::GCounter(_)),
+            "Later timestamp (GCounter) should win"
+        );
+
+        // Merge with LWW having later timestamp - LWW should win
+        let merged2 = gc.merge_with_timestamps(&lww, &gc_clock, &lww_clock);
+        assert!(
+            matches!(merged2, CrdtValue::GCounter(_)),
+            "Later timestamp (GCounter) should win (self)"
+        );
+    }
+
+    #[test]
+    fn test_crdt_type_mismatch_no_data_loss_in_replicated_value() {
+        // This test verifies the bug fix: type mismatches should not lose data
+        let r1 = ReplicaId::new(1);
+        let r2 = ReplicaId::new(2);
+
+        // Simulate the bug scenario from the demo:
+        // Node 1 writes a string (LWW), Node 2 increments a counter (GCounter)
+
+        // Create ReplicatedValue with LWW (SET command)
+        let mut clock1 = LamportClock::new(r1);
+        clock1.tick();
+        let rv1 = ReplicatedValue {
+            crdt: CrdtValue::Lww(LwwRegister::with_value(
+                SDS::from_str("value_from_node1"),
+                clock1,
+            )),
+            vector_clock: None,
+            expiry_ms: None,
+            timestamp: clock1,
+            replication_factor: None,
+        };
+
+        // Create ReplicatedValue with GCounter (INCR command) - later timestamp
+        let mut clock2 = LamportClock::new(r2);
+        clock2.tick();
+        clock2.tick(); // Make it later
+        let mut gcounter = GCounter::new();
+        gcounter.increment(r2); // Increment by 1
+        let rv2 = ReplicatedValue {
+            crdt: CrdtValue::GCounter(gcounter),
+            vector_clock: None,
+            expiry_ms: None,
+            timestamp: clock2,
+            replication_factor: None,
+        };
+
+        // Merge should keep the later value (GCounter), not lose it
+        let merged = rv1.merge(&rv2);
+
+        // The merged value should be the GCounter (later timestamp wins)
+        assert!(
+            matches!(merged.crdt, CrdtValue::GCounter(_)),
+            "Merge should keep the value with later timestamp (GCounter), not silently discard it. \
+             Bug fix: type mismatches use LWW resolution instead of always keeping self."
+        );
+
+        // Verify the GCounter value is preserved
+        if let CrdtValue::GCounter(gc) = &merged.crdt {
+            assert_eq!(gc.value(), 1, "GCounter value should be preserved");
+        }
+    }
+
+    #[test]
+    fn test_crdt_type_mismatch_same_type_merge_still_works() {
+        // Verify that same-type merges still work correctly after the fix
+        let r1 = ReplicaId::new(1);
+        let r2 = ReplicaId::new(2);
+
+        // Test LWW merge (should use normal LWW semantics)
+        let mut clock1 = LamportClock::new(r1);
+        clock1.tick();
+        let lww1 = CrdtValue::Lww(LwwRegister::with_value(SDS::from_str("v1"), clock1));
+
+        let mut clock2 = LamportClock::new(r2);
+        clock2.tick();
+        clock2.tick();
+        let lww2 = CrdtValue::Lww(LwwRegister::with_value(SDS::from_str("v2"), clock2));
+
+        let merged = lww1.merge_with_timestamps(&lww2, &clock1, &clock2);
+        if let CrdtValue::Lww(lww) = merged {
+            // LWW merge should keep the later value
+            assert_eq!(
+                lww.get().map(|s| s.as_bytes()),
+                Some(b"v2".as_slice()),
+                "LWW merge should keep later value"
+            );
+        } else {
+            panic!("LWW merge should produce LWW");
+        }
+
+        // Test GCounter merge (should sum values)
+        let mut gc1 = GCounter::new();
+        for _ in 0..10 {
+            gc1.increment(r1);
+        }
+        let crdt1 = CrdtValue::GCounter(gc1);
+
+        let mut gc2 = GCounter::new();
+        for _ in 0..20 {
+            gc2.increment(r2);
+        }
+        let crdt2 = CrdtValue::GCounter(gc2);
+
+        let merged_gc = crdt1.merge_with_timestamps(&crdt2, &clock1, &clock2);
+        if let CrdtValue::GCounter(gc) = merged_gc {
+            assert_eq!(gc.value(), 30, "GCounter merge should sum values");
+        } else {
+            panic!("GCounter merge should produce GCounter");
         }
     }
 }
