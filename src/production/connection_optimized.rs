@@ -14,6 +14,24 @@ use tracing::{debug, error, info, warn, Instrument};
 #[cfg(feature = "opt-itoa-encode")]
 use itoa;
 
+// P5 optimization: Use atoi for fast integer parsing
+#[cfg(feature = "opt-atoi-parse")]
+use atoi;
+
+/// P5 helper: Parse usize from bytes without UTF-8 validation overhead
+#[cfg(feature = "opt-atoi-parse")]
+#[inline]
+fn parse_usize_fast(bytes: &[u8]) -> Option<usize> {
+    atoi::atoi::<usize>(bytes)
+}
+
+/// P5 fallback: Parse usize via UTF-8 string conversion
+#[cfg(not(feature = "opt-atoi-parse"))]
+#[inline]
+fn parse_usize_fast(bytes: &[u8]) -> Option<usize> {
+    std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
 /// Connection configuration (from PerformanceConfig)
 #[derive(Clone)]
 pub struct ConnectionConfig {
@@ -313,11 +331,8 @@ impl OptimizedConnectionHandler {
 
             // Parse key length
             let len_str = &after_header[1..len_end];
-            let Ok(key_len) = std::str::from_utf8(len_str)
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .ok_or(())
-            else {
+            // P5: Fast integer parsing
+            let Ok(key_len) = parse_usize_fast(len_str).ok_or(()) else {
                 break; // Invalid, stop
             };
 
@@ -377,11 +392,8 @@ impl OptimizedConnectionHandler {
 
             // Parse key length
             let key_len_str = &after_header[1..key_len_crlf + 1];
-            let Ok(key_len) = std::str::from_utf8(key_len_str)
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .ok_or(())
-            else {
+            // P5: Fast integer parsing
+            let Ok(key_len) = parse_usize_fast(key_len_str).ok_or(()) else {
                 break; // Invalid, stop
             };
 
@@ -405,11 +417,8 @@ impl OptimizedConnectionHandler {
             };
 
             let val_len_str = &after_key[..val_len_crlf];
-            let Ok(val_len) = std::str::from_utf8(val_len_str)
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .ok_or(())
-            else {
+            // P5: Fast integer parsing
+            let Ok(val_len) = parse_usize_fast(val_len_str).ok_or(()) else {
                 break; // Invalid
             };
 
@@ -486,11 +495,8 @@ impl OptimizedConnectionHandler {
 
         // Parse key length
         let len_str = &after_header[1..len_end];
-        let Ok(key_len) = std::str::from_utf8(len_str)
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or(())
-        else {
+        // P5: Fast integer parsing
+        let Ok(key_len) = parse_usize_fast(len_str).ok_or(()) else {
             return FastPathResult::NotFastPath; // Invalid length
         };
 
@@ -542,11 +548,8 @@ impl OptimizedConnectionHandler {
         };
 
         let key_len_str = &after_header[1..key_len_crlf + 1];
-        let Ok(key_len) = std::str::from_utf8(key_len_str)
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or(())
-        else {
+        // P5: Fast integer parsing
+        let Ok(key_len) = parse_usize_fast(key_len_str).ok_or(()) else {
             return FastPathResult::NotFastPath;
         };
 
@@ -570,11 +573,8 @@ impl OptimizedConnectionHandler {
         };
 
         let val_len_str = &after_key[..val_len_crlf];
-        let Ok(val_len) = std::str::from_utf8(val_len_str)
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or(())
-        else {
+        // P5: Fast integer parsing
+        let Ok(val_len) = parse_usize_fast(val_len_str).ok_or(()) else {
             return FastPathResult::NotFastPath;
         };
 

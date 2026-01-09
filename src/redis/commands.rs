@@ -4031,7 +4031,7 @@ impl CommandExecutor {
                 // First collect all members from the sorted set
                 let raw_members: Option<Vec<(String, f64)>> = match self.get_value(key) {
                     Some(Value::SortedSet(zs)) => {
-                        Some(zs.iter().map(|(m, s)| (m.clone(), *s)).collect())
+                        Some(zs.iter().map(|(m, s)| (m.to_string(), s)).collect())
                     }
                     Some(_) => {
                         return RespValue::Error(

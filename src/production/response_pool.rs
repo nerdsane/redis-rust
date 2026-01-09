@@ -17,6 +17,7 @@
 //! - Eliminates channel allocation overhead (main bottleneck identified in profiling)
 //! - Pool is lock-free using crossbeam::ArrayQueue
 //! - Slots use parking_lot::Mutex for fast synchronization
+//! - P6 optimization: Single lock for value+waker reduces contention
 
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
@@ -25,20 +26,25 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+/// P6: Combined state for single-lock optimization
+struct SlotState<T> {
+    value: Option<T>,
+    waker: Option<Waker>,
+}
+
 /// A reusable response slot that can hold a single value
 ///
 /// Thread-safe and can be awaited from async code.
+/// P6 optimization: Uses single lock for value+waker.
 pub struct ResponseSlot<T> {
-    /// The response value (None until set)
-    value: Mutex<Option<T>>,
-    /// Waker to notify when value is ready
-    waker: Mutex<Option<Waker>>,
+    /// Combined state under single lock (P6 optimization)
+    state: Mutex<SlotState<T>>,
 }
 
 impl<T> std::fmt::Debug for ResponseSlot<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponseSlot")
-            .field("has_value", &self.value.lock().is_some())
+            .field("has_value", &self.state.lock().value.is_some())
             .finish()
     }
 }
@@ -48,39 +54,46 @@ impl<T> ResponseSlot<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
-            value: Mutex::new(None),
-            waker: Mutex::new(None),
+            state: Mutex::new(SlotState {
+                value: None,
+                waker: None,
+            }),
         }
     }
 
     /// Send a response value to this slot
     ///
     /// This wakes any waiting receiver.
+    /// P6 optimization: Single lock for value+waker.
     #[inline]
     pub fn send(&self, value: T) {
-        // Store the value
-        *self.value.lock() = Some(value);
-
-        // Wake the receiver if waiting
-        if let Some(waker) = self.waker.lock().take() {
-            waker.wake();
+        let waker = {
+            let mut state = self.state.lock();
+            state.value = Some(value);
+            state.waker.take()
+        };
+        // Wake outside the lock to avoid holding it during wake
+        if let Some(w) = waker {
+            w.wake();
         }
     }
 
     /// Reset the slot for reuse
     ///
     /// Must be called before returning to pool.
+    /// P6 optimization: Single lock for value+waker.
     #[inline]
     pub fn reset(&self) {
-        *self.value.lock() = None;
-        *self.waker.lock() = None;
+        let mut state = self.state.lock();
+        state.value = None;
+        state.waker = None;
     }
 
     /// Take the value if ready (non-blocking)
     #[inline]
     #[allow(dead_code)]
     pub fn try_recv(&self) -> Option<T> {
-        self.value.lock().take()
+        self.state.lock().value.take()
     }
 }
 
@@ -98,21 +111,18 @@ pub struct ResponseFuture<T> {
 impl<T> Future for ResponseFuture<T> {
     type Output = T;
 
+    /// P6 optimization: Single lock acquisition instead of 3
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.slot.state.lock();
+
         // Try to take the value
-        if let Some(value) = self.slot.value.lock().take() {
+        if let Some(value) = state.value.take() {
             return Poll::Ready(value);
         }
 
-        // Store waker for notification
-        *self.slot.waker.lock() = Some(cx.waker().clone());
-
-        // Check again after storing waker (avoid race)
-        if let Some(value) = self.slot.value.lock().take() {
-            Poll::Ready(value)
-        } else {
-            Poll::Pending
-        }
+        // Store waker for notification (value not ready yet)
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 

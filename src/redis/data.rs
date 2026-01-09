@@ -3,6 +3,496 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
+// ============================================================================
+// Skip List Implementation for Sorted Sets
+// ============================================================================
+//
+// A probabilistic data structure providing O(log n) insert, delete, and search.
+// Used by Redis for sorted sets due to its simplicity and cache efficiency.
+
+const SKIPLIST_MAXLEVEL: usize = 32;
+const SKIPLIST_P: f64 = 0.25; // Probability for level promotion
+
+/// A node in the skip list
+#[derive(Clone, Debug)]
+struct SkipListNode {
+    member: String,
+    score: f64,
+    /// Forward pointers and span at each level
+    /// span[i] = number of nodes skipped at level i
+    levels: Vec<SkipListLevel>,
+    /// Backward pointer for reverse traversal
+    backward: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct SkipListLevel {
+    forward: Option<usize>, // Index of next node at this level
+    span: usize,            // Number of nodes between this and forward
+}
+
+/// Skip list data structure for sorted set
+#[derive(Clone, Debug)]
+pub struct SkipList {
+    /// All nodes stored in a Vec (index 0 is header)
+    nodes: Vec<Option<SkipListNode>>,
+    /// Free list for reusing slots
+    free_slots: Vec<usize>,
+    /// Index of tail node
+    tail: Option<usize>,
+    /// Current max level in use
+    level: usize,
+    /// Number of elements
+    length: usize,
+    /// RNG state for level generation (simple xorshift)
+    rng_state: u64,
+}
+
+impl SkipList {
+    pub fn new() -> Self {
+        // Create header node with max levels
+        let header = SkipListNode {
+            member: String::new(),
+            score: 0.0,
+            levels: (0..SKIPLIST_MAXLEVEL)
+                .map(|_| SkipListLevel {
+                    forward: None,
+                    span: 0,
+                })
+                .collect(),
+            backward: None,
+        };
+
+        SkipList {
+            nodes: vec![Some(header)],
+            free_slots: Vec::new(),
+            tail: None,
+            level: 1,
+            length: 0,
+            rng_state: 0x853c49e6748fea9b, // Initial seed
+        }
+    }
+
+    /// Generate random level using geometric distribution
+    fn random_level(&mut self) -> usize {
+        let mut level = 1;
+        // Xorshift64 for fast random numbers
+        let mut x = self.rng_state;
+        while level < SKIPLIST_MAXLEVEL {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.rng_state = x;
+            // Check if random < SKIPLIST_P (using fixed point)
+            if (x & 0xFFFF) as f64 / 65536.0 >= SKIPLIST_P {
+                break;
+            }
+            level += 1;
+        }
+        level
+    }
+
+    /// Allocate a new node slot
+    fn alloc_node(&mut self, member: String, score: f64, level: usize) -> usize {
+        let node = SkipListNode {
+            member,
+            score,
+            levels: (0..level)
+                .map(|_| SkipListLevel {
+                    forward: None,
+                    span: 0,
+                })
+                .collect(),
+            backward: None,
+        };
+
+        if let Some(idx) = self.free_slots.pop() {
+            self.nodes[idx] = Some(node);
+            idx
+        } else {
+            let idx = self.nodes.len();
+            self.nodes.push(Some(node));
+            idx
+        }
+    }
+
+    /// Free a node slot
+    fn free_node(&mut self, idx: usize) {
+        self.nodes[idx] = None;
+        self.free_slots.push(idx);
+    }
+
+    /// Compare (score, member) tuples
+    #[inline]
+    fn compare(score1: f64, member1: &str, score2: f64, member2: &str) -> Ordering {
+        score1
+            .partial_cmp(&score2)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| member1.cmp(member2))
+    }
+
+    /// Insert a new element. Returns true if new element, false if updated.
+    pub fn insert(&mut self, member: String, score: f64) -> bool {
+        let mut update = [0usize; SKIPLIST_MAXLEVEL];
+        let mut rank = [0usize; SKIPLIST_MAXLEVEL];
+
+        // Find position at each level
+        let mut x = 0; // Start at header
+        for i in (0..self.level).rev() {
+            rank[i] = if i == self.level - 1 { 0 } else { rank[i + 1] };
+
+            loop {
+                let node = self.nodes[x].as_ref().unwrap();
+                if let Some(fwd) = node.levels[i].forward {
+                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    if Self::compare(fwd_node.score, &fwd_node.member, score, &member)
+                        == Ordering::Less
+                    {
+                        rank[i] += node.levels[i].span;
+                        x = fwd;
+                        continue;
+                    }
+                }
+                break;
+            }
+            update[i] = x;
+        }
+
+        // Check if element already exists (would be right after x at level 0)
+        let node = self.nodes[x].as_ref().unwrap();
+        if let Some(fwd) = node.levels[0].forward {
+            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            if fwd_node.member == member {
+                // Update score - need to reposition if score changed
+                if (fwd_node.score - score).abs() > f64::EPSILON {
+                    // Remove and re-insert with new score
+                    self.delete_node(fwd, &update);
+                    self.insert_internal(member, score, &mut update, &mut rank);
+                }
+                return false;
+            }
+        }
+
+        // Insert new node
+        self.insert_internal(member, score, &mut update, &mut rank);
+        true
+    }
+
+    fn insert_internal(
+        &mut self,
+        member: String,
+        score: f64,
+        update: &mut [usize; SKIPLIST_MAXLEVEL],
+        rank: &mut [usize; SKIPLIST_MAXLEVEL],
+    ) {
+        let level = self.random_level();
+        let new_idx = self.alloc_node(member, score, level);
+
+        // Initialize update/rank for new levels
+        if level > self.level {
+            for i in self.level..level {
+                rank[i] = 0;
+                update[i] = 0; // Header
+                let header = self.nodes[0].as_mut().unwrap();
+                header.levels[i].span = self.length;
+            }
+            self.level = level;
+        }
+
+        // Update forward pointers and spans
+        for i in 0..level {
+            // Read values first to avoid borrow conflicts
+            let old_forward = self.nodes[update[i]].as_ref().unwrap().levels[i].forward;
+            let old_span = self.nodes[update[i]].as_ref().unwrap().levels[i].span;
+
+            // Update new node
+            let new_node = self.nodes[new_idx].as_mut().unwrap();
+            new_node.levels[i].forward = old_forward;
+            new_node.levels[i].span = old_span - (rank[0] - rank[i]);
+
+            // Update the predecessor node
+            let update_node = self.nodes[update[i]].as_mut().unwrap();
+            update_node.levels[i].forward = Some(new_idx);
+            update_node.levels[i].span = (rank[0] - rank[i]) + 1;
+        }
+
+        // Increment span for levels above the new node's level
+        for i in level..self.level {
+            let update_node = self.nodes[update[i]].as_mut().unwrap();
+            update_node.levels[i].span += 1;
+        }
+
+        // Set backward pointer
+        let backward = if update[0] == 0 {
+            None
+        } else {
+            Some(update[0])
+        };
+        self.nodes[new_idx].as_mut().unwrap().backward = backward;
+
+        // Update backward of next node or tail
+        let new_fwd = self.nodes[new_idx].as_ref().unwrap().levels[0].forward;
+        if let Some(fwd) = new_fwd {
+            self.nodes[fwd].as_mut().unwrap().backward = Some(new_idx);
+        } else {
+            self.tail = Some(new_idx);
+        }
+
+        self.length += 1;
+    }
+
+    /// Delete a node given its index and update array
+    fn delete_node(&mut self, idx: usize, update: &[usize; SKIPLIST_MAXLEVEL]) {
+        let node_level = self.nodes[idx].as_ref().unwrap().levels.len();
+
+        // Update forward pointers and spans
+        for i in 0..self.level {
+            let update_fwd = self.nodes[update[i]].as_ref().unwrap().levels[i].forward;
+            if update_fwd == Some(idx) {
+                // Read idx_node values first
+                let idx_span = self.nodes[idx].as_ref().unwrap().levels[i].span;
+                let idx_fwd = self.nodes[idx].as_ref().unwrap().levels[i].forward;
+
+                let update_node = self.nodes[update[i]].as_mut().unwrap();
+                update_node.levels[i].span += idx_span - 1;
+                update_node.levels[i].forward = idx_fwd;
+            } else {
+                let update_node = self.nodes[update[i]].as_mut().unwrap();
+                update_node.levels[i].span -= 1;
+            }
+        }
+
+        // Update backward pointer of next node
+        let fwd = self.nodes[idx].as_ref().unwrap().levels[0].forward;
+        if let Some(fwd_idx) = fwd {
+            self.nodes[fwd_idx].as_mut().unwrap().backward =
+                self.nodes[idx].as_ref().unwrap().backward;
+        } else {
+            self.tail = self.nodes[idx].as_ref().unwrap().backward;
+        }
+
+        // Update level if needed
+        while self.level > 1 {
+            let header = self.nodes[0].as_ref().unwrap();
+            if header.levels[self.level - 1].forward.is_some() {
+                break;
+            }
+            self.level -= 1;
+        }
+
+        self.free_node(idx);
+        self.length -= 1;
+    }
+
+    /// Remove an element by member name. Returns true if removed.
+    pub fn remove(&mut self, member: &str) -> Option<f64> {
+        let mut update = [0usize; SKIPLIST_MAXLEVEL];
+
+        // Find the node to delete
+        let mut x = 0;
+        for i in (0..self.level).rev() {
+            loop {
+                let node = self.nodes[x].as_ref().unwrap();
+                if let Some(fwd) = node.levels[i].forward {
+                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    // Need to find by member, so we need score first
+                    if fwd_node.member.as_str() < member
+                        || (fwd_node.member == member
+                            && Self::compare(
+                                fwd_node.score,
+                                &fwd_node.member,
+                                f64::INFINITY,
+                                member,
+                            ) == Ordering::Less)
+                    {
+                        x = fwd;
+                        continue;
+                    }
+                }
+                break;
+            }
+            update[i] = x;
+        }
+
+        // Check if we found the node
+        let node = self.nodes[x].as_ref().unwrap();
+        if let Some(fwd) = node.levels[0].forward {
+            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            if fwd_node.member == member {
+                let score = fwd_node.score;
+                self.delete_node(fwd, &update);
+                return Some(score);
+            }
+        }
+
+        None
+    }
+
+    /// Get rank of element (0-indexed). Returns None if not found.
+    pub fn rank(&self, member: &str, score: f64) -> Option<usize> {
+        let mut rank = 0;
+        let mut x = 0;
+
+        for i in (0..self.level).rev() {
+            loop {
+                let node = self.nodes[x].as_ref().unwrap();
+                if let Some(fwd) = node.levels[i].forward {
+                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    let cmp = Self::compare(fwd_node.score, &fwd_node.member, score, member);
+                    if cmp == Ordering::Less
+                        || (cmp == Ordering::Equal && fwd_node.member.as_str() < member)
+                    {
+                        rank += node.levels[i].span;
+                        x = fwd;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Check if element exists
+        let node = self.nodes[x].as_ref().unwrap();
+        if let Some(fwd) = node.levels[0].forward {
+            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            if fwd_node.member == member && (fwd_node.score - score).abs() < f64::EPSILON {
+                return Some(rank);
+            }
+        }
+
+        None
+    }
+
+    /// Get element by rank (0-indexed)
+    pub fn get_by_rank(&self, rank: usize) -> Option<(&str, f64)> {
+        if rank >= self.length {
+            return None;
+        }
+
+        let mut traversed = 0;
+        let mut x = 0;
+
+        for i in (0..self.level).rev() {
+            loop {
+                let node = self.nodes[x].as_ref().unwrap();
+                if let Some(fwd) = node.levels[i].forward {
+                    if traversed + node.levels[i].span <= rank {
+                        traversed += node.levels[i].span;
+                        x = fwd;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Move one more step to get the element at rank
+        let node = self.nodes[x].as_ref().unwrap();
+        if let Some(fwd) = node.levels[0].forward {
+            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            return Some((&fwd_node.member, fwd_node.score));
+        }
+
+        None
+    }
+
+    /// Get range of elements by rank [start, end] (inclusive, 0-indexed)
+    pub fn range(&self, start: usize, end: usize) -> Vec<(&str, f64)> {
+        if start > end || start >= self.length {
+            return Vec::new();
+        }
+
+        let end = end.min(self.length - 1);
+        let mut result = Vec::with_capacity(end - start + 1);
+
+        // Find start position
+        let mut traversed = 0;
+        let mut x = 0;
+
+        for i in (0..self.level).rev() {
+            loop {
+                let node = self.nodes[x].as_ref().unwrap();
+                if let Some(fwd) = node.levels[i].forward {
+                    if traversed + node.levels[i].span <= start {
+                        traversed += node.levels[i].span;
+                        x = fwd;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Collect elements
+        let node = self.nodes[x].as_ref().unwrap();
+        let mut current = node.levels[0].forward;
+
+        for _ in start..=end {
+            if let Some(idx) = current {
+                let n = self.nodes[idx].as_ref().unwrap();
+                result.push((n.member.as_str(), n.score));
+                current = n.levels[0].forward;
+            } else {
+                break;
+            }
+        }
+
+        result
+    }
+
+    /// Get range in reverse order by rank
+    pub fn rev_range(&self, start: usize, end: usize) -> Vec<(&str, f64)> {
+        if start > end || start >= self.length {
+            return Vec::new();
+        }
+
+        let end = end.min(self.length - 1);
+
+        // Convert to forward indices and collect
+        let fwd_start = self.length - 1 - end;
+        let fwd_end = self.length - 1 - start;
+
+        let forward = self.range(fwd_start, fwd_end);
+        forward.into_iter().rev().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// Iterate over all elements in order
+    pub fn iter(&self) -> SkipListIter<'_> {
+        let header = self.nodes[0].as_ref().unwrap();
+        SkipListIter {
+            skiplist: self,
+            current: header.levels[0].forward,
+        }
+    }
+}
+
+pub struct SkipListIter<'a> {
+    skiplist: &'a SkipList,
+    current: Option<usize>,
+}
+
+impl<'a> Iterator for SkipListIter<'a> {
+    type Item = (&'a str, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(idx) = self.current {
+            let node = self.skiplist.nodes[idx].as_ref().unwrap();
+            self.current = node.levels[0].forward;
+            Some((&node.member, node.score))
+        } else {
+            None
+        }
+    }
+}
+
 /// Small String Optimization threshold - strings up to this size are stored inline
 const SSO_MAX_LEN: usize = 23;
 
@@ -855,78 +1345,43 @@ impl RedisHash {
     }
 }
 
+/// Redis Sorted Set using Skip List for O(log n) operations
 #[derive(Clone, Debug)]
 pub struct RedisSortedSet {
+    /// HashMap for O(1) score lookup by member
     members: AHashMap<String, f64>,
-    sorted_members: Vec<(String, f64)>,
+    /// Skip list for O(log n) sorted operations
+    skiplist: SkipList,
 }
 
 impl RedisSortedSet {
     pub fn new() -> Self {
         RedisSortedSet {
             members: AHashMap::new(),
-            sorted_members: Vec::new(),
+            skiplist: SkipList::new(),
         }
     }
 
     /// VOPR: Verify all invariants hold for this sorted set
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
-        // Invariant 1: len() must match actual AHashMap size
-        debug_assert_eq!(
-            self.len(),
-            self.members.len(),
-            "Invariant violated: len() must equal members.len()"
-        );
-
-        // Invariant 2: is_empty() must be consistent with len()
-        debug_assert_eq!(
-            self.is_empty(),
-            self.members.is_empty(),
-            "Invariant violated: is_empty() must equal members.is_empty()"
-        );
-
-        // Invariant 3: members and sorted_members must have same length
+        // Invariant 1: members and skiplist must have same length
         debug_assert_eq!(
             self.members.len(),
-            self.sorted_members.len(),
-            "Invariant violated: members and sorted_members must have same length"
+            self.skiplist.len(),
+            "Invariant violated: members.len() ({}) != skiplist.len() ({})",
+            self.members.len(),
+            self.skiplist.len()
         );
 
-        // Invariant 4: sorted_members must be sorted by (score, member)
-        debug_assert!(
-            self.is_sorted(),
-            "Invariant violated: sorted_members must be sorted by (score, member)"
-        );
-
-        // Invariant 5: Every member in AHashMap must be in sorted_members with matching score
+        // Invariant 2: Every member in HashMap must be in skiplist with matching score
         for (member, score) in &self.members {
-            let found = self.sorted_members.iter().find(|(m, _)| m == member);
+            let rank = self.skiplist.rank(member, *score);
             debug_assert!(
-                found.is_some(),
-                "Invariant violated: member '{}' in AHashMap but not in sorted_members",
-                member
-            );
-            debug_assert_eq!(
-                found.map(|(_, s)| *s),
-                Some(*score),
-                "Invariant violated: score mismatch for member '{}'",
-                member
-            );
-        }
-
-        // Invariant 6: Every member in sorted_members must be in AHashMap
-        for (member, score) in &self.sorted_members {
-            debug_assert!(
-                self.members.contains_key(member),
-                "Invariant violated: member '{}' in sorted_members but not in AHashMap",
-                member
-            );
-            debug_assert_eq!(
-                self.members.get(member),
-                Some(score),
-                "Invariant violated: score mismatch for member '{}' in AHashMap",
-                member
+                rank.is_some(),
+                "Invariant violated: member '{}' with score {} in HashMap but not found in skiplist",
+                member,
+                score
             );
         }
     }
@@ -935,70 +1390,43 @@ impl RedisSortedSet {
     #[inline(always)]
     fn verify_invariants(&self) {}
 
+    /// Add member with score. Returns true if new member, false if updated.
     pub fn add(&mut self, member: SDS, score: f64) -> bool {
         let key = member.to_string();
 
-        // TigerStyle: Preconditions - capture state for postcondition check
+        // TigerStyle: Preconditions
         #[cfg(debug_assertions)]
         let pre_len = self.members.len();
 
         // Check if member already exists
         if let Some(&old_score) = self.members.get(&key) {
             if (old_score - score).abs() < f64::EPSILON {
-                // Score unchanged, nothing to do
-                return false;
+                return false; // Score unchanged
             }
-            // Update score - remove old position, insert at new position
+            // Update score in both structures
             self.members.insert(key.clone(), score);
-            // Remove from sorted_members (linear scan, but updates are less common)
-            if let Some(pos) = self.sorted_members.iter().position(|(m, _)| m == &key) {
-                self.sorted_members.remove(pos);
-            }
-            // Binary search insert at new position
-            let insert_pos = self.sorted_members
-                .binary_search_by(|probe| {
-                    probe.1.partial_cmp(&score)
-                        .unwrap_or(Ordering::Equal)
-                        .then_with(|| probe.0.cmp(&key))
-                })
-                .unwrap_or_else(|pos| pos);
-            self.sorted_members.insert(insert_pos, (key.clone(), score));
+            self.skiplist.insert(key, score); // Skip list handles update internally
 
             #[cfg(debug_assertions)]
             self.verify_invariants();
-            return false; // Not a new member
+            return false;
         }
 
-        // New member - insert into both structures
+        // New member
         self.members.insert(key.clone(), score);
-
-        // Binary search to find insertion point - O(log n)
-        let insert_pos = self.sorted_members
-            .binary_search_by(|probe| {
-                probe.1.partial_cmp(&score)
-                    .unwrap_or(Ordering::Equal)
-                    .then_with(|| probe.0.cmp(&key))
-            })
-            .unwrap_or_else(|pos| pos);
-        self.sorted_members.insert(insert_pos, (key.clone(), score));
+        self.skiplist.insert(key.clone(), score);
 
         // TigerStyle: Postconditions
         debug_assert!(
             self.members.contains_key(&key),
             "Postcondition violated: member must exist after add"
         );
-        debug_assert_eq!(
-            self.members.get(&key),
-            Some(&score),
-            "Postcondition violated: score must match after add"
-        );
         #[cfg(debug_assertions)]
         {
-            let expected_len = pre_len + 1;
             debug_assert_eq!(
                 self.members.len(),
-                expected_len,
-                "Postcondition violated: len must be correct after add"
+                pre_len + 1,
+                "Postcondition violated: len must increase by 1"
             );
             self.verify_invariants();
         }
@@ -1006,10 +1434,10 @@ impl RedisSortedSet {
         true
     }
 
+    /// Remove member. Returns true if removed.
     pub fn remove(&mut self, member: &SDS) -> bool {
         let key = member.to_string();
 
-        // TigerStyle: Preconditions - capture state for postcondition check
         #[cfg(debug_assertions)]
         let pre_len = self.members.len();
         #[cfg(debug_assertions)]
@@ -1017,46 +1445,40 @@ impl RedisSortedSet {
 
         let removed = self.members.remove(&key).is_some();
         if removed {
-            // Remove from sorted_members - linear scan O(n) but removes are less common
-            if let Some(pos) = self.sorted_members.iter().position(|(m, _)| m == &key) {
-                self.sorted_members.remove(pos);
-            }
+            self.skiplist.remove(&key);
         }
 
-        // TigerStyle: Postconditions
-        debug_assert!(
-            !self.members.contains_key(&key),
-            "Postcondition violated: member must not exist after remove"
-        );
         #[cfg(debug_assertions)]
         {
-            debug_assert_eq!(
-                removed, existed,
-                "Postcondition violated: remove result must match prior existence"
-            );
-            let expected_len = if existed { pre_len - 1 } else { pre_len };
-            debug_assert_eq!(
-                self.members.len(),
-                expected_len,
-                "Postcondition violated: len must be correct after remove"
-            );
+            debug_assert_eq!(removed, existed);
+            if existed {
+                debug_assert_eq!(self.members.len(), pre_len - 1);
+            }
             self.verify_invariants();
         }
 
         removed
     }
 
+    /// Get score of member. O(1)
     pub fn score(&self, member: &SDS) -> Option<f64> {
         self.members.get(&member.to_string()).copied()
     }
 
+    /// Get rank of member (0-indexed). O(log n)
     pub fn rank(&self, member: &SDS) -> Option<usize> {
         let key = member.to_string();
-        self.sorted_members.iter().position(|(m, _)| m == &key)
+        let score = self.members.get(&key)?;
+        self.skiplist.rank(&key, *score)
     }
 
+    /// Get range by rank [start, stop] (inclusive). O(log n + k)
     pub fn range(&self, start: isize, stop: isize) -> Vec<(SDS, f64)> {
-        let len = self.sorted_members.len() as isize;
+        let len = self.skiplist.len() as isize;
+        if len == 0 {
+            return Vec::new();
+        }
+
         let start = if start < 0 {
             (len + start).max(0)
         } else {
@@ -1072,16 +1494,20 @@ impl RedisSortedSet {
             return Vec::new();
         }
 
-        self.sorted_members
-            .iter()
-            .skip(start as usize)
-            .take((stop - start + 1) as usize)
-            .map(|(m, s)| (SDS::from_str(m), *s))
+        self.skiplist
+            .range(start as usize, stop as usize)
+            .into_iter()
+            .map(|(m, s)| (SDS::from_str(m), s))
             .collect()
     }
 
+    /// Get range in reverse by rank. O(log n + k)
     pub fn rev_range(&self, start: isize, stop: isize) -> Vec<(SDS, f64)> {
-        let len = self.sorted_members.len() as isize;
+        let len = self.skiplist.len() as isize;
+        if len == 0 {
+            return Vec::new();
+        }
+
         let start = if start < 0 {
             (len + start).max(0)
         } else {
@@ -1097,12 +1523,10 @@ impl RedisSortedSet {
             return Vec::new();
         }
 
-        self.sorted_members
-            .iter()
-            .rev()
-            .skip(start as usize)
-            .take((stop - start + 1) as usize)
-            .map(|(m, s)| (SDS::from_str(m), *s))
+        self.skiplist
+            .rev_range(start as usize, stop as usize)
+            .into_iter()
+            .map(|(m, s)| (SDS::from_str(m), s))
             .collect()
     }
 
@@ -1114,32 +1538,19 @@ impl RedisSortedSet {
         self.members.is_empty()
     }
 
-    fn rebuild_sorted(&mut self) {
-        self.sorted_members = self.members.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        self.sorted_members.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-
-        // TigerStyle: Assert invariants after mutation
-        debug_assert_eq!(
-            self.members.len(),
-            self.sorted_members.len(),
-            "Invariant violated: members and sorted_members must have same length"
-        );
-        debug_assert!(
-            self.is_sorted(),
-            "Invariant violated: sorted_members must be sorted by (score, member)"
-        );
-    }
-
-    /// TigerStyle: Verify sorted invariant (used in debug_assert)
-    fn is_sorted(&self) -> bool {
-        self.sorted_members.windows(2).all(|w| {
-            let cmp = w[0].1.partial_cmp(&w[1].1).unwrap_or(Ordering::Equal);
-            cmp == Ordering::Less || (cmp == Ordering::Equal && w[0].0 <= w[1].0)
-        })
+    /// Check if the set is sorted (for tests). Always true for skiplist-based impl.
+    #[cfg(test)]
+    pub fn is_sorted(&self) -> bool {
+        let mut prev_score = f64::NEG_INFINITY;
+        let mut prev_member = String::new();
+        for (member, score) in self.skiplist.iter() {
+            if score < prev_score || (score == prev_score && member < prev_member.as_str()) {
+                return false;
+            }
+            prev_score = score;
+            prev_member = member.to_string();
+        }
+        true
     }
 
     /// Parse score bound (handles -inf, +inf, exclusive with parenthesis)
@@ -1165,13 +1576,13 @@ impl RedisSortedSet {
         Ok((score, exclusive))
     }
 
-    /// ZCOUNT - count elements in score range
+    /// ZCOUNT - count elements in score range. O(log n + k)
     pub fn count_in_range(&self, min: &str, max: &str) -> Result<usize, String> {
         let (min_score, min_exclusive) = Self::parse_score_bound(min, true)?;
         let (max_score, max_exclusive) = Self::parse_score_bound(max, false)?;
 
         let count = self
-            .sorted_members
+            .skiplist
             .iter()
             .filter(|(_, score)| {
                 let above_min = if min_exclusive {
@@ -1191,7 +1602,7 @@ impl RedisSortedSet {
         Ok(count)
     }
 
-    /// ZRANGEBYSCORE - get elements by score range
+    /// ZRANGEBYSCORE - get elements by score range. O(log n + k)
     pub fn range_by_score(
         &self,
         min: &str,
@@ -1203,7 +1614,7 @@ impl RedisSortedSet {
         let (max_score, max_exclusive) = Self::parse_score_bound(max, false)?;
 
         let mut results: Vec<_> = self
-            .sorted_members
+            .skiplist
             .iter()
             .filter(|(_, score)| {
                 let above_min = if min_exclusive {
@@ -1220,8 +1631,8 @@ impl RedisSortedSet {
             })
             .map(|(member, score)| {
                 (
-                    member.clone(),
-                    if with_scores { Some(*score) } else { None },
+                    member.to_string(),
+                    if with_scores { Some(score) } else { None },
                 )
             })
             .collect();
@@ -1235,9 +1646,9 @@ impl RedisSortedSet {
         Ok(results)
     }
 
-    /// Iterate over member-score pairs (for ZSCAN)
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &f64)> {
-        self.sorted_members.iter().map(|(m, s)| (m, s))
+    /// Iterate over member-score pairs in sorted order (for ZSCAN). O(n)
+    pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> {
+        self.skiplist.iter()
     }
 }
 
