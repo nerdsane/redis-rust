@@ -36,19 +36,22 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 
-# Dependency caching - build deps with dummy src, then clean for real build
-RUN mkdir -p src/bin && \
+# Dependency caching - build deps with dummy src/benches, then clean for real build
+RUN mkdir -p src/bin benches && \
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/bin/server_optimized.rs && \
     echo "fn main() {}" > src/bin/server_persistent.rs && \
+    echo "fn main() {}" > benches/hot_paths.rs && \
     echo "" > src/lib.rs && \
     cargo build --release --features "s3,datadog" 2>/dev/null || true && \
-    rm -rf src target/release/.fingerprint/redis-sim-* \
+    rm -rf src benches target/release/.fingerprint/redis-sim-* \
            target/release/server-persistent target/release/redis-server-optimized \
            target/release/deps/redis_sim-* target/release/deps/libredis_sim* \
            target/release/incremental/redis_sim-*
 
+# Copy source and benches (benches needed to satisfy Cargo.toml manifest)
 COPY src ./src
+COPY benches ./benches
 RUN cargo build --release --features "s3,datadog" \
     --bin redis-server-optimized \
     --bin server-persistent
