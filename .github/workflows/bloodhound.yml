@@ -155,9 +155,9 @@ jobs:
           for seed in $(seq ${{ steps.seeds.outputs.start }} ${{ steps.seeds.outputs.end }}); do
             echo "=== Seed $seed ==="
             if SIMULATION_SEED=$seed cargo test --release dst -- --nocapture 2>&1; then
-              ((passed++))
+              passed=$((passed + 1))
             else
-              ((failed++))
+              failed=$((failed + 1))
               echo "::warning::Seed $seed failed"
             fi
           done
@@ -167,6 +167,12 @@ jobs:
 
           # Create results JSON
           echo "{\"range\": \"${{ matrix.seed_range }}\", \"passed\": $passed, \"failed\": $failed}" > results-${{ matrix.seed_range }}.json
+
+          # Only fail if there were actual failures
+          if [ $failed -gt 0 ]; then
+            echo "::error::$failed seeds failed"
+            exit 1
+          fi
         timeout-minutes: 60
 
       - name: Upload results
