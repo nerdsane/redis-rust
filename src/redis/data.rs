@@ -941,10 +941,46 @@ impl RedisSortedSet {
         // TigerStyle: Preconditions - capture state for postcondition check
         #[cfg(debug_assertions)]
         let pre_len = self.members.len();
-        let is_new = !self.members.contains_key(&key);
 
+        // Check if member already exists
+        if let Some(&old_score) = self.members.get(&key) {
+            if (old_score - score).abs() < f64::EPSILON {
+                // Score unchanged, nothing to do
+                return false;
+            }
+            // Update score - remove old position, insert at new position
+            self.members.insert(key.clone(), score);
+            // Remove from sorted_members (linear scan, but updates are less common)
+            if let Some(pos) = self.sorted_members.iter().position(|(m, _)| m == &key) {
+                self.sorted_members.remove(pos);
+            }
+            // Binary search insert at new position
+            let insert_pos = self.sorted_members
+                .binary_search_by(|probe| {
+                    probe.1.partial_cmp(&score)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| probe.0.cmp(&key))
+                })
+                .unwrap_or_else(|pos| pos);
+            self.sorted_members.insert(insert_pos, (key.clone(), score));
+
+            #[cfg(debug_assertions)]
+            self.verify_invariants();
+            return false; // Not a new member
+        }
+
+        // New member - insert into both structures
         self.members.insert(key.clone(), score);
-        self.rebuild_sorted();
+
+        // Binary search to find insertion point - O(log n)
+        let insert_pos = self.sorted_members
+            .binary_search_by(|probe| {
+                probe.1.partial_cmp(&score)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| probe.0.cmp(&key))
+            })
+            .unwrap_or_else(|pos| pos);
+        self.sorted_members.insert(insert_pos, (key.clone(), score));
 
         // TigerStyle: Postconditions
         debug_assert!(
@@ -958,16 +994,16 @@ impl RedisSortedSet {
         );
         #[cfg(debug_assertions)]
         {
-            let expected_len = if is_new { pre_len + 1 } else { pre_len };
+            let expected_len = pre_len + 1;
             debug_assert_eq!(
                 self.members.len(),
                 expected_len,
                 "Postcondition violated: len must be correct after add"
             );
+            self.verify_invariants();
         }
 
-        self.verify_invariants();
-        is_new
+        true
     }
 
     pub fn remove(&mut self, member: &SDS) -> bool {
@@ -981,7 +1017,10 @@ impl RedisSortedSet {
 
         let removed = self.members.remove(&key).is_some();
         if removed {
-            self.rebuild_sorted();
+            // Remove from sorted_members - linear scan O(n) but removes are less common
+            if let Some(pos) = self.sorted_members.iter().position(|(m, _)| m == &key) {
+                self.sorted_members.remove(pos);
+            }
         }
 
         // TigerStyle: Postconditions
@@ -1001,9 +1040,9 @@ impl RedisSortedSet {
                 expected_len,
                 "Postcondition violated: len must be correct after remove"
             );
+            self.verify_invariants();
         }
 
-        self.verify_invariants();
         removed
     }
 
