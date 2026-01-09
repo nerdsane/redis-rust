@@ -307,6 +307,7 @@ jobs:
       - name: Install Maelstrom
         run: |
           if [ ! -f maelstrom/maelstrom ]; then
+            rm -rf maelstrom  # Remove partial extraction if any
             curl -L https://github.com/jepsen-io/maelstrom/releases/download/v0.2.3/maelstrom.tar.bz2 | tar xj
           fi
 
