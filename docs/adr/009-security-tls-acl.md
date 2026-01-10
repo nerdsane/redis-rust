@@ -90,6 +90,8 @@ When features are disabled:
 | 2026-01-09 | Optional via feature flags | Zero overhead when not needed, flexible deployment |
 | 2026-01-09 | Make connection handler generic over stream type | Enables MaybeSecureStream for TLS/plain TCP |
 | 2026-01-09 | TLS accept loop integration complete | Server wraps TcpStream with TlsAcceptor when configured |
+| 2026-01-09 | ACL permission checking in handler | Per-command ACL check before execution |
+| 2026-01-09 | Per-connection authentication state | Track authenticated user per connection |
 
 ## Implementation Status
 
@@ -109,6 +111,11 @@ When features are disabled:
 | CLI/env documentation | `src/bin/server_optimized.rs` | Complete |
 | Connection handler TLS | `src/production/connection_optimized.rs` | Complete (generic over stream) |
 | TLS accept loop | `src/production/server_optimized.rs` | Complete |
+| ACL permission checking | `src/production/connection_optimized.rs` | Complete |
+| Per-connection auth state | `src/production/connection_optimized.rs` | Complete |
+| AUTH/ACL command handling | `src/production/connection_optimized.rs` | Complete |
+| Command.get_keys() | `src/redis/commands.rs` | Complete |
+| AclManager in server | `src/production/server_optimized.rs` | Complete |
 
 ### Validated
 
@@ -119,12 +126,16 @@ When features are disabled:
 - ACL rule parsing (SETUSER rules)
 - TLS feature compiles correctly (cargo check --features tls)
 - Server accepts connections with/without TLS based on config
+- ACL feature compiles correctly (cargo check --features acl)
+- Security feature compiles correctly (cargo check --features security)
+- AUTH command authenticates users and updates connection state
+- ACL commands (WHOAMI, LIST, USERS, GETUSER, SETUSER, DELUSER, CAT, GENPASS) work
+- Permission checking rejects unauthorized commands
 
 ### Not Yet Implemented
 
 | Component | Notes |
 |-----------|-------|
-| ACL permission checking in handler | Need to add check before command execution |
 | ACL file loading | Load ACL configuration from file at startup |
 | Client certificate authentication | Extract identity from client cert |
 

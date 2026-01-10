@@ -23,6 +23,18 @@ pub use tls::{MaybeSecureStream, TlsConfig, TlsError};
 pub mod acl_noop {
     use std::sync::Arc;
 
+    /// No-op ACL error - implements Display for compatibility
+    #[derive(Debug, Clone)]
+    pub struct AclError(String);
+
+    impl std::fmt::Display for AclError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl std::error::Error for AclError {}
+
     /// No-op ACL user - always permitted
     #[derive(Debug, Clone)]
     pub struct AclUser {
@@ -46,8 +58,18 @@ pub mod acl_noop {
             Self
         }
 
+        /// No-op: auth never required when ACL feature disabled
+        pub fn new_with_auth() -> Self {
+            Self
+        }
+
+        /// Get the default user
+        pub fn default_user(&self) -> Arc<AclUser> {
+            Arc::new(AclUser::default_user())
+        }
+
         /// Always returns the default user (no authentication required)
-        pub fn authenticate(&self, _username: &str, _password: &str) -> Result<Arc<AclUser>, ()> {
+        pub fn authenticate(&self, _username: &str, _password: &str) -> Result<Arc<AclUser>, AclError> {
             Ok(Arc::new(AclUser::default_user()))
         }
 
@@ -57,7 +79,7 @@ pub mod acl_noop {
             _user: Option<&AclUser>,
             _command: &str,
             _keys: &[&str],
-        ) -> Result<(), ()> {
+        ) -> Result<(), AclError> {
             Ok(())
         }
 
@@ -65,8 +87,11 @@ pub mod acl_noop {
         pub fn requires_auth(&self) -> bool {
             false
         }
+
+        /// No-op: set user does nothing when ACL feature disabled
+        pub fn set_user(&mut self, _user: AclUser) {}
     }
 }
 
 #[cfg(not(feature = "acl"))]
-pub use acl_noop::{AclManager, AclUser};
+pub use acl_noop::{AclError, AclManager, AclUser};

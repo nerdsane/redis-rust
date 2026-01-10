@@ -2353,6 +2353,100 @@ impl Command {
         }
     }
 
+    /// Returns all keys this command operates on (for ACL permission checking)
+    pub fn get_keys(&self) -> Vec<String> {
+        match self {
+            Command::Get(k)
+            | Command::Set { key: k, .. }
+            | Command::TypeOf(k)
+            | Command::Expire(k, _)
+            | Command::ExpireAt(k, _)
+            | Command::PExpireAt(k, _)
+            | Command::Ttl(k)
+            | Command::Pttl(k)
+            | Command::Persist(k)
+            | Command::Incr(k)
+            | Command::Decr(k)
+            | Command::IncrBy(k, _)
+            | Command::DecrBy(k, _)
+            | Command::Append(k, _)
+            | Command::GetSet(k, _)
+            | Command::StrLen(k)
+            | Command::LPush(k, _)
+            | Command::RPush(k, _)
+            | Command::LPop(k)
+            | Command::RPop(k)
+            | Command::LLen(k)
+            | Command::LIndex(k, _)
+            | Command::LRange(k, _, _)
+            | Command::LSet(k, _, _)
+            | Command::LTrim(k, _, _)
+            | Command::SAdd(k, _)
+            | Command::SRem(k, _)
+            | Command::SMembers(k)
+            | Command::SIsMember(k, _)
+            | Command::SCard(k)
+            | Command::HSet(k, _)
+            | Command::HGet(k, _)
+            | Command::HDel(k, _)
+            | Command::HGetAll(k)
+            | Command::HKeys(k)
+            | Command::HVals(k)
+            | Command::HLen(k)
+            | Command::HExists(k, _)
+            | Command::HIncrBy(k, _, _)
+            | Command::ZAdd { key: k, .. }
+            | Command::ZRem(k, _)
+            | Command::ZRange(k, _, _)
+            | Command::ZRevRange(k, _, _, _)
+            | Command::ZScore(k, _)
+            | Command::ZRank(k, _)
+            | Command::ZCard(k)
+            | Command::ZCount(k, _, _)
+            | Command::ZRangeByScore { key: k, .. }
+            | Command::HScan { key: k, .. }
+            | Command::ZScan { key: k, .. }
+            | Command::Keys(k) => vec![k.clone()],
+
+            // Commands with two keys (source, dest)
+            Command::RPopLPush(src, dst) => vec![src.clone(), dst.clone()],
+            Command::LMove { source, dest, .. } => vec![source.clone(), dest.clone()],
+
+            // Multi-key commands
+            Command::Del(keys) | Command::Exists(keys) | Command::MGet(keys) => keys.clone(),
+            Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+            Command::BatchSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+            Command::BatchGet(keys) => keys.clone(),
+            Command::Watch(keys) => keys.clone(),
+            Command::Eval { keys, .. } | Command::EvalSha { keys, .. } => keys.clone(),
+
+            // Commands with no keys
+            Command::Scan { .. }
+            | Command::FlushDb
+            | Command::FlushAll
+            | Command::Multi
+            | Command::Exec
+            | Command::Discard
+            | Command::Unwatch
+            | Command::ScriptLoad(_)
+            | Command::ScriptExists(_)
+            | Command::ScriptFlush
+            | Command::Info
+            | Command::Ping
+            | Command::DbSize
+            | Command::Auth { .. }
+            | Command::AclWhoami
+            | Command::AclList
+            | Command::AclUsers
+            | Command::AclGetUser { .. }
+            | Command::AclSetUser { .. }
+            | Command::AclDelUser { .. }
+            | Command::AclCat { .. }
+            | Command::AclGenPass { .. }
+            | Command::Unknown(_) => vec![],
+        }
+    }
+
     /// Returns the command name as a string (for metrics/tracing)
     #[inline]
     pub fn name(&self) -> &'static str {

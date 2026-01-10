@@ -3,7 +3,9 @@ use super::perf_config::{BatchingConfig, BufferConfig};
 use super::ShardedActorState;
 use crate::observability::{spans, Metrics};
 use crate::redis::{Command, RespCodec, RespValue};
+use crate::security::{AclManager, AclUser};
 use bytes::{BufMut, BytesMut};
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -72,6 +74,10 @@ pub struct OptimizedConnectionHandler<S> {
     buffer_pool: Arc<BufferPoolAsync>,
     metrics: Arc<Metrics>,
     config: ConnectionConfig,
+    /// ACL manager for authentication and authorization
+    acl_manager: Arc<RwLock<AclManager>>,
+    /// Currently authenticated user (None = not authenticated yet)
+    authenticated_user: Option<Arc<AclUser>>,
 }
 
 impl<S> OptimizedConnectionHandler<S>
@@ -86,6 +92,7 @@ where
         buffer_pool: Arc<BufferPoolAsync>,
         metrics: Arc<Metrics>,
         config: ConnectionConfig,
+        acl_manager: Arc<RwLock<AclManager>>,
     ) -> Self {
         let buffer = buffer_pool.acquire();
         let write_buffer = buffer_pool.acquire();
@@ -97,6 +104,17 @@ where
             config.max_buffer_size >= config.read_buffer_size,
             "max_buffer_size must be >= read_buffer_size"
         );
+
+        // If ACL doesn't require auth, auto-authenticate as default user
+        let authenticated_user = {
+            let manager = acl_manager.read();
+            if !manager.requires_auth() {
+                Some(manager.default_user())
+            } else {
+                None
+            }
+        };
+
         OptimizedConnectionHandler {
             stream,
             state,
@@ -106,6 +124,8 @@ where
             buffer_pool,
             metrics,
             config,
+            acl_manager,
+            authenticated_user,
         }
     }
 
@@ -261,10 +281,13 @@ where
     #[inline]
     async fn try_execute_command(&mut self) -> CommandResult {
         // Try fast path first for GET/SET commands (80%+ of traffic)
-        match self.try_fast_path().await {
-            FastPathResult::Handled => return CommandResult::Executed,
-            FastPathResult::NeedMoreData => return CommandResult::NeedMoreData,
-            FastPathResult::NotFastPath => {} // Fall through to regular parsing
+        // Fast path skips ACL checks for performance - only use when auth not required
+        if self.authenticated_user.is_some() {
+            match self.try_fast_path().await {
+                FastPathResult::Handled => return CommandResult::Executed,
+                FastPathResult::NeedMoreData => return CommandResult::NeedMoreData,
+                FastPathResult::NotFastPath => {} // Fall through to regular parsing
+            }
         }
 
         match RespCodec::parse(&mut self.buffer) {
@@ -273,7 +296,30 @@ where
                     let cmd_name = cmd.name();
                     let start = Instant::now();
 
-                    let response = self.state.execute(&cmd).await;
+                    // Handle AUTH and ACL commands specially
+                    let response = match &cmd {
+                        Command::Auth { username, password } => {
+                            self.handle_auth(username.as_deref(), password)
+                        }
+                        Command::AclWhoami => self.handle_acl_whoami(),
+                        Command::AclList => self.handle_acl_list(),
+                        Command::AclUsers => self.handle_acl_users(),
+                        Command::AclGetUser { username } => self.handle_acl_getuser(username),
+                        Command::AclSetUser { username, rules } => {
+                            self.handle_acl_setuser(username, rules)
+                        }
+                        Command::AclDelUser { usernames } => self.handle_acl_deluser(usernames),
+                        Command::AclCat { category } => self.handle_acl_cat(category.as_deref()),
+                        Command::AclGenPass { bits } => self.handle_acl_genpass(*bits),
+                        _ => {
+                            // Check ACL permissions for regular commands
+                            if let Err(acl_err) = self.check_acl_permission(&cmd) {
+                                RespValue::Error(acl_err)
+                            } else {
+                                self.state.execute(&cmd).await
+                            }
+                        }
+                    };
 
                     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
                     let success = !matches!(&response, RespValue::Error(_));
@@ -290,6 +336,233 @@ where
             },
             Ok(None) => CommandResult::NeedMoreData,
             Err(e) => CommandResult::ParseError(e),
+        }
+    }
+
+    /// Check ACL permissions for a command
+    fn check_acl_permission(&self, cmd: &Command) -> Result<(), String> {
+        let manager = self.acl_manager.read();
+
+        // If auth is required but user not authenticated, reject
+        if manager.requires_auth() && self.authenticated_user.is_none() {
+            return Err("NOAUTH Authentication required".to_string());
+        }
+
+        // Get the authenticated user (if any)
+        let user = self.authenticated_user.as_ref().map(|u| u.as_ref());
+
+        // Get the keys involved in this command
+        let owned_keys = cmd.get_keys();
+        let keys: Vec<&str> = owned_keys.iter().map(|s| s.as_str()).collect();
+
+        // Check permissions
+        manager
+            .check_command(user, cmd.name(), &keys)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Handle AUTH command
+    fn handle_auth(&mut self, username: Option<&str>, password: &str) -> RespValue {
+        let username = username.unwrap_or("default");
+        let manager = self.acl_manager.read();
+
+        match manager.authenticate(username, password) {
+            Ok(user) => {
+                drop(manager); // Release read lock before mutating self
+                self.authenticated_user = Some(user);
+                info!("Client {} authenticated as '{}'", self.client_addr, username);
+                RespValue::SimpleString("OK".to_string())
+            }
+            Err(e) => {
+                warn!(
+                    "Auth failed for client {} (user '{}'): {}",
+                    self.client_addr, username, e
+                );
+                RespValue::Error(e.to_string())
+            }
+        }
+    }
+
+    /// Handle ACL WHOAMI command
+    fn handle_acl_whoami(&self) -> RespValue {
+        let name = match &self.authenticated_user {
+            Some(user) => user.name.clone(),
+            None => "default".to_string(),
+        };
+        RespValue::BulkString(Some(name.into_bytes()))
+    }
+
+    /// Handle ACL LIST command
+    fn handle_acl_list(&self) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let manager = self.acl_manager.read();
+            let list = AclCommandHandler::handle_list(&manager);
+            RespValue::Array(Some(
+                list.into_iter()
+                    .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                    .collect(),
+            ))
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            // Return minimal list when ACL feature disabled
+            RespValue::Array(Some(vec![RespValue::BulkString(Some(
+                "user default on nopass ~* +@all".as_bytes().to_vec(),
+            ))]))
+        }
+    }
+
+    /// Handle ACL USERS command
+    fn handle_acl_users(&self) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let manager = self.acl_manager.read();
+            let users = AclCommandHandler::handle_users(&manager);
+            RespValue::Array(Some(
+                users
+                    .into_iter()
+                    .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                    .collect(),
+            ))
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            RespValue::Array(Some(vec![RespValue::BulkString(Some(
+                "default".as_bytes().to_vec(),
+            ))]))
+        }
+    }
+
+    /// Handle ACL GETUSER command
+    fn handle_acl_getuser(&self, username: &str) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let manager = self.acl_manager.read();
+            match AclCommandHandler::handle_getuser(&manager, username) {
+                Some(info) => {
+                    let mut result = Vec::new();
+                    for (key, value) in info {
+                        result.push(RespValue::BulkString(Some(key.into_bytes())));
+                        result.push(RespValue::BulkString(Some(value.into_bytes())));
+                    }
+                    RespValue::Array(Some(result))
+                }
+                None => RespValue::Array(None), // Null array for non-existent user
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            if username == "default" {
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some("flags".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("on nopass".as_bytes().to_vec())),
+                ]))
+            } else {
+                RespValue::Array(None)
+            }
+        }
+    }
+
+    /// Handle ACL SETUSER command
+    fn handle_acl_setuser(&mut self, username: &str, rules: &[String]) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let mut manager = self.acl_manager.write();
+            let rule_refs: Vec<&str> = rules.iter().map(|s| s.as_str()).collect();
+            match AclCommandHandler::handle_setuser(&mut manager, username, &rule_refs) {
+                Ok(()) => RespValue::SimpleString("OK".to_string()),
+                Err(e) => RespValue::Error(e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = (username, rules);
+            RespValue::Error("ERR ACL feature not enabled".to_string())
+        }
+    }
+
+    /// Handle ACL DELUSER command
+    fn handle_acl_deluser(&mut self, usernames: &[String]) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let mut manager = self.acl_manager.write();
+            let username_refs: Vec<&str> = usernames.iter().map(|s| s.as_str()).collect();
+            match AclCommandHandler::handle_deluser(&mut manager, &username_refs) {
+                Ok(count) => RespValue::Integer(count as i64),
+                Err(e) => RespValue::Error(e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = usernames;
+            RespValue::Error("ERR ACL feature not enabled".to_string())
+        }
+    }
+
+    /// Handle ACL CAT command
+    fn handle_acl_cat(&self, category: Option<&str>) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            match AclCommandHandler::handle_cat(category) {
+                Ok(items) => RespValue::Array(Some(
+                    items
+                        .into_iter()
+                        .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                        .collect(),
+                )),
+                Err(e) => RespValue::Error(e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = category;
+            // Return basic categories even without ACL feature
+            let categories = vec![
+                "read", "write", "admin", "dangerous", "keyspace", "string", "list", "set", "hash",
+                "sortedset", "connection", "server",
+            ];
+            RespValue::Array(Some(
+                categories
+                    .into_iter()
+                    .map(|s| RespValue::BulkString(Some(s.as_bytes().to_vec())))
+                    .collect(),
+            ))
+        }
+    }
+
+    /// Handle ACL GENPASS command
+    fn handle_acl_genpass(&self, bits: Option<u32>) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let password = AclCommandHandler::handle_genpass(bits);
+            RespValue::BulkString(Some(password.into_bytes()))
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            // Simple fallback password generation
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let bits = bits.unwrap_or(256).min(1024);
+            let bytes = (bits as usize + 7) / 8;
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut result = String::with_capacity(bytes * 2);
+            let mut state = seed;
+            for _ in 0..bytes {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let byte = ((state >> 33) & 0xFF) as u8;
+                result.push_str(&format!("{:02x}", byte));
+            }
+            RespValue::BulkString(Some(result.into_bytes()))
         }
     }
 

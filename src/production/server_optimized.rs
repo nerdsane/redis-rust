@@ -2,6 +2,8 @@ use super::connection_optimized::{ConnectionConfig, OptimizedConnectionHandler};
 use super::ttl_manager::TtlManagerActor;
 use super::{ConnectionPool, PerformanceConfig, ServerConfig, ShardedActorState};
 use crate::observability::{DatadogConfig, Metrics};
+use crate::security::AclManager;
+use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -69,6 +71,10 @@ impl OptimizedRedisServer {
             warn!("TLS configuration provided but 'tls' feature not enabled. Ignoring TLS settings.");
         }
 
+        // Initialize ACL manager
+        let acl_manager = Self::create_acl_manager(&server_config);
+        let acl_manager = Arc::new(RwLock::new(acl_manager));
+
         let state = ShardedActorState::with_perf_config(&perf_config);
         let connection_pool = Arc::new(ConnectionPool::new(10000, 512));
 
@@ -100,6 +106,7 @@ impl OptimizedRedisServer {
                     let pool = connection_pool.clone();
                     let metrics_clone = metrics.clone();
                     let conn_config_clone = conn_config.clone();
+                    let acl_manager_clone = acl_manager.clone();
 
                     // Set TCP_NODELAY for lower latency before any wrapping
                     if let Err(e) = stream.set_nodelay(true) {
@@ -140,6 +147,7 @@ impl OptimizedRedisServer {
                             pool.buffer_pool(),
                             metrics_clone,
                             conn_config_clone,
+                            acl_manager_clone,
                         );
                         handler.run().await;
                     });
@@ -148,6 +156,47 @@ impl OptimizedRedisServer {
                     error!("Failed to accept connection: {}", e);
                 }
             }
+        }
+    }
+
+    /// Create and configure ACL manager based on server configuration
+    fn create_acl_manager(config: &ServerConfig) -> AclManager {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclUser;
+
+            let mut manager = if config.acl.require_auth {
+                AclManager::new_with_auth()
+            } else {
+                AclManager::new()
+            };
+
+            // Configure default user with password if REDIS_REQUIRE_PASS is set
+            if let Some(ref password) = config.acl.require_pass {
+                let mut default_user = AclUser::default_user();
+                default_user.add_password(password);
+                default_user.nopass = false; // Require password
+                manager.set_user(default_user);
+                info!("Authentication enabled (REDIS_REQUIRE_PASS set)");
+            }
+
+            // TODO: Load ACL file if configured
+            if let Some(ref acl_file) = config.acl.acl_file {
+                warn!("ACL file loading not yet implemented: {:?}", acl_file);
+            }
+
+            if !config.acl.require_auth {
+                info!("ACL authentication disabled (set REDIS_REQUIRE_PASS to enable)");
+            }
+
+            manager
+        }
+
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = config;
+            // Return no-op ACL manager when feature disabled
+            AclManager::new()
         }
     }
 }
