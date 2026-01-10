@@ -11,8 +11,14 @@ REQUESTS=100000
 CLIENTS=50
 DATA_SIZE=64
 
-# Commands to benchmark
-COMMANDS="set get incr lpush rpush lpop rpop sadd hset zadd"
+# Commands to benchmark (16 tests)
+# Misc: ping_mbulk (latency baseline)
+# Core: set, get, incr, mset
+# List: lpush, rpush, lpop, rpop, lrange_100, lrange_300, lrange_500
+# Set: sadd
+# Hash: hset
+# Sorted Set: zadd
+COMMANDS="ping_mbulk set get mset incr lpush rpush lpop rpop lrange_100 lrange_300 lrange_500 sadd hset zadd"
 
 cd "$(dirname "$0")"
 
