@@ -10,6 +10,7 @@ mod perf_config;
 mod replicated_shard_actor;
 mod replicated_state;
 mod response_pool;
+mod server_config;
 mod server_optimized;
 mod sharded_actor;
 mod ttl_manager;
@@ -31,6 +32,7 @@ pub use replicated_shard_actor::{
     ReplicatedShardActor, ReplicatedShardHandle, ReplicatedShardMessage,
 };
 pub use replicated_state::{GossipBackend, ReplicatedShardedState};
+pub use server_config::{AclServerConfig, ServerConfig, TlsServerConfig};
 pub use server_optimized::OptimizedRedisServer;
 pub use sharded_actor::{ShardConfig, ShardedActorState};
 pub use ttl_manager::{TtlManagerActor, TtlManagerHandle, TtlMessage};

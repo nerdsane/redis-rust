@@ -60,6 +60,7 @@ pub mod metrics;
 pub mod production;
 pub mod redis;
 pub mod replication;
+pub mod security;
 pub mod simulator;
 pub mod streaming;
 

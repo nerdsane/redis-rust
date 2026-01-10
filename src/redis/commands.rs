@@ -148,6 +148,32 @@ pub enum Command {
     // Server commands
     Info,
     Ping,
+    DbSize,
+    // Auth/ACL commands
+    /// AUTH [username] password
+    Auth {
+        username: Option<String>,
+        password: String,
+    },
+    /// ACL WHOAMI
+    AclWhoami,
+    /// ACL LIST
+    AclList,
+    /// ACL USERS
+    AclUsers,
+    /// ACL GETUSER username
+    AclGetUser { username: String },
+    /// ACL SETUSER username [rules...]
+    AclSetUser {
+        username: String,
+        rules: Vec<String>,
+    },
+    /// ACL DELUSER username [username...]
+    AclDelUser { usernames: Vec<String> },
+    /// ACL CAT [category]
+    AclCat { category: Option<String> },
+    /// ACL GENPASS [bits]
+    AclGenPass { bits: Option<u32> },
     Unknown(String),
 }
 
@@ -209,6 +235,85 @@ impl Command {
                 match cmd_name.as_str() {
                     "PING" => Ok(Command::Ping),
                     "INFO" => Ok(Command::Info),
+                    "DBSIZE" => Ok(Command::DbSize),
+                    "AUTH" => {
+                        match elements.len() {
+                            2 => {
+                                // AUTH password (authenticate as default user)
+                                let password = Self::extract_string(&elements[1])?;
+                                Ok(Command::Auth {
+                                    username: None,
+                                    password,
+                                })
+                            }
+                            3 => {
+                                // AUTH username password
+                                let username = Self::extract_string(&elements[1])?;
+                                let password = Self::extract_string(&elements[2])?;
+                                Ok(Command::Auth {
+                                    username: Some(username),
+                                    password,
+                                })
+                            }
+                            _ => Err("AUTH requires 1 or 2 arguments".to_string()),
+                        }
+                    }
+                    "ACL" => {
+                        if elements.len() < 2 {
+                            return Err("ACL requires a subcommand".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "WHOAMI" => Ok(Command::AclWhoami),
+                            "LIST" => Ok(Command::AclList),
+                            "USERS" => Ok(Command::AclUsers),
+                            "GETUSER" => {
+                                if elements.len() != 3 {
+                                    return Err("ACL GETUSER requires 1 argument".to_string());
+                                }
+                                let username = Self::extract_string(&elements[2])?;
+                                Ok(Command::AclGetUser { username })
+                            }
+                            "SETUSER" => {
+                                if elements.len() < 3 {
+                                    return Err("ACL SETUSER requires at least 1 argument".to_string());
+                                }
+                                let username = Self::extract_string(&elements[2])?;
+                                let rules: Vec<String> = elements[3..]
+                                    .iter()
+                                    .map(Self::extract_string)
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok(Command::AclSetUser { username, rules })
+                            }
+                            "DELUSER" => {
+                                if elements.len() < 3 {
+                                    return Err("ACL DELUSER requires at least 1 argument".to_string());
+                                }
+                                let usernames: Vec<String> = elements[2..]
+                                    .iter()
+                                    .map(Self::extract_string)
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok(Command::AclDelUser { usernames })
+                            }
+                            "CAT" => {
+                                let category = if elements.len() > 2 {
+                                    Some(Self::extract_string(&elements[2])?)
+                                } else {
+                                    None
+                                };
+                                Ok(Command::AclCat { category })
+                            }
+                            "GENPASS" => {
+                                let bits = if elements.len() > 2 {
+                                    Some(Self::extract_string(&elements[2])?.parse::<u32>().map_err(|_| "Invalid bits value")?)
+                                } else {
+                                    None
+                                };
+                                Ok(Command::AclGenPass { bits })
+                            }
+                            _ => Err(format!("Unknown ACL subcommand '{}'", subcommand)),
+                        }
+                    }
                     "FLUSHDB" => Ok(Command::FlushDb),
                     "FLUSHALL" => Ok(Command::FlushAll),
                     "MULTI" => Ok(Command::Multi),
@@ -1119,6 +1224,83 @@ impl Command {
                 match cmd_name.as_str() {
                     "PING" => Ok(Command::Ping),
                     "INFO" => Ok(Command::Info),
+                    "DBSIZE" => Ok(Command::DbSize),
+                    "AUTH" => {
+                        match elements.len() {
+                            2 => {
+                                let password = Self::extract_string_zc(&elements[1])?;
+                                Ok(Command::Auth {
+                                    username: None,
+                                    password,
+                                })
+                            }
+                            3 => {
+                                let username = Self::extract_string_zc(&elements[1])?;
+                                let password = Self::extract_string_zc(&elements[2])?;
+                                Ok(Command::Auth {
+                                    username: Some(username),
+                                    password,
+                                })
+                            }
+                            _ => Err("AUTH requires 1 or 2 arguments".to_string()),
+                        }
+                    }
+                    "ACL" => {
+                        if elements.len() < 2 {
+                            return Err("ACL requires a subcommand".to_string());
+                        }
+                        let subcommand = Self::extract_string_zc(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "WHOAMI" => Ok(Command::AclWhoami),
+                            "LIST" => Ok(Command::AclList),
+                            "USERS" => Ok(Command::AclUsers),
+                            "GETUSER" => {
+                                if elements.len() != 3 {
+                                    return Err("ACL GETUSER requires 1 argument".to_string());
+                                }
+                                let username = Self::extract_string_zc(&elements[2])?;
+                                Ok(Command::AclGetUser { username })
+                            }
+                            "SETUSER" => {
+                                if elements.len() < 3 {
+                                    return Err("ACL SETUSER requires at least 1 argument".to_string());
+                                }
+                                let username = Self::extract_string_zc(&elements[2])?;
+                                let rules: Vec<String> = elements[3..]
+                                    .iter()
+                                    .map(Self::extract_string_zc)
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok(Command::AclSetUser { username, rules })
+                            }
+                            "DELUSER" => {
+                                if elements.len() < 3 {
+                                    return Err("ACL DELUSER requires at least 1 argument".to_string());
+                                }
+                                let usernames: Vec<String> = elements[2..]
+                                    .iter()
+                                    .map(Self::extract_string_zc)
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok(Command::AclDelUser { usernames })
+                            }
+                            "CAT" => {
+                                let category = if elements.len() > 2 {
+                                    Some(Self::extract_string_zc(&elements[2])?)
+                                } else {
+                                    None
+                                };
+                                Ok(Command::AclCat { category })
+                            }
+                            "GENPASS" => {
+                                let bits = if elements.len() > 2 {
+                                    Some(Self::extract_string_zc(&elements[2])?.parse::<u32>().map_err(|_| "Invalid bits value")?)
+                                } else {
+                                    None
+                                };
+                                Ok(Command::AclGenPass { bits })
+                            }
+                            _ => Err(format!("Unknown ACL subcommand '{}'", subcommand)),
+                        }
+                    }
                     "FLUSHDB" => Ok(Command::FlushDb),
                     "FLUSHALL" => Ok(Command::FlushAll),
                     "MULTI" => Ok(Command::Multi),
@@ -2157,6 +2339,16 @@ impl Command {
             | Command::ScriptFlush
             | Command::Info
             | Command::Ping
+            | Command::DbSize
+            | Command::Auth { .. }
+            | Command::AclWhoami
+            | Command::AclList
+            | Command::AclUsers
+            | Command::AclGetUser { .. }
+            | Command::AclSetUser { .. }
+            | Command::AclDelUser { .. }
+            | Command::AclCat { .. }
+            | Command::AclGenPass { .. }
             | Command::Unknown(_) => None,
         }
     }
@@ -2239,6 +2431,16 @@ impl Command {
             Command::ScriptFlush => "SCRIPT",
             Command::Info => "INFO",
             Command::Ping => "PING",
+            Command::DbSize => "DBSIZE",
+            Command::Auth { .. } => "AUTH",
+            Command::AclWhoami => "ACL",
+            Command::AclList => "ACL",
+            Command::AclUsers => "ACL",
+            Command::AclGetUser { .. } => "ACL",
+            Command::AclSetUser { .. } => "ACL",
+            Command::AclDelUser { .. } => "ACL",
+            Command::AclCat { .. } => "ACL",
+            Command::AclGenPass { .. } => "ACL",
             Command::Unknown(_) => "UNKNOWN",
         }
     }
@@ -4238,6 +4440,136 @@ impl CommandExecutor {
                 {
                     RespValue::Error("ERR Lua scripting not compiled in".to_string())
                 }
+            }
+
+            // DBSIZE - returns number of keys
+            Command::DbSize => {
+                let count = self.data.len() as i64;
+                RespValue::Integer(count)
+            }
+
+            // AUTH/ACL commands - these are handled at the connection level, not here
+            // Return errors indicating they should be handled elsewhere
+            Command::Auth { .. } => {
+                // AUTH is handled at the connection level
+                // If we get here, it means the server doesn't have ACL enabled
+                RespValue::SimpleString("OK".to_string())
+            }
+
+            Command::AclWhoami => {
+                // Without ACL feature, default user is always authenticated
+                RespValue::BulkString(Some(b"default".to_vec()))
+            }
+
+            Command::AclList => {
+                // Return default user rule
+                let rule = "user default on nopass ~* +@all".to_string();
+                RespValue::Array(Some(vec![RespValue::BulkString(Some(rule.into_bytes()))]))
+            }
+
+            Command::AclUsers => {
+                RespValue::Array(Some(vec![RespValue::BulkString(Some(b"default".to_vec()))]))
+            }
+
+            Command::AclGetUser { username } => {
+                if username == "default" {
+                    // Return info about default user
+                    RespValue::Array(Some(vec![
+                        RespValue::BulkString(Some(b"flags".to_vec())),
+                        RespValue::Array(Some(vec![
+                            RespValue::BulkString(Some(b"on".to_vec())),
+                            RespValue::BulkString(Some(b"nopass".to_vec())),
+                        ])),
+                        RespValue::BulkString(Some(b"passwords".to_vec())),
+                        RespValue::Array(Some(vec![])),
+                        RespValue::BulkString(Some(b"commands".to_vec())),
+                        RespValue::BulkString(Some(b"+@all".to_vec())),
+                        RespValue::BulkString(Some(b"keys".to_vec())),
+                        RespValue::BulkString(Some(b"~*".to_vec())),
+                    ]))
+                } else {
+                    RespValue::BulkString(None) // User not found
+                }
+            }
+
+            Command::AclSetUser { .. } => {
+                // ACL management requires the ACL feature
+                RespValue::Error("ERR ACL feature not enabled".to_string())
+            }
+
+            Command::AclDelUser { .. } => {
+                RespValue::Error("ERR ACL feature not enabled".to_string())
+            }
+
+            Command::AclCat { category } => {
+                // Return command categories or commands in a category
+                #[cfg(feature = "acl")]
+                {
+                    use crate::security::acl::CommandCategory;
+                    match category {
+                        None => {
+                            // List all categories
+                            let categories = vec![
+                                "read", "write", "admin", "dangerous", "keyspace",
+                                "string", "list", "set", "hash", "sortedset",
+                                "connection", "server", "scripting", "transaction",
+                            ];
+                            RespValue::Array(Some(
+                                categories
+                                    .into_iter()
+                                    .map(|c| RespValue::BulkString(Some(c.as_bytes().to_vec())))
+                                    .collect(),
+                            ))
+                        }
+                        Some(cat) => {
+                            // List commands in category
+                            if let Some(cat_enum) = CommandCategory::from_str(cat) {
+                                let commands: Vec<RespValue> = cat_enum
+                                    .commands()
+                                    .iter()
+                                    .map(|c| RespValue::BulkString(Some(c.to_lowercase().into_bytes())))
+                                    .collect();
+                                RespValue::Array(Some(commands))
+                            } else {
+                                RespValue::Error(format!("ERR Unknown ACL category '{}'", cat))
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(feature = "acl"))]
+                {
+                    let _ = category; // Suppress unused warning
+                    // Without ACL feature, return basic category list
+                    let categories = vec![
+                        "read", "write", "admin", "dangerous", "keyspace",
+                        "string", "list", "set", "hash", "sortedset",
+                        "connection", "server", "scripting", "transaction",
+                    ];
+                    RespValue::Array(Some(
+                        categories
+                            .into_iter()
+                            .map(|c| RespValue::BulkString(Some(c.as_bytes().to_vec())))
+                            .collect(),
+                    ))
+                }
+            }
+
+            Command::AclGenPass { bits } => {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let bits = bits.unwrap_or(256).min(1024);
+                let bytes = (bits as usize + 7) / 8;
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let mut result = String::with_capacity(bytes * 2);
+                let mut state = seed;
+                for _ in 0..bytes {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let byte = ((state >> 33) & 0xFF) as u8;
+                    result.push_str(&format!("{:02x}", byte));
+                }
+                RespValue::BulkString(Some(result.into_bytes()))
             }
 
             Command::Unknown(cmd) => RespValue::Error(format!("ERR unknown command '{}'", cmd)),

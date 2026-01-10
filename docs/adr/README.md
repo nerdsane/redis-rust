@@ -53,6 +53,7 @@ Add an entry when you:
 | [006](./006-zero-copy-resp-parser.md) | Zero-Copy RESP Parser | Accepted | High-performance protocol parsing |
 | [007](./007-feature-flag-optimizations.md) | Feature Flag Optimization Strategy | Accepted | Incremental, measurable performance tuning |
 | [008](./008-docker-benchmark-methodology.md) | Docker-Only Benchmark Methodology | Accepted | Fair, reproducible performance comparisons |
+| [009](./009-security-tls-acl.md) | Security - TLS and ACL | Accepted | Optional TLS encryption and Redis 6.0+ ACL |
 
 ## Status Definitions
 

@@ -9,6 +9,22 @@
 //! |----------|---------|-------------|
 //! | REDIS_PORT | 6379 | Server port (Redis default) |
 //!
+//! ## TLS Configuration (requires `tls` feature)
+//!
+//! | Variable | Default | Description |
+//! |----------|---------|-------------|
+//! | TLS_CERT_PATH | - | Path to server certificate (PEM) |
+//! | TLS_KEY_PATH | - | Path to server private key (PEM) |
+//! | TLS_CA_PATH | - | Path to CA certificate for client verification (optional) |
+//! | TLS_REQUIRE_CLIENT_CERT | false | Require client certificates (mutual TLS) |
+//!
+//! ## ACL Configuration (requires `acl` feature)
+//!
+//! | Variable | Default | Description |
+//! |----------|---------|-------------|
+//! | REDIS_REQUIRE_PASS | - | Simple password for AUTH command |
+//! | ACL_FILE | - | Path to ACL configuration file |
+//!
 //! ## Datadog (when built with --features datadog)
 //!
 //! | Variable | Default | Description |
@@ -26,7 +42,7 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 use redis_sim::observability::{init_tracing, shutdown, DatadogConfig};
-use redis_sim::production::OptimizedRedisServer;
+use redis_sim::production::{OptimizedRedisServer, ServerConfig};
 
 const DEFAULT_PORT: u16 = 6379;
 
@@ -35,6 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize observability (Datadog when feature enabled, basic tracing otherwise)
     let dd_config = DatadogConfig::from_env();
     init_tracing(&dd_config)?;
+
+    // Load security configuration from environment
+    let security_config = ServerConfig::from_env();
 
     let port = std::env::var("REDIS_PORT")
         .ok()
@@ -56,6 +75,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("  - Buffer pooling");
     #[cfg(feature = "datadog")]
     println!("  - Datadog observability enabled");
+    println!();
+
+    // Display security configuration
+    println!("Security:");
+    if security_config.tls_enabled() {
+        #[cfg(feature = "tls")]
+        {
+            let tls = security_config.tls.as_ref().unwrap();
+            println!("  - TLS: ENABLED");
+            println!("    Certificate: {:?}", tls.cert_path);
+            println!("    Key: {:?}", tls.key_path);
+            if let Some(ca) = &tls.ca_path {
+                println!("    CA: {:?}", ca);
+            }
+            if tls.require_client_cert {
+                println!("    Client certificates: REQUIRED");
+            }
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            println!("  - TLS: Configured but feature not enabled (build with --features tls)");
+        }
+    } else {
+        println!("  - TLS: disabled");
+    }
+
+    if security_config.acl_enabled() {
+        #[cfg(feature = "acl")]
+        {
+            println!("  - ACL: ENABLED");
+            if security_config.acl.require_pass.is_some() {
+                println!("    Authentication: password required");
+            }
+            if let Some(acl_file) = &security_config.acl.acl_file {
+                println!("    ACL file: {:?}", acl_file);
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            println!("  - ACL: Configured but feature not enabled (build with --features acl)");
+        }
+    } else {
+        println!("  - ACL: disabled (no authentication)");
+    }
     println!();
 
     server.run().await?;

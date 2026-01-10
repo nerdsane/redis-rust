@@ -497,6 +497,7 @@ ADRs in `docs/adr/` are **living decision logs** that track architectural decisi
 | [006](docs/adr/006-zero-copy-resp-parser.md) | Zero-Copy RESP Parser | High-performance parsing |
 | [007](docs/adr/007-feature-flag-optimizations.md) | Feature Flag Optimizations | Measurable performance tuning |
 | [008](docs/adr/008-docker-benchmark-methodology.md) | Docker Benchmark Methodology | Fair performance comparisons |
+| [009](docs/adr/009-security-tls-acl.md) | Security - TLS and ACL | Optional TLS and Redis 6.0+ ACL |
 
 ### When to Update an ADR
 
