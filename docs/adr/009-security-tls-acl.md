@@ -93,6 +93,7 @@ When features are disabled:
 | 2026-01-09 | ACL permission checking in handler | Per-command ACL check before execution |
 | 2026-01-09 | Per-connection authentication state | Track authenticated user per connection |
 | 2026-01-10 | ACL file loading implemented | Load users from ACL_FILE env at startup |
+| 2026-01-10 | Client certificate authentication | CN from client cert maps to ACL user |
 
 ## Implementation Status
 
@@ -119,6 +120,8 @@ When features are disabled:
 | AclManager in server | `src/production/server_optimized.rs` | Complete |
 | ACL file loading | `src/security/acl/file.rs` | Complete |
 | ACL file integration | `src/production/server_optimized.rs` | Complete |
+| Client cert CN extraction | `src/security/tls/stream.rs` | Complete |
+| Client cert authentication | `src/production/connection_optimized.rs` | Complete |
 
 ### Validated
 
@@ -137,12 +140,12 @@ When features are disabled:
 - ACL file parsing (7 tests passing)
 - ACL file loading at startup loads users correctly
 - Key pattern restrictions work correctly
+- Client certificate authentication auto-authenticates users based on CN
+- Client cert CN maps to ACL user name for authorization
 
 ### Not Yet Implemented
 
-| Component | Notes |
-|-----------|-------|
-| Client certificate authentication | Extract identity from client cert |
+All security features have been implemented.
 
 ## References
 

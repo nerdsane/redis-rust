@@ -93,6 +93,7 @@ where
         metrics: Arc<Metrics>,
         config: ConnectionConfig,
         acl_manager: Arc<RwLock<AclManager>>,
+        client_cert_cn: Option<String>,
     ) -> Self {
         let buffer = buffer_pool.acquire();
         let write_buffer = buffer_pool.acquire();
@@ -105,10 +106,41 @@ where
             "max_buffer_size must be >= read_buffer_size"
         );
 
-        // If ACL doesn't require auth, auto-authenticate as default user
+        // Auto-authenticate based on priority:
+        // 1. Client certificate CN (if provided and matches an ACL user)
+        // 2. Default user (if ACL doesn't require auth)
         let authenticated_user = {
             let manager = acl_manager.read();
-            if !manager.requires_auth() {
+
+            // Try client certificate authentication first
+            if let Some(ref cn) = client_cert_cn {
+                if let Some(user) = manager.get_user(cn) {
+                    if user.enabled {
+                        info!(
+                            "Client {} authenticated via certificate as '{}'",
+                            client_addr, cn
+                        );
+                        Some(user)
+                    } else {
+                        warn!(
+                            "Client {} has certificate for disabled user '{}'",
+                            client_addr, cn
+                        );
+                        None
+                    }
+                } else {
+                    warn!(
+                        "Client {} has certificate CN '{}' but no matching ACL user",
+                        client_addr, cn
+                    );
+                    // Fall through to default auth
+                    if !manager.requires_auth() {
+                        Some(manager.default_user())
+                    } else {
+                        None
+                    }
+                }
+            } else if !manager.requires_auth() {
                 Some(manager.default_user())
             } else {
                 None

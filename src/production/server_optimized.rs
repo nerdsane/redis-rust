@@ -128,17 +128,25 @@ impl OptimizedRedisServer {
 
                         // Wrap stream with TLS if enabled
                         #[cfg(feature = "tls")]
-                        let stream = if let Some(acceptor) = tls_acceptor_clone {
+                        let (stream, client_cert_cn) = if let Some(acceptor) = tls_acceptor_clone {
                             match acceptor.accept(stream).await {
-                                Ok(tls_stream) => MaybeSecureStream::tls(tls_stream),
+                                Ok(tls_stream) => {
+                                    let stream = MaybeSecureStream::tls(tls_stream);
+                                    // Extract client certificate CN for authentication
+                                    let cn = stream.peer_certificate_cn();
+                                    (stream, cn)
+                                }
                                 Err(e) => {
                                     warn!("TLS handshake failed for {}: {}", client_addr, e);
                                     return;
                                 }
                             }
                         } else {
-                            MaybeSecureStream::plain(stream)
+                            (MaybeSecureStream::plain(stream), None)
                         };
+
+                        #[cfg(not(feature = "tls"))]
+                        let client_cert_cn: Option<String> = None;
 
                         let handler = OptimizedConnectionHandler::new(
                             stream,
@@ -148,6 +156,7 @@ impl OptimizedRedisServer {
                             metrics_clone,
                             conn_config_clone,
                             acl_manager_clone,
+                            client_cert_cn,
                         );
                         handler.run().await;
                     });

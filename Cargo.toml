@@ -19,7 +19,7 @@ datadog = [
 ]
 
 # Security features
-tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:x509-parser"]
 acl = ["dep:sha2"]
 security = ["tls", "acl"]
 
@@ -131,6 +131,10 @@ optional = true
 
 [dependencies.rustls-pemfile]
 version = "2"
+optional = true
+
+[dependencies.x509-parser]
+version = "0.16"
 optional = true
 
 [dependencies.sha2]

@@ -39,12 +39,14 @@ pub mod acl_noop {
     #[derive(Debug, Clone)]
     pub struct AclUser {
         pub name: String,
+        pub enabled: bool,
     }
 
     impl AclUser {
         pub fn default_user() -> Self {
             Self {
                 name: "default".to_string(),
+                enabled: true,
             }
         }
     }
@@ -90,6 +92,11 @@ pub mod acl_noop {
 
         /// No-op: set user does nothing when ACL feature disabled
         pub fn set_user(&mut self, _user: AclUser) {}
+
+        /// No-op: get user returns None when ACL feature disabled
+        pub fn get_user(&self, _username: &str) -> Option<Arc<AclUser>> {
+            None
+        }
     }
 }
 

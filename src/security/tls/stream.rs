@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::server::TlsStream;
 
 /// A stream that may or may not be TLS-encrypted
@@ -49,6 +50,43 @@ impl MaybeSecureStream {
             MaybeSecureStream::Plain(s) => s.set_nodelay(nodelay),
             MaybeSecureStream::Tls(s) => s.get_ref().0.set_nodelay(nodelay),
         }
+    }
+
+    /// Get peer certificates (for client certificate authentication)
+    ///
+    /// Returns the client's certificate chain if this is a TLS connection
+    /// and the client provided certificates during handshake.
+    pub fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
+        match self {
+            MaybeSecureStream::Plain(_) => None,
+            MaybeSecureStream::Tls(s) => {
+                let (_, conn) = s.get_ref();
+                conn.peer_certificates().map(|certs| certs.to_vec())
+            }
+        }
+    }
+
+    /// Extract the Common Name (CN) from the client certificate
+    ///
+    /// Returns the CN from the subject of the first certificate in the chain.
+    /// This is typically used for client certificate authentication to identify the user.
+    pub fn peer_certificate_cn(&self) -> Option<String> {
+        let certs = self.peer_certificates()?;
+        let cert_der = certs.first()?;
+
+        // Parse the X.509 certificate
+        let (_, cert) = x509_parser::parse_x509_certificate(cert_der.as_ref()).ok()?;
+
+        // Extract the Common Name from the subject
+        for rdn in cert.subject().iter() {
+            for attr in rdn.iter() {
+                if attr.attr_type() == &x509_parser::oid_registry::OID_X509_COMMON_NAME {
+                    return attr.attr_value().as_str().ok().map(|s| s.to_string());
+                }
+            }
+        }
+
+        None
     }
 }
 
