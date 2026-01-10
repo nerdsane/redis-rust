@@ -1,10 +1,13 @@
 use super::connection_optimized::{ConnectionConfig, OptimizedConnectionHandler};
 use super::ttl_manager::TtlManagerActor;
-use super::{ConnectionPool, PerformanceConfig, ShardedActorState};
+use super::{ConnectionPool, PerformanceConfig, ServerConfig, ShardedActorState};
 use crate::observability::{DatadogConfig, Metrics};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+#[cfg(feature = "tls")]
+use crate::security::tls::{MaybeSecureStream, TlsAcceptor};
 
 pub struct OptimizedRedisServer {
     addr: String,
@@ -33,6 +36,38 @@ impl OptimizedRedisServer {
             perf_config.buffers.read_size,
             perf_config.batching.min_pipeline_buffer,
         );
+
+        // Load security configuration
+        let server_config = ServerConfig::from_env();
+
+        // Build TLS acceptor if TLS is configured
+        #[cfg(feature = "tls")]
+        let tls_acceptor: Option<TlsAcceptor> = if let Some(tls_config) = &server_config.tls {
+            match tls_config.build_acceptor() {
+                Ok(acceptor) => {
+                    info!(
+                        "TLS enabled with cert={:?}, key={:?}",
+                        tls_config.cert_path, tls_config.key_path
+                    );
+                    if tls_config.require_client_cert {
+                        info!("Mutual TLS (mTLS) enabled - client certificates required");
+                    }
+                    Some(acceptor)
+                }
+                Err(e) => {
+                    error!("Failed to initialize TLS: {}", e);
+                    return Err(Box::new(e));
+                }
+            }
+        } else {
+            info!("TLS disabled (set TLS_CERT_PATH and TLS_KEY_PATH to enable)");
+            None
+        };
+
+        #[cfg(not(feature = "tls"))]
+        if server_config.tls.is_some() {
+            warn!("TLS configuration provided but 'tls' feature not enabled. Ignoring TLS settings.");
+        }
 
         let state = ShardedActorState::with_perf_config(&perf_config);
         let connection_pool = Arc::new(ConnectionPool::new(10000, 512));
@@ -66,14 +101,36 @@ impl OptimizedRedisServer {
                     let metrics_clone = metrics.clone();
                     let conn_config_clone = conn_config.clone();
 
+                    // Set TCP_NODELAY for lower latency before any wrapping
+                    if let Err(e) = stream.set_nodelay(true) {
+                        warn!("Failed to set TCP_NODELAY for {}: {}", client_addr, e);
+                    }
+
+                    #[cfg(feature = "tls")]
+                    let tls_acceptor_clone = tls_acceptor.clone();
+
                     tokio::spawn(async move {
                         // TigerStyle: Handle Result instead of unwrap
                         let _permit = match pool.acquire_permit().await {
                             Ok(permit) => permit,
                             Err(e) => {
-                                tracing::warn!("Failed to acquire connection permit: {}", e);
+                                warn!("Failed to acquire connection permit: {}", e);
                                 return;
                             }
+                        };
+
+                        // Wrap stream with TLS if enabled
+                        #[cfg(feature = "tls")]
+                        let stream = if let Some(acceptor) = tls_acceptor_clone {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => MaybeSecureStream::tls(tls_stream),
+                                Err(e) => {
+                                    warn!("TLS handshake failed for {}: {}", client_addr, e);
+                                    return;
+                                }
+                            }
+                        } else {
+                            MaybeSecureStream::plain(stream)
                         };
 
                         let handler = OptimizedConnectionHandler::new(

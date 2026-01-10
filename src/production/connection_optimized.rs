@@ -6,8 +6,7 @@ use crate::redis::{Command, RespCodec, RespValue};
 use bytes::{BufMut, BytesMut};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, warn, Instrument};
 
 // P3 optimization: Use itoa for fast integer encoding
@@ -64,8 +63,8 @@ impl ConnectionConfig {
     }
 }
 
-pub struct OptimizedConnectionHandler {
-    stream: TcpStream,
+pub struct OptimizedConnectionHandler<S> {
+    stream: S,
     state: ShardedActorState,
     buffer: BytesMut,
     write_buffer: BytesMut,
@@ -75,10 +74,13 @@ pub struct OptimizedConnectionHandler {
     config: ConnectionConfig,
 }
 
-impl OptimizedConnectionHandler {
+impl<S> OptimizedConnectionHandler<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     #[inline]
     pub fn new(
-        stream: TcpStream,
+        stream: S,
         state: ShardedActorState,
         client_addr: String,
         buffer_pool: Arc<BufferPoolAsync>,
@@ -115,10 +117,7 @@ impl OptimizedConnectionHandler {
             info!("Client connected: {}", self.client_addr);
             self.metrics.record_connection("established");
 
-            // Enable TCP_NODELAY for lower latency (disable Nagle's algorithm)
-            if let Err(e) = self.stream.set_nodelay(true) {
-                warn!("Failed to set TCP_NODELAY: {}", e);
-            }
+            // Note: TCP_NODELAY should be set at the server level before passing the stream
 
             // Use config for read buffer size (stack-allocate with max expected size)
             let mut read_buf = vec![0u8; self.config.read_buffer_size];

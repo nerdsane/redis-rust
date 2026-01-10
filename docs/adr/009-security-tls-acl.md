@@ -79,7 +79,6 @@ When features are disabled:
 
 - ACL implementation may have gaps vs Redis behavior
 - TLS certificate management is operator responsibility
-- Connection handler TLS integration is not complete (TODO)
 
 ## Decision Log
 
@@ -89,6 +88,8 @@ When features are disabled:
 | 2026-01-09 | Use rustls over native-tls | Pure Rust, no system dependencies, memory-safe |
 | 2026-01-09 | Redis 6.0+ ACL compatibility | Industry standard, familiar to operators |
 | 2026-01-09 | Optional via feature flags | Zero overhead when not needed, flexible deployment |
+| 2026-01-09 | Make connection handler generic over stream type | Enables MaybeSecureStream for TLS/plain TCP |
+| 2026-01-09 | TLS accept loop integration complete | Server wraps TcpStream with TlsAcceptor when configured |
 
 ## Implementation Status
 
@@ -106,6 +107,8 @@ When features are disabled:
 | ACL commands | `src/redis/commands.rs` | Parsing complete |
 | Server configuration | `src/production/server_config.rs` | Complete |
 | CLI/env documentation | `src/bin/server_optimized.rs` | Complete |
+| Connection handler TLS | `src/production/connection_optimized.rs` | Complete (generic over stream) |
+| TLS accept loop | `src/production/server_optimized.rs` | Complete |
 
 ### Validated
 
@@ -114,15 +117,15 @@ When features are disabled:
 - Command category permissions
 - Key pattern glob matching
 - ACL rule parsing (SETUSER rules)
+- TLS feature compiles correctly (cargo check --features tls)
+- Server accepts connections with/without TLS based on config
 
 ### Not Yet Implemented
 
 | Component | Notes |
 |-----------|-------|
-| Connection handler TLS integration | Requires making handler generic over stream type |
 | ACL permission checking in handler | Need to add check before command execution |
 | ACL file loading | Load ACL configuration from file at startup |
-| TLS accept loop integration | Need to wrap TcpStream with TlsAcceptor |
 | Client certificate authentication | Extract identity from client cert |
 
 ## References
