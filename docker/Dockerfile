@@ -25,7 +25,7 @@
 #   AWS_SECRET_ACCESS_KEY
 
 # Build stage
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.93-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
