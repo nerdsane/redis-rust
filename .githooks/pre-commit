@@ -1,0 +1,31 @@
+#!/bin/bash
+# Pre-commit hook for redis-rust
+# Catches formatting and lint issues before CI
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting
+echo "Checking formatting..."
+if ! cargo fmt --all --check 2>/dev/null; then
+    echo ""
+    echo "ERROR: Formatting check failed!"
+    echo "Run 'cargo fmt --all' to fix formatting issues."
+    echo ""
+    exit 1
+fi
+echo "Formatting OK"
+
+# Run clippy (optional, can be slow - uncomment if desired)
+# echo "Running clippy..."
+# if ! cargo clippy --all-targets --all-features -- -D warnings 2>/dev/null; then
+#     echo ""
+#     echo "ERROR: Clippy found warnings!"
+#     echo "Fix the warnings before committing."
+#     echo ""
+#     exit 1
+# fi
+# echo "Clippy OK"
+
+echo "Pre-commit checks passed!"
