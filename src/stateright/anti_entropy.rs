@@ -36,7 +36,10 @@ impl MerkleDigest {
         for (k, v) in state {
             hash ^= k.wrapping_mul(31) ^ v.value.wrapping_mul(17) ^ v.timestamp;
         }
-        MerkleDigest { hash, generation: 0 }
+        MerkleDigest {
+            hash,
+            generation: 0,
+        }
     }
 }
 
@@ -119,7 +122,11 @@ impl AntiEntropyState {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AntiEntropyAction {
     /// Local write at a replica
-    LocalWrite { replica: ReplicaId, key: u64, value: u64 },
+    LocalWrite {
+        replica: ReplicaId,
+        key: u64,
+        value: u64,
+    },
     /// Exchange digests between two replicas
     ExchangeDigest { r1: ReplicaId, r2: ReplicaId },
     /// Initiate sync from one replica to another
@@ -229,7 +236,11 @@ impl Model for AntiEntropyModel {
         let mut next = state.clone();
 
         match action {
-            AntiEntropyAction::LocalWrite { replica, key, value } => {
+            AntiEntropyAction::LocalWrite {
+                replica,
+                key,
+                value,
+            } => {
                 let gen = next.generations.entry(replica).or_insert(0);
                 *gen += 1;
                 let timestamp = *gen;
@@ -255,8 +266,14 @@ impl Model for AntiEntropyModel {
                 let d2 = next.compute_digest(r2);
 
                 // Store peer digests
-                next.peer_digests.entry(r1).or_default().insert(r2, d2.clone());
-                next.peer_digests.entry(r2).or_default().insert(r1, d1.clone());
+                next.peer_digests
+                    .entry(r1)
+                    .or_default()
+                    .insert(r2, d2.clone());
+                next.peer_digests
+                    .entry(r2)
+                    .or_default()
+                    .insert(r1, d1.clone());
 
                 // Mark divergent if different
                 if d1.hash != d2.hash {
@@ -308,9 +325,8 @@ impl Model for AntiEntropyModel {
                 next.partitions.insert((r1, r2));
 
                 // Drop pending syncs between partitioned nodes
-                next.pending_syncs.retain(|&(f, t)| {
-                    !((f == r1 && t == r2) || (f == r2 && t == r1))
-                });
+                next.pending_syncs
+                    .retain(|&(f, t)| !((f == r1 && t == r2) || (f == r2 && t == r1)));
             }
 
             AntiEntropyAction::HealPartition { r1, r2 } => {
@@ -332,57 +348,71 @@ impl Model for AntiEntropyModel {
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
             // INVARIANT: Generations are monotonically increasing
-            Property::always("generation_monotonic", |model: &AntiEntropyModel, state: &AntiEntropyState| {
-                state.generations.values().all(|&g| g <= model.max_generation)
-            }),
-
+            Property::always(
+                "generation_monotonic",
+                |model: &AntiEntropyModel, state: &AntiEntropyState| {
+                    state
+                        .generations
+                        .values()
+                        .all(|&g| g <= model.max_generation)
+                },
+            ),
             // INVARIANT: No self-divergence
-            Property::always("no_self_divergence", |_model: &AntiEntropyModel, state: &AntiEntropyState| {
-                for (&r, divergent) in &state.divergent_peers {
-                    if divergent.contains(&r) {
-                        return false;
-                    }
-                }
-                true
-            }),
-
-            // INVARIANT: Partitions are symmetric
-            Property::always("partition_symmetric", |_model: &AntiEntropyModel, state: &AntiEntropyState| {
-                for &(r1, r2) in &state.partitions {
-                    // Either (r1, r2) or (r2, r1) should be present, not necessarily both
-                    // Our model uses (min, max) ordering
-                    if r1 >= r2 {
-                        return false;
-                    }
-                }
-                true
-            }),
-
-            // INVARIANT: Sync requests are for valid replicas
-            Property::always("sync_requests_valid", |model: &AntiEntropyModel, state: &AntiEntropyState| {
-                for &(from, to) in &state.pending_syncs {
-                    if from == to {
-                        return false;
-                    }
-                    if !model.replica_ids.contains(&from) || !model.replica_ids.contains(&to) {
-                        return false;
-                    }
-                }
-                true
-            }),
-
-            // INVARIANT: After sync completes, states converge for synced keys
-            Property::always("sync_convergence_progress", |_model: &AntiEntropyModel, state: &AntiEntropyState| {
-                // This is a weaker property: just verify state is well-formed
-                for (_, kv_state) in &state.replicas {
-                    for (k, v) in kv_state {
-                        if v.key != *k {
+            Property::always(
+                "no_self_divergence",
+                |_model: &AntiEntropyModel, state: &AntiEntropyState| {
+                    for (&r, divergent) in &state.divergent_peers {
+                        if divergent.contains(&r) {
                             return false;
                         }
                     }
-                }
-                true
-            }),
+                    true
+                },
+            ),
+            // INVARIANT: Partitions are symmetric
+            Property::always(
+                "partition_symmetric",
+                |_model: &AntiEntropyModel, state: &AntiEntropyState| {
+                    for &(r1, r2) in &state.partitions {
+                        // Either (r1, r2) or (r2, r1) should be present, not necessarily both
+                        // Our model uses (min, max) ordering
+                        if r1 >= r2 {
+                            return false;
+                        }
+                    }
+                    true
+                },
+            ),
+            // INVARIANT: Sync requests are for valid replicas
+            Property::always(
+                "sync_requests_valid",
+                |model: &AntiEntropyModel, state: &AntiEntropyState| {
+                    for &(from, to) in &state.pending_syncs {
+                        if from == to {
+                            return false;
+                        }
+                        if !model.replica_ids.contains(&from) || !model.replica_ids.contains(&to) {
+                            return false;
+                        }
+                    }
+                    true
+                },
+            ),
+            // INVARIANT: After sync completes, states converge for synced keys
+            Property::always(
+                "sync_convergence_progress",
+                |_model: &AntiEntropyModel, state: &AntiEntropyState| {
+                    // This is a weaker property: just verify state is well-formed
+                    for (_, kv_state) in &state.replicas {
+                        for (k, v) in kv_state {
+                            if v.key != *k {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                },
+            ),
         ]
     }
 }
@@ -404,10 +434,24 @@ mod tests {
     #[test]
     fn test_merkle_digest() {
         let mut kv1 = BTreeMap::new();
-        kv1.insert(1, KeyValue { key: 1, value: 10, timestamp: 1 });
+        kv1.insert(
+            1,
+            KeyValue {
+                key: 1,
+                value: 10,
+                timestamp: 1,
+            },
+        );
 
         let mut kv2 = BTreeMap::new();
-        kv2.insert(1, KeyValue { key: 1, value: 10, timestamp: 1 });
+        kv2.insert(
+            1,
+            KeyValue {
+                key: 1,
+                value: 10,
+                timestamp: 1,
+            },
+        );
 
         let d1 = MerkleDigest::from_state(&kv1);
         let d2 = MerkleDigest::from_state(&kv2);
@@ -416,7 +460,14 @@ mod tests {
 
         // Different state should have different digest
         let mut kv3 = BTreeMap::new();
-        kv3.insert(1, KeyValue { key: 1, value: 20, timestamp: 1 });
+        kv3.insert(
+            1,
+            KeyValue {
+                key: 1,
+                value: 20,
+                timestamp: 1,
+            },
+        );
         let d3 = MerkleDigest::from_state(&kv3);
 
         assert_ne!(d1.hash, d3.hash);
@@ -441,8 +492,16 @@ mod tests {
 
     #[test]
     fn test_merge_value_lww() {
-        let v1 = KeyValue { key: 1, value: 10, timestamp: 1 };
-        let v2 = KeyValue { key: 1, value: 20, timestamp: 2 };
+        let v1 = KeyValue {
+            key: 1,
+            value: 10,
+            timestamp: 1,
+        };
+        let v2 = KeyValue {
+            key: 1,
+            value: 20,
+            timestamp: 2,
+        };
 
         let merged = AntiEntropyState::merge_value(&v1, &v2);
         assert_eq!(merged.value, 20); // Higher timestamp wins
@@ -482,7 +541,11 @@ mod tests {
         state.generations.insert(1, 1);
         state.replicas.get_mut(&1).unwrap().insert(
             1,
-            KeyValue { key: 1, value: 100, timestamp: 1 },
+            KeyValue {
+                key: 1,
+                value: 100,
+                timestamp: 1,
+            },
         );
 
         // Mark as divergent

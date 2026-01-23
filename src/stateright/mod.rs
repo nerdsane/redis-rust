@@ -48,13 +48,13 @@
 //! | `WriteBufferModel` | `StreamingPersistence.tla` | WRITE_BUFFER_BOUNDED |
 //! | `AntiEntropyModel` | `AntiEntropy.tla` | SYNC_COMPLETENESS |
 
-pub mod replication;
-pub mod persistence;
 pub mod anti_entropy;
+pub mod persistence;
+pub mod replication;
 
 #[cfg(test)]
-pub use replication::CrdtMergeModel;
+pub use anti_entropy::AntiEntropyModel;
 #[cfg(test)]
 pub use persistence::WriteBufferModel;
 #[cfg(test)]
-pub use anti_entropy::AntiEntropyModel;
+pub use replication::CrdtMergeModel;

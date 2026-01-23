@@ -23,9 +23,7 @@ pub use lua::ScriptCache;
 pub use resp::{RespParser, RespValue};
 pub use resp_optimized::{BufferPool, RespCodec, RespValueZeroCopy};
 pub use server::{RedisClient, RedisServer};
-pub use set_dst::{
-    run_set_batch, summarize_set_batch, SetDSTConfig, SetDSTHarness, SetDSTResult,
-};
+pub use set_dst::{run_set_batch, summarize_set_batch, SetDSTConfig, SetDSTHarness, SetDSTResult};
 pub use sorted_set_dst::{
     run_sorted_set_batch, summarize_batch, SortedSetDSTConfig, SortedSetDSTHarness,
     SortedSetDSTResult,

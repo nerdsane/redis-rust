@@ -834,7 +834,7 @@ mod kani_proofs {
 
         kani::assert(
             (lt && !eq && !gt) || (!lt && eq && !gt) || (!lt && !eq && gt),
-            "Lamport clock comparison must be total order"
+            "Lamport clock comparison must be total order",
         );
     }
 

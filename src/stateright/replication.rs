@@ -62,11 +62,19 @@ impl LwwRegister {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CrdtAction {
     /// Set a value on a replica
-    Set { replica: ReplicaId, key: u64, value: u64 },
+    Set {
+        replica: ReplicaId,
+        key: u64,
+        value: u64,
+    },
     /// Delete a key on a replica
     Delete { replica: ReplicaId, key: u64 },
     /// Merge state from one replica to another
-    Sync { from: ReplicaId, to: ReplicaId, key: u64 },
+    Sync {
+        from: ReplicaId,
+        to: ReplicaId,
+        key: u64,
+    },
 }
 
 /// State of the distributed system
@@ -158,7 +166,11 @@ impl Model for CrdtMergeModel {
             for &key in &self.keys {
                 // Set actions
                 for &value in &self.values {
-                    actions.push(CrdtAction::Set { replica, key, value });
+                    actions.push(CrdtAction::Set {
+                        replica,
+                        key,
+                        value,
+                    });
                 }
 
                 // Delete actions
@@ -184,7 +196,11 @@ impl Model for CrdtMergeModel {
         let mut next = state.clone();
 
         match action {
-            CrdtAction::Set { replica, key, value } => {
+            CrdtAction::Set {
+                replica,
+                key,
+                value,
+            } => {
                 let ts = next.tick(replica);
                 if let Some(reg) = next.get_register_mut(replica, key) {
                     reg.set(value, ts);
@@ -214,33 +230,40 @@ impl Model for CrdtMergeModel {
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
             // INVARIANT: Lamport clocks never decrease (monotonic)
-            Property::always("lamport_monotonic", |model: &CrdtMergeModel, state: &CrdtState| {
-                state.clocks.values().all(|&c| c <= model.max_clock)
-            }),
-
+            Property::always(
+                "lamport_monotonic",
+                |model: &CrdtMergeModel, state: &CrdtState| {
+                    state.clocks.values().all(|&c| c <= model.max_clock)
+                },
+            ),
             // INVARIANT: Tombstone implies no value
-            Property::always("tombstone_consistency", |_model: &CrdtMergeModel, state: &CrdtState| {
-                for kv in state.replicas.values() {
-                    for reg in kv.values() {
-                        if reg.tombstone && reg.value.is_some() {
-                            return false;
+            Property::always(
+                "tombstone_consistency",
+                |_model: &CrdtMergeModel, state: &CrdtState| {
+                    for kv in state.replicas.values() {
+                        for reg in kv.values() {
+                            if reg.tombstone && reg.value.is_some() {
+                                return false;
+                            }
                         }
                     }
-                }
-                true
-            }),
-
+                    true
+                },
+            ),
             // INVARIANT: All registers have valid timestamps
-            Property::always("valid_timestamps", |model: &CrdtMergeModel, state: &CrdtState| {
-                for kv in state.replicas.values() {
-                    for reg in kv.values() {
-                        if reg.timestamp > model.max_clock + 1 {
-                            return false;
+            Property::always(
+                "valid_timestamps",
+                |model: &CrdtMergeModel, state: &CrdtState| {
+                    for kv in state.replicas.values() {
+                        for reg in kv.values() {
+                            if reg.timestamp > model.max_clock + 1 {
+                                return false;
+                            }
                         }
                     }
-                }
-                true
-            }),
+                    true
+                },
+            ),
         ]
     }
 }
@@ -348,19 +371,64 @@ mod tests {
         let mut registers = Vec::new();
 
         // Replica 1: set operations
-        registers.push(LwwRegister { value: Some(10), timestamp: 1, replica_id: 1, tombstone: false });
-        registers.push(LwwRegister { value: Some(11), timestamp: 2, replica_id: 1, tombstone: false });
-        registers.push(LwwRegister { value: Some(12), timestamp: 3, replica_id: 1, tombstone: false });
+        registers.push(LwwRegister {
+            value: Some(10),
+            timestamp: 1,
+            replica_id: 1,
+            tombstone: false,
+        });
+        registers.push(LwwRegister {
+            value: Some(11),
+            timestamp: 2,
+            replica_id: 1,
+            tombstone: false,
+        });
+        registers.push(LwwRegister {
+            value: Some(12),
+            timestamp: 3,
+            replica_id: 1,
+            tombstone: false,
+        });
 
         // Replica 2: set then delete
-        registers.push(LwwRegister { value: Some(20), timestamp: 1, replica_id: 2, tombstone: false });
-        registers.push(LwwRegister { value: None, timestamp: 2, replica_id: 2, tombstone: true });
-        registers.push(LwwRegister { value: Some(22), timestamp: 3, replica_id: 2, tombstone: false });
+        registers.push(LwwRegister {
+            value: Some(20),
+            timestamp: 1,
+            replica_id: 2,
+            tombstone: false,
+        });
+        registers.push(LwwRegister {
+            value: None,
+            timestamp: 2,
+            replica_id: 2,
+            tombstone: true,
+        });
+        registers.push(LwwRegister {
+            value: Some(22),
+            timestamp: 3,
+            replica_id: 2,
+            tombstone: false,
+        });
 
         // Replica 3: various states
-        registers.push(LwwRegister { value: Some(30), timestamp: 1, replica_id: 3, tombstone: false });
-        registers.push(LwwRegister { value: Some(31), timestamp: 2, replica_id: 3, tombstone: false });
-        registers.push(LwwRegister { value: None, timestamp: 3, replica_id: 3, tombstone: true });
+        registers.push(LwwRegister {
+            value: Some(30),
+            timestamp: 1,
+            replica_id: 3,
+            tombstone: false,
+        });
+        registers.push(LwwRegister {
+            value: Some(31),
+            timestamp: 2,
+            replica_id: 3,
+            tombstone: false,
+        });
+        registers.push(LwwRegister {
+            value: None,
+            timestamp: 3,
+            replica_id: 3,
+            tombstone: true,
+        });
 
         // Test all pairs for commutativity
         for a in &registers {
@@ -391,11 +459,7 @@ mod tests {
 
         // Test all for idempotence
         for a in &registers {
-            assert!(
-                verify_merge_idempotent(a),
-                "Idempotence failed for {:?}",
-                a
-            );
+            assert!(verify_merge_idempotent(a), "Idempotence failed for {:?}", a);
         }
 
         println!(

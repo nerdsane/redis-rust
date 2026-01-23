@@ -68,7 +68,9 @@ impl OptimizedRedisServer {
 
         #[cfg(not(feature = "tls"))]
         if server_config.tls.is_some() {
-            warn!("TLS configuration provided but 'tls' feature not enabled. Ignoring TLS settings.");
+            warn!(
+                "TLS configuration provided but 'tls' feature not enabled. Ignoring TLS settings."
+            );
         }
 
         // Initialize ACL manager

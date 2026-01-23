@@ -9,10 +9,7 @@ pub struct AclCommandHandler;
 impl AclCommandHandler {
     /// Handle AUTH command
     /// Returns the authenticated user on success
-    pub fn handle_auth(
-        manager: &AclManager,
-        args: &[&str],
-    ) -> Result<Arc<AclUser>, AclError> {
+    pub fn handle_auth(manager: &AclManager, args: &[&str]) -> Result<Arc<AclUser>, AclError> {
         match args.len() {
             // AUTH password (authenticate as default user)
             1 => manager.authenticate("default", args[0]),
@@ -82,10 +79,7 @@ impl AclCommandHandler {
     }
 
     /// Handle ACL DELUSER command
-    pub fn handle_deluser(
-        manager: &mut AclManager,
-        usernames: &[&str],
-    ) -> Result<usize, AclError> {
+    pub fn handle_deluser(manager: &mut AclManager, usernames: &[&str]) -> Result<usize, AclError> {
         let mut deleted = 0;
         for username in usernames {
             if manager.del_user(username)? {
@@ -101,9 +95,20 @@ impl AclCommandHandler {
             None => {
                 // List all categories
                 Ok(vec![
-                    "read", "write", "admin", "dangerous", "keyspace",
-                    "string", "list", "set", "hash", "sortedset",
-                    "connection", "server", "scripting", "transaction",
+                    "read",
+                    "write",
+                    "admin",
+                    "dangerous",
+                    "keyspace",
+                    "string",
+                    "list",
+                    "set",
+                    "hash",
+                    "sortedset",
+                    "connection",
+                    "server",
+                    "scripting",
+                    "transaction",
                 ]
                 .into_iter()
                 .map(|s| s.to_string())
@@ -111,10 +116,11 @@ impl AclCommandHandler {
             }
             Some(cat) => {
                 // List commands in category
-                let category = CommandCategory::from_str(cat).ok_or_else(|| AclError::InvalidRule {
-                    rule: cat.to_string(),
-                    reason: "unknown category".to_string(),
-                })?;
+                let category =
+                    CommandCategory::from_str(cat).ok_or_else(|| AclError::InvalidRule {
+                        rule: cat.to_string(),
+                        reason: "unknown category".to_string(),
+                    })?;
                 Ok(category
                     .commands()
                     .iter()
@@ -235,9 +241,11 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
             } else if let Some(rest) = rule.strip_prefix('%') {
                 // Read/write key pattern (advanced feature)
                 if let Some(pattern) = rest.strip_prefix("R~") {
-                    user.keys.add_pattern(KeyPattern::read_only(pattern.to_string()));
+                    user.keys
+                        .add_pattern(KeyPattern::read_only(pattern.to_string()));
                 } else if let Some(pattern) = rest.strip_prefix("W~") {
-                    user.keys.add_pattern(KeyPattern::write_only(pattern.to_string()));
+                    user.keys
+                        .add_pattern(KeyPattern::write_only(pattern.to_string()));
                 } else if let Some(pattern) = rest.strip_prefix("RW~") {
                     user.keys.add_pattern(KeyPattern::new(pattern.to_string()));
                 } else {

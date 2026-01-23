@@ -245,54 +245,67 @@ impl Model for WriteBufferModel {
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
             // INVARIANT 1: Write buffer never exceeds backpressure threshold
-            Property::always("write_buffer_bounded", |model: &WriteBufferModel, state: &PersistenceState| {
-                state.buffer_size <= model.config.backpressure_threshold
-            }),
-
+            Property::always(
+                "write_buffer_bounded",
+                |model: &WriteBufferModel, state: &PersistenceState| {
+                    state.buffer_size <= model.config.backpressure_threshold
+                },
+            ),
             // INVARIANT 2: Segment IDs are monotonically increasing
-            Property::always("segment_id_monotonic", |_model: &WriteBufferModel, state: &PersistenceState| {
-                for &seg_id in &state.segments {
-                    if seg_id >= state.next_segment_id {
-                        return false;
-                    }
-                }
-                true
-            }),
-
-            // INVARIANT 3: Manifest only contains written segments
-            Property::always("manifest_consistent", |_model: &WriteBufferModel, state: &PersistenceState| {
-                // When not crashed, manifest should be subset of segments
-                if !state.crashed {
-                    for seg_id in &state.manifest_segments {
-                        if !state.segments.contains(seg_id) {
+            Property::always(
+                "segment_id_monotonic",
+                |_model: &WriteBufferModel, state: &PersistenceState| {
+                    for &seg_id in &state.segments {
+                        if seg_id >= state.next_segment_id {
                             return false;
                         }
                     }
-                }
-                true
-            }),
-
+                    true
+                },
+            ),
+            // INVARIANT 3: Manifest only contains written segments
+            Property::always(
+                "manifest_consistent",
+                |_model: &WriteBufferModel, state: &PersistenceState| {
+                    // When not crashed, manifest should be subset of segments
+                    if !state.crashed {
+                        for seg_id in &state.manifest_segments {
+                            if !state.segments.contains(seg_id) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                },
+            ),
             // INVARIANT 4: Buffer size matches deltas
-            Property::always("buffer_size_consistent", |_model: &WriteBufferModel, state: &PersistenceState| {
-                let expected_size: usize = state.buffer.iter().map(|d| d.size()).sum();
-                state.buffer_size == expected_size
-            }),
-
+            Property::always(
+                "buffer_size_consistent",
+                |_model: &WriteBufferModel, state: &PersistenceState| {
+                    let expected_size: usize = state.buffer.iter().map(|d| d.size()).sum();
+                    state.buffer_size == expected_size
+                },
+            ),
             // INVARIANT 5: Recovered state has empty buffer
-            Property::always("recovered_state_valid", |_model: &WriteBufferModel, state: &PersistenceState| {
-                if state.recovered && !state.crashed {
-                    // After recovery completes, this is fine
-                    true
-                } else {
-                    true
-                }
-            }),
-
+            Property::always(
+                "recovered_state_valid",
+                |_model: &WriteBufferModel, state: &PersistenceState| {
+                    if state.recovered && !state.crashed {
+                        // After recovery completes, this is fine
+                        true
+                    } else {
+                        true
+                    }
+                },
+            ),
             // INVARIANT 6: No segment ID reuse
-            Property::always("no_segment_id_reuse", |_model: &WriteBufferModel, _state: &PersistenceState| {
-                // Segments set automatically prevents duplicates (BTreeSet)
-                true
-            }),
+            Property::always(
+                "no_segment_id_reuse",
+                |_model: &WriteBufferModel, _state: &PersistenceState| {
+                    // Segments set automatically prevents duplicates (BTreeSet)
+                    true
+                },
+            ),
         ]
     }
 }

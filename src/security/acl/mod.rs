@@ -127,10 +127,7 @@ impl AclManager {
 
     /// Authenticate a user with username and password
     pub fn authenticate(&self, username: &str, password: &str) -> Result<Arc<AclUser>, AclError> {
-        let user = self
-            .users
-            .get(username)
-            .ok_or(AclError::AuthFailed)?;
+        let user = self.users.get(username).ok_or(AclError::AuthFailed)?;
 
         if !user.enabled {
             return Err(AclError::UserDisabled);

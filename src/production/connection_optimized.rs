@@ -402,7 +402,10 @@ where
             Ok(user) => {
                 drop(manager); // Release read lock before mutating self
                 self.authenticated_user = Some(user);
-                info!("Client {} authenticated as '{}'", self.client_addr, username);
+                info!(
+                    "Client {} authenticated as '{}'",
+                    self.client_addr, username
+                );
                 RespValue::SimpleString("OK".to_string())
             }
             Err(e) => {
@@ -557,8 +560,18 @@ where
             let _ = category;
             // Return basic categories even without ACL feature
             let categories = vec![
-                "read", "write", "admin", "dangerous", "keyspace", "string", "list", "set", "hash",
-                "sortedset", "connection", "server",
+                "read",
+                "write",
+                "admin",
+                "dangerous",
+                "keyspace",
+                "string",
+                "list",
+                "set",
+                "hash",
+                "sortedset",
+                "connection",
+                "server",
             ];
             RespValue::Array(Some(
                 categories

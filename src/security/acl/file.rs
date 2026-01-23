@@ -22,7 +22,10 @@ use std::path::Path;
 #[derive(Debug)]
 pub enum AclFileError {
     /// IO error reading the file
-    IoError { path: String, source: std::io::Error },
+    IoError {
+        path: String,
+        source: std::io::Error,
+    },
     /// Parse error on a specific line
     ParseError {
         path: String,
@@ -207,7 +210,13 @@ mod tests {
         assert_eq!(user.name, "alice");
         assert!(user.enabled);
         assert!(user.keys.allow_all);
-        assert!(user.commands.allow_all || user.commands.categories.contains(&super::super::CommandCategory::All));
+        assert!(
+            user.commands.allow_all
+                || user
+                    .commands
+                    .categories
+                    .contains(&super::super::CommandCategory::All)
+        );
     }
 
     #[test]
@@ -227,7 +236,12 @@ mod tests {
 
     #[test]
     fn test_parse_key_patterns() {
-        let user = parse_user_line("user readonly on nopass ~cache:* ~session:* +@read", "test", 1).unwrap();
+        let user = parse_user_line(
+            "user readonly on nopass ~cache:* ~session:* +@read",
+            "test",
+            1,
+        )
+        .unwrap();
         assert_eq!(user.name, "readonly");
         assert!(!user.keys.allow_all);
         assert!(user.keys.is_key_permitted("cache:foo"));

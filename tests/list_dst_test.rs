@@ -2,9 +2,7 @@
 //!
 //! VOPR-style tests for RedisList with multiple seeds.
 
-use redis_sim::redis::{
-    run_list_batch, summarize_list_batch, ListDSTConfig, ListDSTHarness,
-};
+use redis_sim::redis::{run_list_batch, summarize_list_batch, ListDSTConfig, ListDSTHarness};
 
 // =============================================================================
 // Standard Configuration Tests - 100+ Seeds
@@ -17,7 +15,10 @@ fn test_list_dst_100_seeds_standard() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(passed, 100, "All 100 seeds should pass with standard config");
+    assert_eq!(
+        passed, 100,
+        "All 100 seeds should pass with standard config"
+    );
 }
 
 #[test]
@@ -74,7 +75,10 @@ fn test_list_dst_stress_high_churn_2000_ops() {
         result.lpops,
         result.rpops
     );
-    assert!(result.is_success(), "High churn stress should maintain invariants");
+    assert!(
+        result.is_success(),
+        "High churn stress should maintain invariants"
+    );
 }
 
 // =============================================================================
@@ -97,7 +101,10 @@ fn test_list_dst_mostly_pops() {
     harness.run(1000);
     let result = harness.result();
     println!("Mostly pops: {}", result.summary());
-    assert!(result.is_success(), "Mostly pops should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Mostly pops should maintain invariants"
+    );
 }
 
 #[test]

@@ -163,18 +163,26 @@ pub enum Command {
     /// ACL USERS
     AclUsers,
     /// ACL GETUSER username
-    AclGetUser { username: String },
+    AclGetUser {
+        username: String,
+    },
     /// ACL SETUSER username [rules...]
     AclSetUser {
         username: String,
         rules: Vec<String>,
     },
     /// ACL DELUSER username [username...]
-    AclDelUser { usernames: Vec<String> },
+    AclDelUser {
+        usernames: Vec<String>,
+    },
     /// ACL CAT [category]
-    AclCat { category: Option<String> },
+    AclCat {
+        category: Option<String>,
+    },
     /// ACL GENPASS [bits]
-    AclGenPass { bits: Option<u32> },
+    AclGenPass {
+        bits: Option<u32>,
+    },
     Unknown(String),
 }
 
@@ -277,7 +285,9 @@ impl Command {
                             }
                             "SETUSER" => {
                                 if elements.len() < 3 {
-                                    return Err("ACL SETUSER requires at least 1 argument".to_string());
+                                    return Err(
+                                        "ACL SETUSER requires at least 1 argument".to_string()
+                                    );
                                 }
                                 let username = Self::extract_string(&elements[2])?;
                                 let rules: Vec<String> = elements[3..]
@@ -288,7 +298,9 @@ impl Command {
                             }
                             "DELUSER" => {
                                 if elements.len() < 3 {
-                                    return Err("ACL DELUSER requires at least 1 argument".to_string());
+                                    return Err(
+                                        "ACL DELUSER requires at least 1 argument".to_string()
+                                    );
                                 }
                                 let usernames: Vec<String> = elements[2..]
                                     .iter()
@@ -306,7 +318,11 @@ impl Command {
                             }
                             "GENPASS" => {
                                 let bits = if elements.len() > 2 {
-                                    Some(Self::extract_string(&elements[2])?.parse::<u32>().map_err(|_| "Invalid bits value")?)
+                                    Some(
+                                        Self::extract_string(&elements[2])?
+                                            .parse::<u32>()
+                                            .map_err(|_| "Invalid bits value")?,
+                                    )
                                 } else {
                                     None
                                 };
@@ -822,7 +838,11 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         let count = if elements.len() == 3 {
                             let count_str = Self::extract_string(&elements[2])?;
-                            Some(count_str.parse::<usize>().map_err(|_| "ERR value is not an integer or out of range")?)
+                            Some(
+                                count_str
+                                    .parse::<usize>()
+                                    .map_err(|_| "ERR value is not an integer or out of range")?,
+                            )
                         } else {
                             None
                         };
@@ -1240,26 +1260,24 @@ impl Command {
                     "PING" => Ok(Command::Ping),
                     "INFO" => Ok(Command::Info),
                     "DBSIZE" => Ok(Command::DbSize),
-                    "AUTH" => {
-                        match elements.len() {
-                            2 => {
-                                let password = Self::extract_string_zc(&elements[1])?;
-                                Ok(Command::Auth {
-                                    username: None,
-                                    password,
-                                })
-                            }
-                            3 => {
-                                let username = Self::extract_string_zc(&elements[1])?;
-                                let password = Self::extract_string_zc(&elements[2])?;
-                                Ok(Command::Auth {
-                                    username: Some(username),
-                                    password,
-                                })
-                            }
-                            _ => Err("AUTH requires 1 or 2 arguments".to_string()),
+                    "AUTH" => match elements.len() {
+                        2 => {
+                            let password = Self::extract_string_zc(&elements[1])?;
+                            Ok(Command::Auth {
+                                username: None,
+                                password,
+                            })
                         }
-                    }
+                        3 => {
+                            let username = Self::extract_string_zc(&elements[1])?;
+                            let password = Self::extract_string_zc(&elements[2])?;
+                            Ok(Command::Auth {
+                                username: Some(username),
+                                password,
+                            })
+                        }
+                        _ => Err("AUTH requires 1 or 2 arguments".to_string()),
+                    },
                     "ACL" => {
                         if elements.len() < 2 {
                             return Err("ACL requires a subcommand".to_string());
@@ -1278,7 +1296,9 @@ impl Command {
                             }
                             "SETUSER" => {
                                 if elements.len() < 3 {
-                                    return Err("ACL SETUSER requires at least 1 argument".to_string());
+                                    return Err(
+                                        "ACL SETUSER requires at least 1 argument".to_string()
+                                    );
                                 }
                                 let username = Self::extract_string_zc(&elements[2])?;
                                 let rules: Vec<String> = elements[3..]
@@ -1289,7 +1309,9 @@ impl Command {
                             }
                             "DELUSER" => {
                                 if elements.len() < 3 {
-                                    return Err("ACL DELUSER requires at least 1 argument".to_string());
+                                    return Err(
+                                        "ACL DELUSER requires at least 1 argument".to_string()
+                                    );
                                 }
                                 let usernames: Vec<String> = elements[2..]
                                     .iter()
@@ -1307,7 +1329,11 @@ impl Command {
                             }
                             "GENPASS" => {
                                 let bits = if elements.len() > 2 {
-                                    Some(Self::extract_string_zc(&elements[2])?.parse::<u32>().map_err(|_| "Invalid bits value")?)
+                                    Some(
+                                        Self::extract_string_zc(&elements[2])?
+                                            .parse::<u32>()
+                                            .map_err(|_| "Invalid bits value")?,
+                                    )
                                 } else {
                                     None
                                 };
@@ -1823,7 +1849,11 @@ impl Command {
                         let key = Self::extract_string_zc(&elements[1])?;
                         let count = if elements.len() == 3 {
                             let count_str = Self::extract_string_zc(&elements[2])?;
-                            Some(count_str.parse::<usize>().map_err(|_| "ERR value is not an integer or out of range")?)
+                            Some(
+                                count_str
+                                    .parse::<usize>()
+                                    .map_err(|_| "ERR value is not an integer or out of range")?,
+                            )
                         } else {
                             None
                         };
@@ -4690,9 +4720,20 @@ impl CommandExecutor {
                         None => {
                             // List all categories
                             let categories = vec![
-                                "read", "write", "admin", "dangerous", "keyspace",
-                                "string", "list", "set", "hash", "sortedset",
-                                "connection", "server", "scripting", "transaction",
+                                "read",
+                                "write",
+                                "admin",
+                                "dangerous",
+                                "keyspace",
+                                "string",
+                                "list",
+                                "set",
+                                "hash",
+                                "sortedset",
+                                "connection",
+                                "server",
+                                "scripting",
+                                "transaction",
                             ];
                             RespValue::Array(Some(
                                 categories
@@ -4707,7 +4748,9 @@ impl CommandExecutor {
                                 let commands: Vec<RespValue> = cat_enum
                                     .commands()
                                     .iter()
-                                    .map(|c| RespValue::BulkString(Some(c.to_lowercase().into_bytes())))
+                                    .map(|c| {
+                                        RespValue::BulkString(Some(c.to_lowercase().into_bytes()))
+                                    })
                                     .collect();
                                 RespValue::Array(Some(commands))
                             } else {
@@ -4719,11 +4762,22 @@ impl CommandExecutor {
                 #[cfg(not(feature = "acl"))]
                 {
                     let _ = category; // Suppress unused warning
-                    // Without ACL feature, return basic category list
+                                      // Without ACL feature, return basic category list
                     let categories = vec![
-                        "read", "write", "admin", "dangerous", "keyspace",
-                        "string", "list", "set", "hash", "sortedset",
-                        "connection", "server", "scripting", "transaction",
+                        "read",
+                        "write",
+                        "admin",
+                        "dangerous",
+                        "keyspace",
+                        "string",
+                        "list",
+                        "set",
+                        "hash",
+                        "sortedset",
+                        "connection",
+                        "server",
+                        "scripting",
+                        "transaction",
                     ];
                     RespValue::Array(Some(
                         categories

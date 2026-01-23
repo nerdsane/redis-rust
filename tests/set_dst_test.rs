@@ -2,9 +2,7 @@
 //!
 //! VOPR-style tests for RedisSet with multiple seeds.
 
-use redis_sim::redis::{
-    run_set_batch, summarize_set_batch, SetDSTConfig, SetDSTHarness,
-};
+use redis_sim::redis::{run_set_batch, summarize_set_batch, SetDSTConfig, SetDSTHarness};
 
 // =============================================================================
 // Standard Configuration Tests - 100+ Seeds
@@ -17,7 +15,10 @@ fn test_set_dst_100_seeds_standard() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(passed, 100, "All 100 seeds should pass with standard config");
+    assert_eq!(
+        passed, 100,
+        "All 100 seeds should pass with standard config"
+    );
 }
 
 #[test]
@@ -84,9 +85,15 @@ fn test_set_dst_stress_small_members_2000_ops() {
         result.add_existed,
         result.remove_not_found
     );
-    assert!(result.is_success(), "Small members stress should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Small members stress should maintain invariants"
+    );
     // Verify we exercised collision paths
-    assert!(result.add_existed > 100, "Should have many add collisions with small member space");
+    assert!(
+        result.add_existed > 100,
+        "Should have many add collisions with small member space"
+    );
 }
 
 // =============================================================================
@@ -106,7 +113,10 @@ fn test_set_dst_high_remove_rate() {
     harness.run(1000);
     let result = harness.result();
     println!("High remove rate: {}", result.summary());
-    assert!(result.is_success(), "High remove rate should maintain invariants");
+    assert!(
+        result.is_success(),
+        "High remove rate should maintain invariants"
+    );
 }
 
 #[test]
@@ -122,7 +132,10 @@ fn test_set_dst_tiny_member_space() {
     harness.run(500);
     let result = harness.result();
     println!("Tiny member space (3 members): {}", result.summary());
-    assert!(result.is_success(), "Tiny member space should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Tiny member space should maintain invariants"
+    );
 }
 
 #[test]
@@ -138,7 +151,10 @@ fn test_set_dst_mostly_adds() {
     harness.run(500);
     let result = harness.result();
     println!("Mostly adds: {} (adds:{})", result.summary(), result.adds);
-    assert!(result.is_success(), "Mostly adds should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Mostly adds should maintain invariants"
+    );
 }
 
 #[test]
@@ -154,7 +170,10 @@ fn test_set_dst_balanced() {
     harness.run(1000);
     let result = harness.result();
     println!("Balanced: {}", result.summary());
-    assert!(result.is_success(), "Balanced operations should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Balanced operations should maintain invariants"
+    );
 }
 
 // =============================================================================

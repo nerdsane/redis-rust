@@ -1235,7 +1235,10 @@ impl RedisSet {
             let removed = self.members.remove(m);
 
             // TigerStyle: Postconditions
-            debug_assert!(removed, "Postcondition violated: member must have been removed");
+            debug_assert!(
+                removed,
+                "Postcondition violated: member must have been removed"
+            );
             debug_assert!(
                 !self.members.contains(m),
                 "Postcondition violated: popped member must not exist in set"
@@ -1802,7 +1805,10 @@ mod sorted_set_tests {
 
         // Verify we can find it at new score
         assert!(sl.rank("a", 5.0).is_some(), "Should find a at score 5.0");
-        assert!(sl.rank("a", 1.0).is_none(), "Should NOT find a at score 1.0");
+        assert!(
+            sl.rank("a", 1.0).is_none(),
+            "Should NOT find a at score 1.0"
+        );
     }
 
     fn create_test_set() -> RedisSortedSet {
