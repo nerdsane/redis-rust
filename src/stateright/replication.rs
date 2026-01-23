@@ -368,67 +368,65 @@ mod tests {
         // This test verifies CRDT properties when merging registers from
         // DIFFERENT replicas or the SAME replica at different times.
 
-        let mut registers = Vec::new();
-
-        // Replica 1: set operations
-        registers.push(LwwRegister {
-            value: Some(10),
-            timestamp: 1,
-            replica_id: 1,
-            tombstone: false,
-        });
-        registers.push(LwwRegister {
-            value: Some(11),
-            timestamp: 2,
-            replica_id: 1,
-            tombstone: false,
-        });
-        registers.push(LwwRegister {
-            value: Some(12),
-            timestamp: 3,
-            replica_id: 1,
-            tombstone: false,
-        });
-
-        // Replica 2: set then delete
-        registers.push(LwwRegister {
-            value: Some(20),
-            timestamp: 1,
-            replica_id: 2,
-            tombstone: false,
-        });
-        registers.push(LwwRegister {
-            value: None,
-            timestamp: 2,
-            replica_id: 2,
-            tombstone: true,
-        });
-        registers.push(LwwRegister {
-            value: Some(22),
-            timestamp: 3,
-            replica_id: 2,
-            tombstone: false,
-        });
-
-        // Replica 3: various states
-        registers.push(LwwRegister {
-            value: Some(30),
-            timestamp: 1,
-            replica_id: 3,
-            tombstone: false,
-        });
-        registers.push(LwwRegister {
-            value: Some(31),
-            timestamp: 2,
-            replica_id: 3,
-            tombstone: false,
-        });
-        registers.push(LwwRegister {
-            value: None,
-            timestamp: 3,
-            replica_id: 3,
-            tombstone: true,
-        });
+        let registers = vec![
+            // Replica 1: set operations
+            LwwRegister {
+                value: Some(10),
+                timestamp: 1,
+                replica_id: 1,
+                tombstone: false,
+            },
+            LwwRegister {
+                value: Some(11),
+                timestamp: 2,
+                replica_id: 1,
+                tombstone: false,
+            },
+            LwwRegister {
+                value: Some(12),
+                timestamp: 3,
+                replica_id: 1,
+                tombstone: false,
+            },
+            // Replica 2: set then delete
+            LwwRegister {
+                value: Some(20),
+                timestamp: 1,
+                replica_id: 2,
+                tombstone: false,
+            },
+            LwwRegister {
+                value: None,
+                timestamp: 2,
+                replica_id: 2,
+                tombstone: true,
+            },
+            LwwRegister {
+                value: Some(22),
+                timestamp: 3,
+                replica_id: 2,
+                tombstone: false,
+            },
+            // Replica 3: various states
+            LwwRegister {
+                value: Some(30),
+                timestamp: 1,
+                replica_id: 3,
+                tombstone: false,
+            },
+            LwwRegister {
+                value: Some(31),
+                timestamp: 2,
+                replica_id: 3,
+                tombstone: false,
+            },
+            LwwRegister {
+                value: None,
+                timestamp: 3,
+                replica_id: 3,
+                tombstone: true,
+            },
+        ];
 
         // Test all pairs for commutativity
         for a in &registers {

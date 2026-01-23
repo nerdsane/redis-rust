@@ -16,8 +16,8 @@ use tokio_rustls::server::TlsStream;
 pub enum MaybeSecureStream {
     /// Plain TCP stream (no encryption)
     Plain(TcpStream),
-    /// TLS-encrypted stream
-    Tls(TlsStream<TcpStream>),
+    /// TLS-encrypted stream (boxed to reduce enum size)
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 impl MaybeSecureStream {
@@ -28,7 +28,7 @@ impl MaybeSecureStream {
 
     /// Create a TLS-encrypted stream
     pub fn tls(stream: TlsStream<TcpStream>) -> Self {
-        MaybeSecureStream::Tls(stream)
+        MaybeSecureStream::Tls(Box::new(stream))
     }
 
     /// Check if this is a TLS connection

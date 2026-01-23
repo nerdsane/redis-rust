@@ -253,7 +253,7 @@ mod tests {
     fn test_load_acl_file() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# Comment line").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "user default on nopass ~* +@all").unwrap();
         writeln!(file, "user alice on >secret ~cache:* +@read").unwrap();
         writeln!(file, "user bob off").unwrap();

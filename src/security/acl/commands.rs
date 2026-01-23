@@ -135,7 +135,7 @@ impl AclCommandHandler {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let bits = bits.unwrap_or(256).min(1024);
-        let bytes = (bits as usize + 7) / 8;
+        let bytes = (bits as usize).div_ceil(8);
 
         // Simple pseudo-random generation (not cryptographically secure)
         // In production, use proper random source

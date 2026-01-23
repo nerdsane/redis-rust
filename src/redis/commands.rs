@@ -4791,7 +4791,7 @@ impl CommandExecutor {
             Command::AclGenPass { bits } => {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let bits = bits.unwrap_or(256).min(1024);
-                let bytes = (bits as usize + 7) / 8;
+                let bytes = (bits as usize).div_ceil(8);
                 let seed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
