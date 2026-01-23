@@ -54,6 +54,7 @@ const DEFAULT_PORT: u16 = 6379;
 const DEFAULT_REPLICA_ID: u64 = 1;
 const DEFAULT_DATA_PATH: &str = "/data";
 const DEFAULT_S3_PREFIX: &str = "redis-stream";
+#[cfg(feature = "s3")]
 const DEFAULT_S3_REGION: &str = "us-east-1";
 
 /// Server configuration from environment variables

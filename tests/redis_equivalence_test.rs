@@ -42,23 +42,24 @@ impl Response {
         match v {
             redis::Value::Nil => Response::Nil,
             redis::Value::Int(i) => Response::Int(i),
-            redis::Value::Data(s) => Response::Str(String::from_utf8_lossy(&s).to_string()),
-            redis::Value::Status(s) => Response::Str(s),
+            redis::Value::BulkString(s) => Response::Str(String::from_utf8_lossy(&s).to_string()),
+            redis::Value::SimpleString(s) => Response::Str(s),
             redis::Value::Okay => Response::Str("OK".to_string()),
-            redis::Value::Bulk(arr) => {
+            redis::Value::Array(arr) => {
                 let strings: Vec<String> = arr
                     .into_iter()
                     .map(|v| match v {
-                        redis::Value::Data(s) => String::from_utf8_lossy(&s).to_string(),
-                        redis::Value::Status(s) => s,
+                        redis::Value::BulkString(s) => String::from_utf8_lossy(&s).to_string(),
+                        redis::Value::SimpleString(s) => s,
                         redis::Value::Okay => "OK".to_string(),
                         redis::Value::Int(i) => i.to_string(),
                         redis::Value::Nil => "nil".to_string(),
-                        redis::Value::Bulk(_) => format!("{:?}", v),
+                        _ => format!("{:?}", v),
                     })
                     .collect();
                 Response::Bulk(strings)
             }
+            _ => Response::Str(format!("{:?}", v)),
         }
     }
 }
