@@ -3,6 +3,10 @@ name = "redis-sim"
 version = "0.1.0"
 edition = "2021"
 
+# Allow kani cfg for bounded verification proofs
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [features]
 default = ["lua"]
 simulation = []
@@ -114,6 +118,11 @@ tikv-jemallocator = "0.6"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.10"
 redis = { version = "0.25", features = ["tokio-comp"] }
+# Stateright for model checking (exhaustive state exploration)
+stateright = "0.30"
+# Kani verifier for bounded proofs (optional, requires kani toolchain)
+# Run with: cargo kani --harness <harness_name>
+# kani-verifier = "0.55"  # Uncomment when kani toolchain is installed
 
 # Optional optimization dependencies
 [dependencies.itoa]

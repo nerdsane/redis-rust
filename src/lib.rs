@@ -64,6 +64,11 @@ pub mod security;
 pub mod simulator;
 pub mod streaming;
 
+// Stateright model checking (exhaustive state exploration)
+// Run with: cargo test stateright -- --ignored --nocapture
+#[cfg(test)]
+pub mod stateright;
+
 // Observability: feature-gated Datadog integration
 #[cfg(feature = "datadog")]
 pub mod observability;
