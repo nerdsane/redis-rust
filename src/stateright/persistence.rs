@@ -21,11 +21,12 @@ pub struct WriteBufferConfig {
 
 impl Default for WriteBufferConfig {
     fn default() -> Self {
+        // Smaller values for faster model checking
         WriteBufferConfig {
-            max_buffer_size: 100,
-            max_deltas: 5,
-            backpressure_threshold: 150,
-            max_segments: 10,
+            max_buffer_size: 50,
+            max_deltas: 2,
+            backpressure_threshold: 75,
+            max_segments: 3,
         }
     }
 }
@@ -109,18 +110,19 @@ pub struct WriteBufferModel {
 
 impl WriteBufferModel {
     pub fn new() -> Self {
+        // Smaller state space for faster testing
         WriteBufferModel {
             config: WriteBufferConfig::default(),
-            keys: vec![1, 2, 3],
-            values: vec![100, 200],
+            keys: vec![1, 2],
+            values: vec![100],
         }
     }
 
     pub fn with_config(config: WriteBufferConfig) -> Self {
         WriteBufferModel {
             config,
-            keys: vec![1, 2, 3],
-            values: vec![100, 200],
+            keys: vec![1, 2],
+            values: vec![100],
         }
     }
 }

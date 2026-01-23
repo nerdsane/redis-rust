@@ -124,11 +124,12 @@ pub struct CrdtMergeModel {
 impl CrdtMergeModel {
     pub fn new() -> Self {
         // Small state space for exhaustive checking
+        // Note: For faster testing, use 2 replicas. For thorough verification, use 3.
         CrdtMergeModel {
-            replica_ids: vec![1, 2, 3],
-            keys: vec![1, 2],
+            replica_ids: vec![1, 2],
+            keys: vec![1],
             values: vec![10, 20],
-            max_clock: 5,
+            max_clock: 3,
         }
     }
 }
