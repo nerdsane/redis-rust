@@ -78,7 +78,7 @@ fn test_pipeline_ordering() {
 
     assert_eq!(responses.len(), 7);
     // SET returns OK
-    assert_eq!(responses[0], RespValue::SimpleString("OK".to_string()));
+    assert_eq!(responses[0], RespValue::ok());
     // Each INCR returns the new value
     assert_eq!(responses[1], RespValue::Integer(1));
     assert_eq!(responses[2], RespValue::Integer(2));
@@ -110,8 +110,8 @@ fn test_mixed_pipeline() {
     let responses = conn.process();
 
     assert_eq!(responses.len(), 7);
-    assert_eq!(responses[0], RespValue::SimpleString("OK".to_string())); // SET a
-    assert_eq!(responses[1], RespValue::SimpleString("OK".to_string())); // SET b
+    assert_eq!(responses[0], RespValue::ok()); // SET a
+    assert_eq!(responses[1], RespValue::ok()); // SET b
     assert_eq!(responses[2], RespValue::BulkString(Some(b"1".to_vec()))); // GET a
     assert_eq!(responses[3], RespValue::BulkString(Some(b"2".to_vec()))); // GET b
     assert_eq!(responses[4], RespValue::BulkString(None)); // GET nonexistent = nil
@@ -135,7 +135,7 @@ fn test_partial_reads_handled() {
     // All 20 commands should still execute correctly
     assert_eq!(responses.len(), 20);
     for response in responses {
-        assert_eq!(response, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(response, RespValue::ok());
     }
 }
 
@@ -244,7 +244,7 @@ fn test_ping_pipeline() {
 
     assert_eq!(responses.len(), 3);
     for response in responses {
-        assert_eq!(response, RespValue::SimpleString("PONG".to_string()));
+        assert_eq!(response, RespValue::pong());
     }
     assert_eq!(conn.flush_count(), 1);
 }
@@ -287,11 +287,6 @@ fn test_large_pipeline_stress() {
 
     // Verify all OKs
     for (i, response) in responses.iter().enumerate() {
-        assert_eq!(
-            response,
-            &RespValue::SimpleString("OK".to_string()),
-            "Command {} failed",
-            i
-        );
+        assert_eq!(response, &RespValue::ok(), "Command {} failed", i);
     }
 }

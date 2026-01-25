@@ -1,0 +1,41 @@
+# bacon.toml
+# Background checker for instant feedback during development
+#
+# Install: cargo install bacon
+# Run: bacon (starts watching)
+# Keys: c=check, l=clippy, t=test, d=doc
+
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--color", "always", "--all-targets"]
+need_stdout = false
+watch = ["src", "benches", "tests"]
+
+[jobs.check-all]
+command = ["cargo", "check", "--color", "always", "--all-targets", "--all-features"]
+need_stdout = false
+
+[jobs.clippy]
+command = ["cargo", "clippy", "--color", "always", "--all-targets", "--", "-D", "warnings"]
+need_stdout = false
+
+[jobs.test]
+command = ["cargo", "test", "--color", "always"]
+need_stdout = true
+
+[jobs.test-release]
+command = ["cargo", "test", "--color", "always", "--release"]
+need_stdout = true
+
+[jobs.doc]
+command = ["cargo", "doc", "--color", "always", "--no-deps"]
+need_stdout = false
+
+[keybindings]
+c = "job:check"
+a = "job:check-all"
+l = "job:clippy"
+t = "job:test"
+r = "job:test-release"
+d = "job:doc"

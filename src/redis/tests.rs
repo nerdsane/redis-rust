@@ -28,7 +28,7 @@ mod resp_parser_tests {
             (RespValue::SimpleString(s1), RespValueZeroCopy::SimpleString(s2)) => {
                 s1.as_bytes() == s2.as_ref()
             }
-            (RespValue::err(s1), RespValueZeroCopy::Error(s2)) => s1.as_bytes() == s2.as_ref(),
+            (RespValue::Error(s1), RespValueZeroCopy::Error(s2)) => s1.as_bytes() == s2.as_ref(),
             (RespValue::Integer(n1), RespValueZeroCopy::Integer(n2)) => n1 == n2,
             (RespValue::BulkString(None), RespValueZeroCopy::BulkString(None)) => true,
             (RespValue::BulkString(Some(d1)), RespValueZeroCopy::BulkString(Some(d2))) => {
@@ -532,7 +532,7 @@ mod lua_scripting_tests {
         };
         let result = executor.execute(&cmd);
         match result {
-            RespValue::err(e) => assert!(e.contains("ERR")),
+            RespValue::Error(e) => assert!(e.contains("ERR")),
             _ => panic!("Expected error for syntax error"),
         }
     }
@@ -547,7 +547,7 @@ mod lua_scripting_tests {
         };
         let result = executor.execute(&cmd);
         match result {
-            RespValue::err(e) => assert!(e.contains("NOSCRIPT")),
+            RespValue::Error(e) => assert!(e.contains("NOSCRIPT")),
             _ => panic!("Expected NOSCRIPT error"),
         }
     }

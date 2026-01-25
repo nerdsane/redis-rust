@@ -23,6 +23,16 @@ jobs:
           rustup component add rustfmt
       - run: cargo fmt --all --check
 
+  toml:
+    name: TOML Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install taplo
+        run: cargo install taplo-cli --locked
+      - name: Check TOML files
+        run: taplo check
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

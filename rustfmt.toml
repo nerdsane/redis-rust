@@ -1,0 +1,18 @@
+# rustfmt.toml
+# Rust formatting configuration for redis-rust
+#
+# Run: cargo fmt --all
+# Check: cargo fmt --all -- --check
+
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+
+# Import organization (stable options only)
+reorder_imports = true
+reorder_modules = true
+
+# Note: imports_granularity and group_imports require nightly
+# Uncomment if using nightly toolchain:
+# imports_granularity = "Module"
+# group_imports = "StdExternalCrate"

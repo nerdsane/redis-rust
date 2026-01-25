@@ -1,0 +1,39 @@
+# .pre-commit-config.yaml
+# Pre-commit hooks for redis-rust
+#
+# Install: pip install pre-commit && pre-commit install
+# Run: pre-commit run --all-files
+# Skip: git commit --no-verify
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: taplo-check
+        name: taplo check
+        entry: taplo check
+        language: system
+        types: [toml]
+        pass_filenames: false
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

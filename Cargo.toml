@@ -7,6 +7,36 @@ edition = "2021"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
+[lints.clippy]
+# Lint groups - set to lower priority so individual overrides work
+# Correctness - deny these (highest severity)
+correctness = { level = "deny", priority = -2 }
+
+# Suspicious - warn
+suspicious = { level = "warn", priority = -2 }
+
+# Pedantic - individual lints only (not the whole group)
+# perf = { level = "warn", priority = -2 }
+
+# Style - warn
+style = { level = "warn", priority = -2 }
+
+# Allow specific patterns used in codebase
+too_many_arguments = "allow"
+type_complexity = "allow"
+module_inception = "allow"
+manual_div_ceil = "allow"  # Used intentionally in bitset code
+clone_on_ref_ptr = "allow"  # Allow x.clone() on Arc (vs Arc::clone(&x))
+lint_groups_priority = "allow"  # We're setting priorities intentionally
+
+[workspace.metadata.cargo-machete]
+ignored = [
+    "serde_derive",
+    "thiserror",
+    "tokio",
+    "tracing",
+]
+
 [features]
 default = ["lua"]
 simulation = []

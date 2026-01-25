@@ -184,7 +184,7 @@ mod tests {
     use crate::observability::DatadogConfig;
 
     fn test_metrics() -> Arc<Metrics> {
-        Arc::new(Metrics::new(&DatadogConfig::default()))
+        Arc::new(Metrics::new(&DatadogConfig))
     }
 
     #[tokio::test]

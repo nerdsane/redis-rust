@@ -215,7 +215,7 @@ fn bench_resp_value(c: &mut Criterion) {
 
     // SimpleString with static &str (new zero-alloc way)
     group.bench_function("simple_string_ok_static", |b| {
-        b.iter(|| RespValue::ok()) // Uses Cow::Borrowed("OK")
+        b.iter(RespValue::ok) // Uses Cow::Borrowed("OK")
     });
 
     // Integer response (no allocation)
