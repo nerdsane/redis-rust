@@ -63,7 +63,7 @@ Identified → Active → (Resolved | Accepted)
 
 | Deviation | Title | Related ADR | Priority |
 |-----------|-------|-------------|----------|
-| - | (None yet) | - | - |
+| [DEV-001](DEV-001-file-size-limit.md) | Files Exceeding 500-Line Limit | ADR-003 | Medium |
 
 ## Priority Definitions
 

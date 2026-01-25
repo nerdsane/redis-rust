@@ -18,4 +18,6 @@ pub use hash_ring::{HashRing, VirtualNode};
 pub use lattice::{
     GCounter, GSet, LamportClock, LwwRegister, ORSet, PNCounter, ReplicaId, UniqueTag, VectorClock,
 };
-pub use state::{CrdtTypeMismatchError, CrdtValue, ReplicatedValue, ReplicationDelta};
+pub use state::{
+    CrdtTypeMismatchError, CrdtValue, ReplicatedValue, ReplicationDelta, ShardReplicaState,
+};
