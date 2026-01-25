@@ -346,7 +346,7 @@ where
                         _ => {
                             // Check ACL permissions for regular commands
                             if let Err(acl_err) = self.check_acl_permission(&cmd) {
-                                RespValue::Error(acl_err)
+                                RespValue::err(acl_err)
                             } else {
                                 self.state.execute(&cmd).await
                             }
@@ -406,14 +406,14 @@ where
                     "Client {} authenticated as '{}'",
                     self.client_addr, username
                 );
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
             Err(e) => {
                 warn!(
                     "Auth failed for client {} (user '{}'): {}",
                     self.client_addr, username, e
                 );
-                RespValue::Error(e.to_string())
+                RespValue::err(e.to_string())
             }
         }
     }
@@ -510,14 +510,14 @@ where
             let mut manager = self.acl_manager.write();
             let rule_refs: Vec<&str> = rules.iter().map(|s| s.as_str()).collect();
             match AclCommandHandler::handle_setuser(&mut manager, username, &rule_refs) {
-                Ok(()) => RespValue::SimpleString("OK".to_string()),
-                Err(e) => RespValue::Error(e.to_string()),
+                Ok(()) => RespValue::simple("OK"),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]
         {
             let _ = (username, rules);
-            RespValue::Error("ERR ACL feature not enabled".to_string())
+            RespValue::err("ERR ACL feature not enabled")
         }
     }
 
@@ -530,13 +530,13 @@ where
             let username_refs: Vec<&str> = usernames.iter().map(|s| s.as_str()).collect();
             match AclCommandHandler::handle_deluser(&mut manager, &username_refs) {
                 Ok(count) => RespValue::Integer(count as i64),
-                Err(e) => RespValue::Error(e.to_string()),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]
         {
             let _ = usernames;
-            RespValue::Error("ERR ACL feature not enabled".to_string())
+            RespValue::err("ERR ACL feature not enabled")
         }
     }
 
@@ -552,7 +552,7 @@ where
                         .map(|s| RespValue::BulkString(Some(s.into_bytes())))
                         .collect(),
                 )),
-                Err(e) => RespValue::Error(e.to_string()),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]

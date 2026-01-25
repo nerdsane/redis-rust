@@ -276,12 +276,12 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             debug_assert!(false, "Shard {} channel closed unexpectedly", self.shard_id);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx.await.unwrap_or_else(|_| {
             debug_assert!(false, "Shard {} response channel dropped", self.shard_id);
-            RespValue::Error("ERR shard response failed".to_string())
+            RespValue::err("ERR shard response failed")
         })
     }
 
@@ -300,12 +300,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastGet { key, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| RespValue::Error("ERR shard response failed".to_string()))
+            .unwrap_or_else(|_| RespValue::err("ERR shard response failed"))
     }
 
     /// Fast path SET - avoids Command enum allocation
@@ -319,12 +319,12 @@ impl ShardHandle {
         };
 
         if self.tx.send(msg).is_err() {
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| RespValue::Error("ERR shard response failed".to_string()))
+            .unwrap_or_else(|_| RespValue::err("ERR shard response failed"))
     }
 
     /// Pooled fast GET - uses response pool to avoid channel allocation
@@ -338,7 +338,7 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             self.response_pool.release(response_slot);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         let result = response_future(response_slot.clone()).await;
@@ -358,7 +358,7 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             self.response_pool.release(response_slot);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         let result = response_future(response_slot.clone()).await;
@@ -376,12 +376,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastBatchGet { keys, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return vec![RespValue::Error("ERR shard unavailable".to_string())];
+            return vec![RespValue::err("ERR shard unavailable")];
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| vec![RespValue::Error("ERR shard response failed".to_string())])
+            .unwrap_or_else(|_| vec![RespValue::err("ERR shard response failed")])
     }
 
     /// Fast batch SET - multiple key-value pairs in single actor message
@@ -394,12 +394,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastBatchSet { pairs, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return vec![RespValue::Error("ERR shard unavailable".to_string())];
+            return vec![RespValue::err("ERR shard unavailable")];
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| vec![RespValue::Error("ERR shard response failed".to_string())])
+            .unwrap_or_else(|_| vec![RespValue::err("ERR shard response failed")])
     }
 
     #[inline]
@@ -909,7 +909,7 @@ impl<T: TimeSource> ShardedActorState<T> {
         }
 
         // Prepare results vector (default to OK for SETs)
-        let mut results = vec![RespValue::SimpleString("OK".to_string()); pairs.len()];
+        let mut results = vec![RespValue::simple("OK"); pairs.len()];
 
         // Send batch requests to all non-empty shards concurrently
         let mut futures = Vec::new();
@@ -945,7 +945,7 @@ impl<T: TimeSource> ShardedActorState<T> {
         let virtual_time = self.get_current_virtual_time();
 
         match cmd {
-            Command::Ping => RespValue::SimpleString("PONG".to_string()),
+            Command::Ping => RespValue::simple("PONG"),
 
             Command::Info => {
                 let adaptive_info = self.get_adaptive_info().await;
@@ -975,7 +975,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 for future in futures {
                     let _ = future.await;
                 }
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Keys(pattern) => {
@@ -1051,7 +1051,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 }
 
                 if shard_batches.is_empty() {
-                    return RespValue::SimpleString("OK".to_string());
+                    return RespValue::simple("OK");
                 }
 
                 // For single-shard MSET (common case), execute directly
@@ -1078,7 +1078,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                     futures::future::join_all(futures).await;
                 }
 
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Exists(keys) => {

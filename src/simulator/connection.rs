@@ -602,7 +602,7 @@ mod tests {
         let responses = conn.process();
 
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], RespValue::SimpleString("PONG".to_string()));
+        assert_eq!(responses[0], RespValue::simple("PONG"));
         assert_eq!(conn.flush_count(), 1);
     }
 
@@ -652,7 +652,7 @@ mod tests {
         let responses = conn.process();
 
         assert_eq!(responses.len(), 5);
-        assert_eq!(responses[0], RespValue::SimpleString("OK".to_string()));
+        assert_eq!(responses[0], RespValue::simple("OK"));
         assert_eq!(responses[1], RespValue::Integer(1));
         assert_eq!(responses[2], RespValue::Integer(2));
         assert_eq!(responses[3], RespValue::Integer(3));
@@ -704,7 +704,7 @@ mod tests {
 
         // Should still get correct responses despite partial reads
         assert_eq!(responses.len(), 2);
-        assert_eq!(responses[0], RespValue::SimpleString("OK".to_string()));
+        assert_eq!(responses[0], RespValue::simple("OK"));
         assert_eq!(responses[1], RespValue::BulkString(Some(b"v1".to_vec())));
     }
 

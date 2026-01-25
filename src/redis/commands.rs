@@ -2718,9 +2718,9 @@ impl CommandExecutor {
         self.commands_processed += 1;
         match self.get_value(key) {
             Some(Value::String(s)) => RespValue::BulkString(Some(s.as_bytes().to_vec())),
-            Some(_) => RespValue::Error(
-                "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
-            ),
+            Some(_) => {
+                RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
+            }
             None => RespValue::BulkString(None),
         }
     }
@@ -2864,7 +2864,7 @@ impl CommandExecutor {
                 }
                 match self.data.get(key) {
                     Some(Value::String(s)) => RespValue::BulkString(Some(s.as_bytes().to_vec())),
-                    Some(_) => RespValue::Error("WRONGTYPE".to_string()),
+                    Some(_) => RespValue::err("WRONGTYPE"),
                     None => RespValue::BulkString(None),
                 }
             }
@@ -2884,8 +2884,8 @@ impl CommandExecutor {
                     .collect();
                 RespValue::Array(Some(matching))
             }
-            Command::Ping => RespValue::SimpleString("PONG".to_string()),
-            _ => RespValue::Error("ERR command not supported in readonly mode".to_string()),
+            Command::Ping => RespValue::simple("PONG"),
+            _ => RespValue::err("ERR command not supported in readonly mode"),
         }
     }
 
@@ -2929,13 +2929,13 @@ impl CommandExecutor {
                 // All other commands get queued
                 _ => {
                     self.queued_commands.push(cmd.clone());
-                    return RespValue::SimpleString("QUEUED".to_string());
+                    return RespValue::simple("QUEUED");
                 }
             }
         }
 
         match cmd {
-            Command::Ping => RespValue::SimpleString("PONG".to_string()),
+            Command::Ping => RespValue::simple("PONG"),
 
             Command::Info => {
                 let info = format!(
@@ -2957,8 +2957,8 @@ impl CommandExecutor {
 
             Command::Get(key) => match self.get_value(key) {
                 Some(Value::String(s)) => RespValue::BulkString(Some(s.as_bytes().to_vec())),
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::BulkString(None),
             },
@@ -2975,16 +2975,12 @@ impl CommandExecutor {
                 // Validate expiration values
                 if let Some(seconds) = ex {
                     if *seconds <= 0 {
-                        return RespValue::Error(
-                            "ERR invalid expire time in 'set' command".to_string(),
-                        );
+                        return RespValue::err("ERR invalid expire time in 'set' command");
                     }
                 }
                 if let Some(millis) = px {
                     if *millis <= 0 {
-                        return RespValue::Error(
-                            "ERR invalid expire time in 'set' command".to_string(),
-                        );
+                        return RespValue::err("ERR invalid expire time in 'set' command");
                     }
                 }
 
@@ -3038,7 +3034,7 @@ impl CommandExecutor {
                         None => RespValue::BulkString(None),
                     }
                 } else {
-                    RespValue::SimpleString("OK".to_string())
+                    RespValue::simple("OK")
                 }
             }
 
@@ -3063,12 +3059,12 @@ impl CommandExecutor {
             }
 
             Command::TypeOf(key) => match self.get_value(key) {
-                Some(Value::String(_)) => RespValue::SimpleString("string".to_string()),
-                Some(Value::List(_)) => RespValue::SimpleString("list".to_string()),
-                Some(Value::Set(_)) => RespValue::SimpleString("set".to_string()),
-                Some(Value::Hash(_)) => RespValue::SimpleString("hash".to_string()),
-                Some(Value::SortedSet(_)) => RespValue::SimpleString("zset".to_string()),
-                _ => RespValue::SimpleString("none".to_string()),
+                Some(Value::String(_)) => RespValue::simple("string"),
+                Some(Value::List(_)) => RespValue::simple("list"),
+                Some(Value::Set(_)) => RespValue::simple("set"),
+                Some(Value::Hash(_)) => RespValue::simple("hash"),
+                Some(Value::SortedSet(_)) => RespValue::simple("zset"),
+                _ => RespValue::simple("none"),
             },
 
             Command::Keys(pattern) => {
@@ -3085,7 +3081,7 @@ impl CommandExecutor {
                 self.data.clear();
                 self.expirations.clear();
                 self.access_times.clear();
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Expire(key, seconds) => {
@@ -3203,7 +3199,7 @@ impl CommandExecutor {
                 // TigerStyle: Use checked_neg() to prevent overflow when decrement == i64::MIN
                 match decrement.checked_neg() {
                     Some(negated) => self.incr_by_impl(key, negated),
-                    None => RespValue::Error("ERR value is out of range".to_string()),
+                    None => RespValue::err("ERR value is out of range"),
                 }
             }
 
@@ -3212,8 +3208,8 @@ impl CommandExecutor {
                     s.append(value);
                     RespValue::Integer(s.len() as i64)
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => {
                     let len = value.len();
@@ -3227,9 +3223,8 @@ impl CommandExecutor {
                 let old_value = match self.get_value(key) {
                     Some(Value::String(s)) => RespValue::BulkString(Some(s.as_bytes().to_vec())),
                     Some(_) => {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         )
                     }
                     None => RespValue::BulkString(None),
@@ -3257,7 +3252,7 @@ impl CommandExecutor {
                     self.data.insert(key.clone(), Value::String(value.clone()));
                     self.access_times.insert(key.clone(), self.current_time);
                 }
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::BatchSet(pairs) => {
@@ -3266,7 +3261,7 @@ impl CommandExecutor {
                     self.data.insert(key.clone(), Value::String(value.clone()));
                     self.access_times.insert(key.clone(), self.current_time);
                 }
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::BatchGet(keys) => {
@@ -3279,9 +3274,8 @@ impl CommandExecutor {
                         Some(Value::String(s)) => {
                             RespValue::BulkString(Some(s.as_bytes().to_vec()))
                         }
-                        Some(_) => RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        Some(_) => RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         ),
                         None => RespValue::BulkString(None),
                     });
@@ -3306,9 +3300,8 @@ impl CommandExecutor {
                         }
                         RespValue::Integer(l.len() as i64)
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3330,9 +3323,8 @@ impl CommandExecutor {
                         }
                         RespValue::Integer(l.len() as i64)
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3342,8 +3334,8 @@ impl CommandExecutor {
                     Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
                     None => RespValue::BulkString(None),
                 },
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::BulkString(None),
             },
@@ -3353,8 +3345,8 @@ impl CommandExecutor {
                     Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
                     None => RespValue::BulkString(None),
                 },
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::BulkString(None),
             },
@@ -3368,8 +3360,8 @@ impl CommandExecutor {
                         .collect();
                     RespValue::Array(Some(elements))
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Array(Some(Vec::new())),
             },
@@ -3383,15 +3375,14 @@ impl CommandExecutor {
                     Some(Value::List(list)) => match list.set(*index, value.clone()) {
                         Ok(()) => {
                             self.access_times.insert(key.clone(), self.current_time);
-                            RespValue::SimpleString("OK".to_string())
+                            RespValue::simple("OK")
                         }
-                        Err(e) => RespValue::Error(e),
+                        Err(e) => RespValue::err(e),
                     },
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
-                    None => RespValue::Error("ERR no such key".to_string()),
+                    None => RespValue::err("ERR no such key"),
                 }
             }
 
@@ -3410,13 +3401,12 @@ impl CommandExecutor {
                             self.access_times.remove(key);
                             self.expirations.remove(key);
                         }
-                        RespValue::SimpleString("OK".to_string())
+                        RespValue::simple("OK")
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
-                    None => RespValue::SimpleString("OK".to_string()), // No-op if key doesn't exist
+                    None => RespValue::simple("OK"), // No-op if key doesn't exist
                 }
             }
 
@@ -3429,9 +3419,8 @@ impl CommandExecutor {
                 let popped = match self.data.get_mut(source) {
                     Some(Value::List(list)) => list.rpop(),
                     Some(_) => {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         )
                     }
                     None => None,
@@ -3463,9 +3452,8 @@ impl CommandExecutor {
                                 self.access_times.insert(dest.clone(), self.current_time);
                                 RespValue::BulkString(Some(value.as_bytes().to_vec()))
                             }
-                            _ => RespValue::Error(
-                                "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                    .to_string(),
+                            _ => RespValue::err(
+                                "WRONGTYPE Operation against a key holding the wrong kind of value",
                             ),
                         }
                     }
@@ -3493,9 +3481,8 @@ impl CommandExecutor {
                         }
                     }
                     Some(_) => {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         )
                     }
                     None => None,
@@ -3531,9 +3518,8 @@ impl CommandExecutor {
                                 self.access_times.insert(dest.clone(), self.current_time);
                                 RespValue::BulkString(Some(value.as_bytes().to_vec()))
                             }
-                            _ => RespValue::Error(
-                                "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                    .to_string(),
+                            _ => RespValue::err(
+                                "WRONGTYPE Operation against a key holding the wrong kind of value",
                             ),
                         }
                     }
@@ -3561,9 +3547,8 @@ impl CommandExecutor {
                         }
                         RespValue::Integer(added)
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3577,16 +3562,16 @@ impl CommandExecutor {
                         .collect();
                     RespValue::Array(Some(members))
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Array(Some(Vec::new())),
             },
 
             Command::SIsMember(key, member) => match self.get_value(key) {
                 Some(Value::Set(s)) => RespValue::Integer(if s.contains(member) { 1 } else { 0 }),
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Integer(0),
             },
@@ -3612,9 +3597,8 @@ impl CommandExecutor {
                         }
                         RespValue::Integer(new_fields)
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3624,8 +3608,8 @@ impl CommandExecutor {
                     Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
                     None => RespValue::BulkString(None),
                 },
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::BulkString(None),
             },
@@ -3641,9 +3625,8 @@ impl CommandExecutor {
                         }
                         RespValue::Array(Some(elements))
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Array(Some(Vec::new())),
                 }
@@ -3660,9 +3643,8 @@ impl CommandExecutor {
                 // Check if key exists and is wrong type before inserting
                 if let Some(existing) = self.data.get(key) {
                     if !matches!(existing, Value::Hash(_)) {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         );
                     }
                 }
@@ -3682,9 +3664,7 @@ impl CommandExecutor {
                                 match s.parse::<i64>() {
                                     Ok(n) => n,
                                     Err(_) => {
-                                        return RespValue::Error(
-                                            "ERR hash value is not an integer".to_string(),
-                                        )
+                                        return RespValue::err("ERR hash value is not an integer")
                                     }
                                 }
                             }
@@ -3695,9 +3675,7 @@ impl CommandExecutor {
                         let new_value = match current.checked_add(*increment) {
                             Some(v) => v,
                             None => {
-                                return RespValue::Error(
-                                    "ERR increment or decrement would overflow".to_string(),
-                                )
+                                return RespValue::err("ERR increment or decrement would overflow")
                             }
                         };
 
@@ -3716,9 +3694,8 @@ impl CommandExecutor {
 
                         RespValue::Integer(new_value)
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3803,9 +3780,8 @@ impl CommandExecutor {
                             RespValue::Integer(added)
                         }
                     }
-                    _ => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    _ => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                 }
             }
@@ -3819,8 +3795,8 @@ impl CommandExecutor {
                         .collect();
                     RespValue::Array(Some(elements))
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Array(Some(Vec::new())),
             },
@@ -3843,8 +3819,8 @@ impl CommandExecutor {
                         RespValue::Array(Some(elements))
                     }
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Array(Some(Vec::new())),
             },
@@ -3857,8 +3833,8 @@ impl CommandExecutor {
                     }
                     None => RespValue::BulkString(None),
                 },
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::BulkString(None),
             },
@@ -3875,9 +3851,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(len)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -3894,9 +3869,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(len)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -3932,9 +3906,8 @@ impl CommandExecutor {
                             RespValue::BulkString(None)
                         }
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::BulkString(None),
                 }
@@ -3974,9 +3947,8 @@ impl CommandExecutor {
 
                         RespValue::Integer(removed)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -3993,9 +3965,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(card)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4028,9 +3999,8 @@ impl CommandExecutor {
                             }
                         }
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => {
                         // Key doesn't exist
@@ -4076,9 +4046,8 @@ impl CommandExecutor {
 
                         RespValue::Integer(deleted)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4101,9 +4070,8 @@ impl CommandExecutor {
                             .collect();
                         RespValue::Array(Some(keys))
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Array(Some(Vec::new())),
                 }
@@ -4126,9 +4094,8 @@ impl CommandExecutor {
                             .collect();
                         RespValue::Array(Some(vals))
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Array(Some(Vec::new())),
                 }
@@ -4145,9 +4112,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(len)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4165,9 +4131,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(result)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4207,9 +4172,8 @@ impl CommandExecutor {
 
                         RespValue::Integer(removed)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4230,9 +4194,8 @@ impl CommandExecutor {
                             None => RespValue::BulkString(None),
                         }
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::BulkString(None),
                 }
@@ -4249,9 +4212,8 @@ impl CommandExecutor {
                         );
                         RespValue::Integer(card)
                     }
-                    Some(_) => RespValue::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value"
-                            .to_string(),
+                    Some(_) => RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
                     None => RespValue::Integer(0),
                 }
@@ -4260,10 +4222,10 @@ impl CommandExecutor {
             Command::ZCount(key, min, max) => match self.get_value(key) {
                 Some(Value::SortedSet(zs)) => match zs.count_in_range(min, max) {
                     Ok(count) => RespValue::Integer(count as i64),
-                    Err(e) => RespValue::Error(e),
+                    Err(e) => RespValue::err(e),
                 },
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Integer(0),
             },
@@ -4294,11 +4256,11 @@ impl CommandExecutor {
                                 .collect();
                             RespValue::Array(Some(elements))
                         }
-                        Err(e) => RespValue::Error(e),
+                        Err(e) => RespValue::err(e),
                     }
                 }
-                Some(_) => RespValue::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                Some(_) => RespValue::err(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
                 ),
                 None => RespValue::Array(Some(vec![])),
             },
@@ -4366,9 +4328,8 @@ impl CommandExecutor {
                         Some(h.iter().map(|(f, v)| (f.clone(), v.to_string())).collect())
                     }
                     Some(_) => {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         )
                     }
                     None => None,
@@ -4446,9 +4407,8 @@ impl CommandExecutor {
                         Some(zs.iter().map(|(m, s)| (m.to_string(), s)).collect())
                     }
                     Some(_) => {
-                        return RespValue::Error(
-                            "WRONGTYPE Operation against a key holding the wrong kind of value"
-                                .to_string(),
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
                         )
                     }
                     None => None,
@@ -4510,16 +4470,16 @@ impl CommandExecutor {
 
             Command::Multi => {
                 if self.in_transaction {
-                    return RespValue::Error("ERR MULTI calls can not be nested".to_string());
+                    return RespValue::err("ERR MULTI calls can not be nested");
                 }
                 self.in_transaction = true;
                 self.queued_commands.clear();
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Exec => {
                 if !self.in_transaction {
-                    return RespValue::Error("ERR EXEC without MULTI".to_string());
+                    return RespValue::err("ERR EXEC without MULTI");
                 }
 
                 // Check if any watched keys have changed
@@ -4547,29 +4507,29 @@ impl CommandExecutor {
 
             Command::Discard => {
                 if !self.in_transaction {
-                    return RespValue::Error("ERR DISCARD without MULTI".to_string());
+                    return RespValue::err("ERR DISCARD without MULTI");
                 }
                 self.in_transaction = false;
                 self.queued_commands.clear();
                 self.watched_keys.clear();
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Watch(keys) => {
                 if self.in_transaction {
-                    return RespValue::Error("ERR WATCH inside MULTI is not allowed".to_string());
+                    return RespValue::err("ERR WATCH inside MULTI is not allowed");
                 }
                 // Store current values of watched keys
                 for key in keys {
                     let current_value = self.data.get(key).cloned();
                     self.watched_keys.insert(key.clone(), current_value);
                 }
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Unwatch => {
                 self.watched_keys.clear();
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Eval { script, keys, args } => {
@@ -4580,7 +4540,7 @@ impl CommandExecutor {
                 #[cfg(not(feature = "lua"))]
                 {
                     let _ = (script, keys, args);
-                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                    RespValue::err("ERR Lua scripting not compiled in")
                 }
             }
 
@@ -4593,15 +4553,13 @@ impl CommandExecutor {
                             let script = script.clone();
                             self.execute_lua_script(&script, keys, args)
                         }
-                        None => RespValue::Error(
-                            "NOSCRIPT No matching script. Please use EVAL.".to_string(),
-                        ),
+                        None => RespValue::err("NOSCRIPT No matching script. Please use EVAL."),
                     }
                 }
                 #[cfg(not(feature = "lua"))]
                 {
                     let _ = (sha1, keys, args);
-                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                    RespValue::err("ERR Lua scripting not compiled in")
                 }
             }
 
@@ -4614,7 +4572,7 @@ impl CommandExecutor {
                 #[cfg(not(feature = "lua"))]
                 {
                     let _ = script;
-                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                    RespValue::err("ERR Lua scripting not compiled in")
                 }
             }
 
@@ -4636,7 +4594,7 @@ impl CommandExecutor {
                 #[cfg(not(feature = "lua"))]
                 {
                     let _ = sha1s;
-                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                    RespValue::err("ERR Lua scripting not compiled in")
                 }
             }
 
@@ -4644,11 +4602,11 @@ impl CommandExecutor {
                 #[cfg(feature = "lua")]
                 {
                     self.flush_scripts_internal();
-                    RespValue::SimpleString("OK".to_string())
+                    RespValue::simple("OK")
                 }
                 #[cfg(not(feature = "lua"))]
                 {
-                    RespValue::Error("ERR Lua scripting not compiled in".to_string())
+                    RespValue::err("ERR Lua scripting not compiled in")
                 }
             }
 
@@ -4663,7 +4621,7 @@ impl CommandExecutor {
             Command::Auth { .. } => {
                 // AUTH is handled at the connection level
                 // If we get here, it means the server doesn't have ACL enabled
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::AclWhoami => {
@@ -4704,12 +4662,10 @@ impl CommandExecutor {
 
             Command::AclSetUser { .. } => {
                 // ACL management requires the ACL feature
-                RespValue::Error("ERR ACL feature not enabled".to_string())
+                RespValue::err("ERR ACL feature not enabled")
             }
 
-            Command::AclDelUser { .. } => {
-                RespValue::Error("ERR ACL feature not enabled".to_string())
-            }
+            Command::AclDelUser { .. } => RespValue::err("ERR ACL feature not enabled"),
 
             Command::AclCat { category } => {
                 // Return command categories or commands in a category
@@ -4754,7 +4710,7 @@ impl CommandExecutor {
                                     .collect();
                                 RespValue::Array(Some(commands))
                             } else {
-                                RespValue::Error(format!("ERR Unknown ACL category '{}'", cat))
+                                RespValue::err(format!("ERR Unknown ACL category '{}'", cat))
                             }
                         }
                     }
@@ -4806,7 +4762,7 @@ impl CommandExecutor {
                 RespValue::BulkString(Some(result.into_bytes()))
             }
 
-            Command::Unknown(cmd) => RespValue::Error(format!("ERR unknown command '{}'", cmd)),
+            Command::Unknown(cmd) => RespValue::err(format!("ERR unknown command '{}'", cmd)),
         }
     }
 
@@ -4837,7 +4793,7 @@ impl CommandExecutor {
         // This ensures Lua scripts produce deterministic results for simulation testing
         let seed = self.current_time.as_millis();
         if let Err(e) = lua.load(&format!("math.randomseed({})", seed)).exec() {
-            return RespValue::Error(format!("ERR Failed to seed RNG: {}", e));
+            return RespValue::err(format!("ERR Failed to seed RNG: {}", e));
         }
 
         // Sandbox: Remove dangerous/non-deterministic functions
@@ -4849,7 +4805,7 @@ impl CommandExecutor {
             lua.globals().set("debug", LuaValue::Nil)?;
             Ok(())
         })() {
-            return RespValue::Error(format!("ERR Lua sandbox error: {}", e));
+            return RespValue::err(format!("ERR Lua sandbox error: {}", e));
         }
 
         // Create KEYS table
@@ -4861,7 +4817,7 @@ impl CommandExecutor {
             lua.globals().set("KEYS", keys_table)?;
             Ok(())
         })() {
-            return RespValue::Error(format!("ERR Failed to set KEYS: {}", e));
+            return RespValue::err(format!("ERR Failed to set KEYS: {}", e));
         }
 
         // Create ARGV table - use binary-safe Lua strings to preserve protobuf/binary data
@@ -4875,7 +4831,7 @@ impl CommandExecutor {
             lua.globals().set("ARGV", argv_table)?;
             Ok(())
         })() {
-            return RespValue::Error(format!("ERR Failed to set ARGV: {}", e));
+            return RespValue::err(format!("ERR Failed to set ARGV: {}", e));
         }
 
         // Use RefCell to allow mutable borrow from within Lua callbacks
@@ -4901,7 +4857,7 @@ impl CommandExecutor {
                         let resp = exec.execute(&cmd);
                         // redis.call propagates errors
                         if let RespValue::Error(e) = &resp {
-                            return Err(mlua::Error::RuntimeError(e.clone()));
+                            return Err(mlua::Error::RuntimeError(e.to_string()));
                         }
                         Self::resp_to_lua_value(lua, resp)
                     }
@@ -4926,7 +4882,7 @@ impl CommandExecutor {
                         // redis.pcall returns errors as {err = "message"} tables
                         if let RespValue::Error(e) = &resp {
                             let err_table = lua.create_table()?;
-                            err_table.set("err", e.as_str())?;
+                            err_table.set("err", e.as_ref())?;
                             return Ok(LuaValue::Table(err_table));
                         }
                         Self::resp_to_lua_value(lua, resp)
@@ -4953,7 +4909,7 @@ impl CommandExecutor {
         // Convert result - use a separate method call to convert Lua result
         let resp = match result {
             Ok(lua_value) => self.lua_to_resp(&lua, lua_value),
-            Err(e) => RespValue::Error(format!("ERR {}", e)),
+            Err(e) => RespValue::err(format!("ERR {}", e)),
         };
 
         // TigerStyle: Postconditions
@@ -5007,14 +4963,14 @@ impl CommandExecutor {
             RespValue::SimpleString(s) => {
                 // Return as {ok = "message"} table for status replies
                 let t = lua.create_table()?;
-                t.set("ok", s.as_str())?;
+                t.set("ok", s.as_ref())?;
                 LuaValue::Table(t)
             }
             RespValue::Error(e) => {
                 // Should not reach here for redis.call (errors propagate)
                 // For pcall, caller handles this
                 let t = lua.create_table()?;
-                t.set("err", e.as_str())?;
+                t.set("err", e.as_ref())?;
                 LuaValue::Table(t)
             }
             RespValue::Integer(i) => LuaValue::Integer(i),
@@ -5906,10 +5862,10 @@ impl CommandExecutor {
             LuaValue::Table(t) => {
                 // Check for Redis error/ok convention first
                 if let Ok(err) = t.get::<String>("err") {
-                    return RespValue::Error(err);
+                    return RespValue::err(err);
                 }
                 if let Ok(ok) = t.get::<String>("ok") {
-                    return RespValue::SimpleString(ok);
+                    return RespValue::simple(ok);
                 }
 
                 // Check if it's a sequential array
@@ -5950,27 +5906,19 @@ impl CommandExecutor {
             Some(Value::String(s)) => {
                 let current = match s.to_string().parse::<i64>() {
                     Ok(n) => n,
-                    Err(_) => {
-                        return RespValue::Error(
-                            "ERR value is not an integer or out of range".to_string(),
-                        )
-                    }
+                    Err(_) => return RespValue::err("ERR value is not an integer or out of range"),
                 };
                 let new_value = match current.checked_add(increment) {
                     Some(n) => n,
-                    None => {
-                        return RespValue::Error(
-                            "ERR increment or decrement would overflow".to_string(),
-                        )
-                    }
+                    None => return RespValue::err("ERR increment or decrement would overflow"),
                 };
                 let new_str = SDS::from_str(&new_value.to_string());
                 self.data.insert(key.to_string(), Value::String(new_str));
                 RespValue::Integer(new_value)
             }
-            Some(_) => RespValue::Error(
-                "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
-            ),
+            Some(_) => {
+                RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
+            }
             None => {
                 self.data.insert(
                     key.to_string(),

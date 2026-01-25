@@ -7,8 +7,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY benches ./benches
 
-# Build the server-persistent binary for Kubernetes deployment
-RUN cargo build --release --bin server-persistent
+# Build the server-persistent binary with performance optimizations
+RUN cargo build --release --bin server-persistent --features "opt-all"
 
 FROM debian:bookworm-slim
 

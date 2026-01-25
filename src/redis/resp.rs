@@ -1,7 +1,14 @@
+use std::borrow::Cow;
+
+/// RESP (Redis Serialization Protocol) values
+///
+/// Uses Cow<'static, str> for SimpleString and Error to enable zero-allocation
+/// responses for static strings like "OK" and "PONG" while still supporting
+/// dynamic strings.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RespValue {
-    SimpleString(String),
-    Error(String),
+    SimpleString(Cow<'static, str>),
+    Error(Cow<'static, str>),
     Integer(i64),
     BulkString(Option<Vec<u8>>),
     Array(Option<Vec<RespValue>>),
@@ -27,8 +34,8 @@ impl RespParser {
 
     fn parse_simple_string(input: &[u8]) -> Result<(RespValue, usize), String> {
         if let Some(pos) = Self::find_crlf(input) {
-            let s = String::from_utf8_lossy(&input[1..pos]).to_string();
-            Ok((RespValue::SimpleString(s), pos + 2))
+            let s = String::from_utf8_lossy(&input[1..pos]).into_owned();
+            Ok((RespValue::SimpleString(Cow::Owned(s)), pos + 2))
         } else {
             Err("No CRLF found".to_string())
         }
@@ -36,8 +43,8 @@ impl RespParser {
 
     fn parse_error(input: &[u8]) -> Result<(RespValue, usize), String> {
         if let Some(pos) = Self::find_crlf(input) {
-            let s = String::from_utf8_lossy(&input[1..pos]).to_string();
-            Ok((RespValue::Error(s), pos + 2))
+            let s = String::from_utf8_lossy(&input[1..pos]).into_owned();
+            Ok((RespValue::Error(Cow::Owned(s)), pos + 2))
         } else {
             Err("No CRLF found".to_string())
         }
@@ -134,49 +141,49 @@ impl RespParser {
     }
 }
 
-// Static response optimization helpers (P1: opt-static-responses)
+// Static response helpers - zero allocation using Cow::Borrowed
 impl RespValue {
-    /// Static "OK" response - avoids allocation on every SET
-    #[cfg(feature = "opt-static-responses")]
+    /// Static "OK" response - zero allocation
     #[inline]
     pub fn ok() -> Self {
-        // Use a pre-allocated static string to avoid allocation
-        static OK_STR: &str = "OK";
-        RespValue::SimpleString(OK_STR.to_string())
+        RespValue::SimpleString(Cow::Borrowed("OK"))
     }
 
-    /// Fallback "OK" response when feature is disabled
-    #[cfg(not(feature = "opt-static-responses"))]
-    #[inline]
-    pub fn ok() -> Self {
-        RespValue::SimpleString("OK".to_string())
-    }
-
-    /// Static "PONG" response - avoids allocation on every PING
-    #[cfg(feature = "opt-static-responses")]
+    /// Static "PONG" response - zero allocation
     #[inline]
     pub fn pong() -> Self {
-        static PONG_STR: &str = "PONG";
-        RespValue::SimpleString(PONG_STR.to_string())
+        RespValue::SimpleString(Cow::Borrowed("PONG"))
     }
 
-    /// Fallback "PONG" response when feature is disabled
-    #[cfg(not(feature = "opt-static-responses"))]
-    #[inline]
-    pub fn pong() -> Self {
-        RespValue::SimpleString("PONG".to_string())
-    }
-
-    /// Static "QUEUED" response for transactions
+    /// Static "QUEUED" response for transactions - zero allocation
     #[inline]
     pub fn queued() -> Self {
-        RespValue::SimpleString("QUEUED".to_string())
+        RespValue::SimpleString(Cow::Borrowed("QUEUED"))
     }
 
     /// Static nil bulk string response
     #[inline]
     pub fn nil() -> Self {
         RespValue::BulkString(None)
+    }
+
+    /// Create a SimpleString from an owned String
+    #[inline]
+    pub fn simple_string(s: String) -> Self {
+        RespValue::SimpleString(Cow::Owned(s))
+    }
+
+    /// Create an Error from any string type (String, &str, Cow)
+    /// Uses Into trait for ergonomic API
+    #[inline]
+    pub fn err<S: Into<Cow<'static, str>>>(s: S) -> Self {
+        RespValue::Error(s.into())
+    }
+
+    /// Create a SimpleString from any string type
+    #[inline]
+    pub fn simple<S: Into<Cow<'static, str>>>(s: S) -> Self {
+        RespValue::SimpleString(s.into())
     }
 
     /// Static empty array response

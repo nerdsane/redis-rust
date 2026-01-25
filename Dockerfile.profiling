@@ -1,0 +1,35 @@
+# Dockerfile for builds with profiling support (ddprof)
+# Keeps debug symbols for proper function name resolution
+#
+# Usage:
+#   docker build -f Dockerfile.profiling -t registry.ddbuild.io/redis-rust:profiling .
+#
+FROM rust:1.85-slim AS builder
+
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY benches ./benches
+
+# Build with release-profiling profile (keeps debug symbols for ddprof)
+# Enable opt-all for performance optimizations (single-key-alloc, static-responses, itoa, etc.)
+RUN cargo build --profile release-profiling --bin server-persistent --features "datadog,opt-all"
+
+FROM debian:bookworm-slim
+
+# Create non-root user for security
+RUN useradd -r -u 1000 -g root redis && \
+    mkdir -p /data && \
+    chown redis:root /data
+
+# Copy binary with debug symbols
+COPY --from=builder /app/target/release-profiling/server-persistent /usr/local/bin/redis-server
+
+# Run as non-root
+USER 1000
+
+EXPOSE 3000 3001 7000 9090
+
+CMD ["redis-server"]

@@ -28,7 +28,7 @@ mod resp_parser_tests {
             (RespValue::SimpleString(s1), RespValueZeroCopy::SimpleString(s2)) => {
                 s1.as_bytes() == s2.as_ref()
             }
-            (RespValue::Error(s1), RespValueZeroCopy::Error(s2)) => s1.as_bytes() == s2.as_ref(),
+            (RespValue::err(s1), RespValueZeroCopy::Error(s2)) => s1.as_bytes() == s2.as_ref(),
             (RespValue::Integer(n1), RespValueZeroCopy::Integer(n2)) => n1 == n2,
             (RespValue::BulkString(None), RespValueZeroCopy::BulkString(None)) => true,
             (RespValue::BulkString(Some(d1)), RespValueZeroCopy::BulkString(Some(d2))) => {
@@ -532,7 +532,7 @@ mod lua_scripting_tests {
         };
         let result = executor.execute(&cmd);
         match result {
-            RespValue::Error(e) => assert!(e.contains("ERR")),
+            RespValue::err(e) => assert!(e.contains("ERR")),
             _ => panic!("Expected error for syntax error"),
         }
     }
@@ -547,7 +547,7 @@ mod lua_scripting_tests {
         };
         let result = executor.execute(&cmd);
         match result {
-            RespValue::Error(e) => assert!(e.contains("NOSCRIPT")),
+            RespValue::err(e) => assert!(e.contains("NOSCRIPT")),
             _ => panic!("Expected NOSCRIPT error"),
         }
     }
@@ -1183,7 +1183,7 @@ mod new_command_tests {
         };
         let result = executor.execute(&cmd);
 
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         // Verify the value was set
         let get_cmd = Command::Get("mykey".to_string());
@@ -1257,7 +1257,7 @@ mod new_command_tests {
         };
         let result = executor.execute(&cmd);
 
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         // Value should be updated
         let get_cmd = Command::Get("mykey".to_string());
@@ -1468,7 +1468,7 @@ mod new_command_tests {
         let cmd = Command::LSet("mylist".to_string(), 1, SDS::from_str("B"));
         let result = executor.execute(&cmd);
 
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         // Verify
         let lrange = Command::LRange("mylist".to_string(), 0, -1);
@@ -1492,7 +1492,7 @@ mod new_command_tests {
         let cmd = Command::LSet("mylist".to_string(), -1, SDS::from_str("C"));
         let result = executor.execute(&cmd);
 
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         let lrange = Command::LRange("mylist".to_string(), 0, -1);
         if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
@@ -1540,7 +1540,7 @@ mod new_command_tests {
         let cmd = Command::LTrim("mylist".to_string(), 1, 3);
         let result = executor.execute(&cmd);
 
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         let lrange = Command::LRange("mylist".to_string(), 0, -1);
         if let RespValue::Array(Some(elements)) = executor.execute(&lrange) {
@@ -2080,17 +2080,17 @@ mod new_command_tests {
             xx: false,
             get: false,
         });
-        assert_eq!(r1, RespValue::SimpleString("QUEUED".to_string()));
+        assert_eq!(r1, RespValue::simple("QUEUED"));
 
         let r2 = executor.execute(&Command::Incr("counter".to_string()));
-        assert_eq!(r2, RespValue::SimpleString("QUEUED".to_string()));
+        assert_eq!(r2, RespValue::simple("QUEUED"));
 
         // Execute transaction
         let result = executor.execute(&Command::Exec);
 
         if let RespValue::Array(Some(results)) = result {
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0], RespValue::SimpleString("OK".to_string()));
+            assert_eq!(results[0], RespValue::simple("OK"));
             assert_eq!(results[1], RespValue::Integer(1));
         } else {
             panic!("Expected array result from EXEC");
@@ -2119,7 +2119,7 @@ mod new_command_tests {
         });
 
         let result = executor.execute(&Command::Discard);
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
 
         // Value should NOT be set
         assert_eq!(
@@ -2196,7 +2196,7 @@ mod new_command_tests {
 
         executor.execute(&Command::Watch(vec!["key".to_string()]));
         let result = executor.execute(&Command::Unwatch);
-        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+        assert_eq!(result, RespValue::simple("OK"));
     }
 
     // ============================================

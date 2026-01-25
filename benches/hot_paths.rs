@@ -208,9 +208,14 @@ fn bench_resp_value(c: &mut Criterion) {
     let mut group = c.benchmark_group("resp_value");
     group.throughput(Throughput::Elements(1));
 
-    // SimpleString allocation
-    group.bench_function("simple_string_ok", |b| {
-        b.iter(|| RespValue::SimpleString(black_box("OK").to_string()))
+    // SimpleString allocation (old way with .to_string())
+    group.bench_function("simple_string_ok_alloc", |b| {
+        b.iter(|| RespValue::simple(black_box("OK").to_string()))
+    });
+
+    // SimpleString with static &str (new zero-alloc way)
+    group.bench_function("simple_string_ok_static", |b| {
+        b.iter(|| RespValue::ok()) // Uses Cow::Borrowed("OK")
     });
 
     // Integer response (no allocation)

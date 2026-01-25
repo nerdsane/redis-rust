@@ -217,8 +217,14 @@ strip = false
 inherits = "release"
 lto = "fat"
 
-# Profile for profiling (has debug symbols)
+# Profile for profiling (has debug symbols for ddprof)
 [profile.profiling]
 inherits = "release"
-debug = true
-strip = false
+debug = 1           # Line tables only (smaller than debug = true)
+strip = false       # Keep symbols for ddprof function name resolution
+
+# Profile for staging with profiling support
+[profile.release-profiling]
+inherits = "release"
+debug = 1           # Line tables for profiling
+strip = false       # Keep symbols
