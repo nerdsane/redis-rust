@@ -208,6 +208,10 @@ impl SegmentHeader {
     }
 
     /// Parse header from bytes
+    ///
+    /// # Safety Invariant
+    /// After the length check, all slice operations are guaranteed to succeed
+    /// because HEADER_SIZE (64) > all slice indices used below.
     fn from_bytes(data: &[u8]) -> Result<Self, SegmentError> {
         if data.len() < HEADER_SIZE {
             return Err(SegmentError::Io(std::io::Error::new(
@@ -216,13 +220,33 @@ impl SegmentHeader {
             )));
         }
 
-        let magic: [u8; 4] = data[0..4].try_into().unwrap();
+        // TigerStyle: All try_into() calls are safe after length validation above.
+        // HEADER_SIZE=64 ensures indices 0..30 are valid.
+        let magic: [u8; 4] = data[0..4]
+            .try_into()
+            .expect("length validated: HEADER_SIZE >= 4");
         let version = data[4];
         let flags = data[5];
-        let record_count = u32::from_le_bytes(data[6..10].try_into().unwrap());
-        let min_timestamp = u64::from_le_bytes(data[10..18].try_into().unwrap());
-        let max_timestamp = u64::from_le_bytes(data[18..26].try_into().unwrap());
-        let header_checksum = u32::from_le_bytes(data[26..30].try_into().unwrap());
+        let record_count = u32::from_le_bytes(
+            data[6..10]
+                .try_into()
+                .expect("length validated: HEADER_SIZE >= 10"),
+        );
+        let min_timestamp = u64::from_le_bytes(
+            data[10..18]
+                .try_into()
+                .expect("length validated: HEADER_SIZE >= 18"),
+        );
+        let max_timestamp = u64::from_le_bytes(
+            data[18..26]
+                .try_into()
+                .expect("length validated: HEADER_SIZE >= 26"),
+        );
+        let header_checksum = u32::from_le_bytes(
+            data[26..30]
+                .try_into()
+                .expect("length validated: HEADER_SIZE >= 30"),
+        );
 
         Ok(SegmentHeader {
             magic,
@@ -271,6 +295,10 @@ impl SegmentFooter {
     }
 
     /// Parse footer from bytes
+    ///
+    /// # Safety Invariant
+    /// After the length check, all slice operations are guaranteed to succeed
+    /// because FOOTER_SIZE (24) >= all slice indices used below.
     fn from_bytes(data: &[u8]) -> Result<Self, SegmentError> {
         if data.len() < FOOTER_SIZE {
             return Err(SegmentError::Io(std::io::Error::new(
@@ -279,10 +307,26 @@ impl SegmentFooter {
             )));
         }
 
-        let data_checksum = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let uncompressed_size = u64::from_le_bytes(data[4..12].try_into().unwrap());
-        let compressed_size = u64::from_le_bytes(data[12..20].try_into().unwrap());
-        let footer_magic: [u8; 4] = data[20..24].try_into().unwrap();
+        // TigerStyle: All try_into() calls are safe after length validation above.
+        // FOOTER_SIZE=24 ensures indices 0..24 are valid.
+        let data_checksum = u32::from_le_bytes(
+            data[0..4]
+                .try_into()
+                .expect("length validated: FOOTER_SIZE >= 4"),
+        );
+        let uncompressed_size = u64::from_le_bytes(
+            data[4..12]
+                .try_into()
+                .expect("length validated: FOOTER_SIZE >= 12"),
+        );
+        let compressed_size = u64::from_le_bytes(
+            data[12..20]
+                .try_into()
+                .expect("length validated: FOOTER_SIZE >= 20"),
+        );
+        let footer_magic: [u8; 4] = data[20..24]
+            .try_into()
+            .expect("length validated: FOOTER_SIZE >= 24");
 
         if footer_magic != FOOTER_MAGIC {
             return Err(SegmentError::InvalidMagic);
@@ -561,8 +605,12 @@ impl Iterator for DeltaIterator {
             ))));
         }
 
-        let len = u32::from_le_bytes(self.data[self.offset..self.offset + 4].try_into().unwrap())
-            as usize;
+        // TigerStyle: try_into() is safe - bounds check above ensures 4 bytes available
+        let len = u32::from_le_bytes(
+            self.data[self.offset..self.offset + 4]
+                .try_into()
+                .expect("bounds checked: offset + 4 <= data.len()"),
+        ) as usize;
         self.offset += 4;
 
         if self.offset + len > self.data.len() {

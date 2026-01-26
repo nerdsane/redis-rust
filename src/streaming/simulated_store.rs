@@ -128,12 +128,19 @@ impl<S: ObjectStore + Clone, R: Rng> SimulatedObjectStore<S, R> {
 
     /// Get current statistics
     pub fn stats(&self) -> SimulatedStoreStats {
-        self.state.lock().unwrap().stats.clone()
+        self.state
+            .lock()
+            .expect("simulated store mutex poisoned")
+            .stats
+            .clone()
     }
 
     /// Reset statistics
     pub fn reset_stats(&self) {
-        self.state.lock().unwrap().stats = SimulatedStoreStats::default();
+        self.state
+            .lock()
+            .expect("simulated store mutex poisoned")
+            .stats = SimulatedStoreStats::default();
     }
 }
 
@@ -149,39 +156,51 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
         Box::pin(async move {
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 s.stats.put_attempts += 1;
             }
 
             // Check for timeout
             let should_timeout = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::TIMEOUT, config.timeout_prob)
             };
             if should_timeout {
-                state.lock().unwrap().stats.timeouts += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .timeouts += 1;
                 return Err(IoError::new(ErrorKind::TimedOut, "simulated timeout"));
             }
 
             // Check for put failure
             let should_fail = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::PUT_FAIL, config.put_fail_prob)
             };
             if should_fail {
-                state.lock().unwrap().stats.put_failures += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .put_failures += 1;
                 return Err(IoError::new(ErrorKind::Other, "simulated put failure"));
             }
 
             // Check for partial write
             let should_partial = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::PARTIAL_WRITE, config.partial_write_prob)
             };
             let write_data = if should_partial && data.len() > 1 {
-                state.lock().unwrap().stats.partial_writes += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .partial_writes += 1;
                 let new_len = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().expect("simulated store mutex poisoned");
                     s.rng.gen_range(1, data.len() as u64) as usize
                 };
                 data[..new_len].to_vec()
@@ -193,7 +212,7 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
             let (min, max) = config.latency_range_us;
             if min > 0 || max > 0 {
                 let latency_us = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().expect("simulated store mutex poisoned");
                     if max > min {
                         s.rng.gen_range(min, max)
                     } else {
@@ -217,27 +236,35 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
         Box::pin(async move {
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 s.stats.get_attempts += 1;
             }
 
             // Check for timeout
             let should_timeout = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::TIMEOUT, config.timeout_prob)
             };
             if should_timeout {
-                state.lock().unwrap().stats.timeouts += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .timeouts += 1;
                 return Err(IoError::new(ErrorKind::TimedOut, "simulated timeout"));
             }
 
             // Check for get failure
             let should_fail = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::GET_FAIL, config.get_fail_prob)
             };
             if should_fail {
-                state.lock().unwrap().stats.get_failures += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .get_failures += 1;
                 return Err(IoError::new(ErrorKind::Other, "simulated get failure"));
             }
 
@@ -245,7 +272,7 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
             let (min, max) = config.latency_range_us;
             if min > 0 || max > 0 {
                 let latency_us = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().expect("simulated store mutex poisoned");
                     if max > min {
                         s.rng.gen_range(min, max)
                     } else {
@@ -261,14 +288,18 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
             // Check for corruption
             let should_corrupt = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::GET_CORRUPT, config.get_corrupt_prob)
             };
             if should_corrupt && !data.is_empty() {
-                state.lock().unwrap().stats.get_corruptions += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .get_corruptions += 1;
                 let mut corrupted = data;
                 let idx = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().expect("simulated store mutex poisoned");
                     s.rng.gen_range(0, corrupted.len() as u64) as usize
                 };
                 corrupted[idx] ^= 0xFF;
@@ -293,17 +324,21 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
         Box::pin(async move {
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 s.stats.delete_attempts += 1;
             }
 
             // Check for delete failure
             let should_fail = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::DELETE_FAIL, config.delete_fail_prob)
             };
             if should_fail {
-                state.lock().unwrap().stats.delete_failures += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .delete_failures += 1;
                 return Err(IoError::new(ErrorKind::Other, "simulated delete failure"));
             }
 
@@ -324,7 +359,7 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
         Box::pin(async move {
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 s.stats.list_attempts += 1;
             }
 
@@ -332,7 +367,7 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
             // Check for incomplete listing
             let should_truncate = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(
                     &mut s.rng,
                     faults::LIST_INCOMPLETE,
@@ -340,9 +375,13 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
                 )
             };
             if should_truncate && result.objects.len() > 1 {
-                state.lock().unwrap().stats.list_incomplete += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .list_incomplete += 1;
                 let truncate_at = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().expect("simulated store mutex poisoned");
                     s.rng.gen_range(1, result.objects.len() as u64) as usize
                 };
                 return Ok(ListResult {
@@ -364,17 +403,21 @@ impl<S: ObjectStore + Clone + 'static, R: Rng + 'static> ObjectStore
 
         Box::pin(async move {
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 s.stats.rename_attempts += 1;
             }
 
             // Check for rename failure
             let should_fail = {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().expect("simulated store mutex poisoned");
                 crate::buggify!(&mut s.rng, faults::RENAME_FAIL, config.rename_fail_prob)
             };
             if should_fail {
-                state.lock().unwrap().stats.rename_failures += 1;
+                state
+                    .lock()
+                    .expect("simulated store mutex poisoned")
+                    .stats
+                    .rename_failures += 1;
                 return Err(IoError::new(ErrorKind::Other, "simulated rename failure"));
             }
 
