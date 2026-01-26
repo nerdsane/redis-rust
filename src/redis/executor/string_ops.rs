@@ -156,6 +156,14 @@ impl CommandExecutor {
                 _ => RespValue::BulkString(None),
             })
             .collect();
+
+        // TigerStyle: Postcondition - result count matches input count
+        debug_assert_eq!(
+            values.len(),
+            keys.len(),
+            "Postcondition violated: MGET result count must match input key count"
+        );
+
         RespValue::Array(Some(values))
     }
 
@@ -164,6 +172,16 @@ impl CommandExecutor {
             self.data.insert(key.clone(), Value::String(value.clone()));
             self.access_times.insert(key.clone(), self.current_time);
         }
+
+        // TigerStyle: Postcondition - all pairs stored
+        #[cfg(debug_assertions)]
+        for (key, value) in pairs {
+            debug_assert!(
+                matches!(self.data.get(key), Some(Value::String(v)) if v == value),
+                "Postcondition violated: MSET must store all pairs"
+            );
+        }
+
         RespValue::simple("OK")
     }
 
@@ -189,6 +207,14 @@ impl CommandExecutor {
                 None => RespValue::BulkString(None),
             });
         }
+
+        // TigerStyle: Postcondition - result count matches input count
+        debug_assert_eq!(
+            results.len(),
+            keys.len(),
+            "Postcondition violated: batch_get result count must match input key count"
+        );
+
         RespValue::Array(Some(results))
     }
 

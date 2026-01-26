@@ -395,6 +395,32 @@ impl SegmentWriter {
         }
     }
 
+    /// TigerStyle: Verify all invariants hold
+    ///
+    /// # Invariants
+    /// - If non-empty: min_timestamp <= max_timestamp
+    /// - total_size == sum of all record lengths
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        // Non-empty segment must have valid timestamp range
+        if !self.records.is_empty() {
+            debug_assert!(
+                self.min_timestamp <= self.max_timestamp,
+                "Invariant violated: min_timestamp ({}) must be <= max_timestamp ({})",
+                self.min_timestamp,
+                self.max_timestamp
+            );
+        }
+
+        // total_size must match sum of records
+        let actual_size: usize = self.records.iter().map(|r| r.len()).sum();
+        debug_assert_eq!(
+            self.total_size, actual_size,
+            "Invariant violated: total_size ({}) must equal sum of record lengths ({})",
+            self.total_size, actual_size
+        );
+    }
+
     /// Add a delta to the segment
     pub fn write_delta(&mut self, delta: &ReplicationDelta) -> Result<(), SegmentError> {
         // Serialize delta with bincode
@@ -413,6 +439,9 @@ impl SegmentWriter {
 
         self.total_size += record.len();
         self.records.push(record);
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
 
         Ok(())
     }

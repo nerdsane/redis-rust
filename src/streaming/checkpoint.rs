@@ -183,19 +183,43 @@ impl CheckpointHeader {
         Ok(())
     }
 
+    /// Read header from a reader
+    ///
+    /// # Safety Invariant
+    /// All try_into() calls are safe because buf is exactly CHECKPOINT_HEADER_SIZE (48) bytes,
+    /// and all slice indices are within bounds.
     fn read_from<R: IoRead>(reader: &mut R) -> Result<Self, CheckpointError> {
         let mut buf = [0u8; CHECKPOINT_HEADER_SIZE];
         reader.read_exact(&mut buf)?;
 
-        let magic: [u8; 4] = buf[0..4].try_into().unwrap();
+        // TigerStyle: All try_into() are safe - buf is fixed 48-byte array
+        let magic: [u8; 4] = buf[0..4]
+            .try_into()
+            .expect("buf is 48 bytes, indices 0..4 valid");
         let version = buf[4];
         let flags = buf[5];
         // buf[6..8] is padding
-        let key_count = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-        let timestamp_ms = u64::from_le_bytes(buf[16..24].try_into().unwrap());
-        let last_segment_id = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+        let key_count = u64::from_le_bytes(
+            buf[8..16]
+                .try_into()
+                .expect("buf is 48 bytes, indices 8..16 valid"),
+        );
+        let timestamp_ms = u64::from_le_bytes(
+            buf[16..24]
+                .try_into()
+                .expect("buf is 48 bytes, indices 16..24 valid"),
+        );
+        let last_segment_id = u64::from_le_bytes(
+            buf[24..32]
+                .try_into()
+                .expect("buf is 48 bytes, indices 24..32 valid"),
+        );
         // buf[32..44] is reserved
-        let header_checksum = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+        let header_checksum = u32::from_le_bytes(
+            buf[44..48]
+                .try_into()
+                .expect("buf is 48 bytes, indices 44..48 valid"),
+        );
 
         Ok(CheckpointHeader {
             magic,

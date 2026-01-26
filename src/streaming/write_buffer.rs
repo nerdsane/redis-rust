@@ -100,6 +100,29 @@ impl WriteBufferInner {
             stats: WriteBufferStats::default(),
         }
     }
+
+    /// TigerStyle: Verify all invariants hold
+    ///
+    /// # Invariants
+    /// - stats.buffered_deltas == deltas.len()
+    /// - stats.buffered_bytes == estimated_bytes
+    /// - Empty buffer implies zero bytes
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        debug_assert_eq!(
+            self.stats.buffered_deltas,
+            self.deltas.len(),
+            "Invariant violated: stats.buffered_deltas must equal deltas.len()"
+        );
+        debug_assert_eq!(
+            self.stats.buffered_bytes, self.estimated_bytes,
+            "Invariant violated: stats.buffered_bytes must equal estimated_bytes"
+        );
+        debug_assert!(
+            !self.deltas.is_empty() || self.estimated_bytes == 0,
+            "Invariant violated: empty buffer must have zero estimated_bytes"
+        );
+    }
 }
 
 /// Write buffer that accumulates deltas and flushes to object store
@@ -173,6 +196,9 @@ impl<S: ObjectStore> WriteBuffer<S> {
         inner.stats.buffered_deltas = inner.deltas.len();
         inner.stats.buffered_bytes = inner.estimated_bytes;
 
+        #[cfg(debug_assertions)]
+        inner.verify_invariants();
+
         Ok(())
     }
 
@@ -225,6 +251,9 @@ impl<S: ObjectStore> WriteBuffer<S> {
             inner.stats.buffered_deltas = 0;
             inner.stats.buffered_bytes = 0;
             inner.stats.total_deltas_flushed += deltas.len() as u64;
+
+            #[cfg(debug_assertions)]
+            inner.verify_invariants();
 
             (deltas, segment_id)
         };

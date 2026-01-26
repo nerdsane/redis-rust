@@ -2,6 +2,14 @@
 //!
 //! Handles: LPUSH, RPUSH, LPOP, RPOP, LLEN, LINDEX, LRANGE, LSET, LTRIM,
 //! RPOPLPUSH, LMOVE
+//!
+//! # TigerStyle Invariants
+//!
+//! - LPUSH/RPUSH: result length = pre_length + pushed_count
+//! - LPOP/RPOP: result length = pre_length - 1 (if non-empty)
+//! - LLEN: always returns non-negative
+//! - LINDEX: actual_index must be < list.len() when accessing
+//! - LRANGE: result.len() <= end - start + 1
 
 use super::CommandExecutor;
 use crate::redis::data::{RedisList, Value, SDS};
@@ -20,10 +28,22 @@ impl CommandExecutor {
         self.access_times.insert(key.to_string(), self.current_time);
         match list {
             Value::List(l) => {
+                #[cfg(debug_assertions)]
+                let pre_len = l.len();
+
                 for value in values {
                     l.lpush(value.clone());
                 }
-                RespValue::Integer(l.len() as i64)
+                let new_len = l.len() as i64;
+
+                // TigerStyle: Postcondition - length increased by pushed count
+                debug_assert_eq!(
+                    l.len(),
+                    pre_len + values.len(),
+                    "Postcondition violated: LPUSH length must increase by pushed count"
+                );
+
+                RespValue::Integer(new_len)
             }
             _ => {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
@@ -43,10 +63,22 @@ impl CommandExecutor {
         self.access_times.insert(key.to_string(), self.current_time);
         match list {
             Value::List(l) => {
+                #[cfg(debug_assertions)]
+                let pre_len = l.len();
+
                 for value in values {
                     l.rpush(value.clone());
                 }
-                RespValue::Integer(l.len() as i64)
+                let new_len = l.len() as i64;
+
+                // TigerStyle: Postcondition - length increased by pushed count
+                debug_assert_eq!(
+                    l.len(),
+                    pre_len + values.len(),
+                    "Postcondition violated: RPUSH length must increase by pushed count"
+                );
+
+                RespValue::Integer(new_len)
             }
             _ => {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")

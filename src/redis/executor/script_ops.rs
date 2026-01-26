@@ -113,6 +113,14 @@ impl CommandExecutor {
                     }
                 })
                 .collect();
+
+            // TigerStyle: Postcondition - result count matches input count
+            debug_assert_eq!(
+                results.len(),
+                sha1s.len(),
+                "Postcondition violated: SCRIPT EXISTS result count must match input count"
+            );
+
             RespValue::Array(Some(results))
         }
         #[cfg(not(feature = "lua"))]

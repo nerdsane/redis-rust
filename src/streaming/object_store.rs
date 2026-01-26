@@ -158,7 +158,7 @@ impl InMemoryObjectStore {
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before Unix epoch")
             .as_millis() as u64
     }
 
@@ -326,7 +326,7 @@ impl LocalFsObjectStore {
             "redis-stream-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("system time before Unix epoch")
                 .as_nanos()
         ));
         std::fs::create_dir_all(&temp_dir)?;
@@ -440,9 +440,10 @@ impl ObjectStore for LocalFsObjectStore {
                     if path.is_dir() {
                         walk_dir(&path, base, prefix, objects)?;
                     } else if path.is_file() {
+                        // TigerStyle: strip_prefix is safe - path is derived from walking base directory
                         let key = path
                             .strip_prefix(base)
-                            .unwrap()
+                            .expect("path must be under base - we're walking base directory")
                             .to_string_lossy()
                             .to_string();
 
