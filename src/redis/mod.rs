@@ -1,8 +1,11 @@
+mod command;
 mod commands;
 mod data;
+mod executor;
 pub mod hash_dst;
 pub mod list_dst;
 pub mod lua;
+mod parser;
 mod resp;
 mod resp_optimized;
 mod server;
@@ -11,8 +14,9 @@ pub mod sorted_set_dst;
 #[cfg(test)]
 mod tests;
 
-pub use commands::{Command, CommandExecutor};
+pub use command::Command;
 pub use data::{RedisHash, RedisList, RedisSet, RedisSortedSet, Value, SDS};
+pub use executor::CommandExecutor;
 pub use hash_dst::{
     run_hash_batch, summarize_hash_batch, HashDSTConfig, HashDSTHarness, HashDSTResult,
 };
