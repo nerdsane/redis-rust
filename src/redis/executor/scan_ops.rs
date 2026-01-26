@@ -1,6 +1,12 @@
 //! Scan command implementations for CommandExecutor.
 //!
 //! Handles: SCAN, HSCAN, ZSCAN
+//!
+//! # TigerStyle Invariants
+//!
+//! - SCAN returns [cursor, keys_array] where cursor is "0" when complete
+//! - Result count never exceeds requested COUNT
+//! - Keys are returned in sorted order for deterministic iteration
 
 use super::CommandExecutor;
 use crate::redis::data::Value;
@@ -14,6 +20,10 @@ impl CommandExecutor {
         count: Option<usize>,
     ) -> RespValue {
         let count = count.unwrap_or(10);
+
+        // TigerStyle: Precondition - count must be reasonable
+        debug_assert!(count > 0, "Precondition: SCAN count must be positive");
+
         // Collect all non-expired keys
         let mut keys: Vec<String> = self
             .data
@@ -37,6 +47,16 @@ impl CommandExecutor {
         } else {
             (0u64, &results[..])
         };
+
+        // TigerStyle: Postconditions
+        debug_assert!(
+            result_keys.len() <= count,
+            "Postcondition violated: SCAN result count must not exceed requested count"
+        );
+        debug_assert!(
+            next_cursor == 0 || !result_keys.is_empty(),
+            "Postcondition violated: non-zero cursor implies non-empty results"
+        );
 
         RespValue::Array(Some(vec![
             RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
@@ -78,6 +98,10 @@ impl CommandExecutor {
         match raw_fields {
             Some(all_fields) => {
                 let count = count.unwrap_or(10);
+
+                // TigerStyle: Precondition
+                debug_assert!(count > 0, "Precondition: HSCAN count must be positive");
+
                 // Filter by pattern
                 let mut fields: Vec<(String, String)> = all_fields
                     .into_iter()
@@ -99,6 +123,12 @@ impl CommandExecutor {
                     (0u64, &results[..])
                 };
 
+                // TigerStyle: Postconditions
+                debug_assert!(
+                    result_fields.len() <= count,
+                    "Postcondition violated: HSCAN result count must not exceed requested count"
+                );
+
                 // Flatten field-value pairs into array
                 let elements: Vec<RespValue> = result_fields
                     .iter()
@@ -109,6 +139,13 @@ impl CommandExecutor {
                         ]
                     })
                     .collect();
+
+                // TigerStyle: Postcondition - elements array has 2x field count (field + value)
+                debug_assert_eq!(
+                    elements.len(),
+                    result_fields.len() * 2,
+                    "Postcondition violated: HSCAN elements must have field-value pairs"
+                );
 
                 RespValue::Array(Some(vec![
                     RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
@@ -154,6 +191,10 @@ impl CommandExecutor {
         match raw_members {
             Some(all_members) => {
                 let count = count.unwrap_or(10);
+
+                // TigerStyle: Precondition
+                debug_assert!(count > 0, "Precondition: ZSCAN count must be positive");
+
                 // Filter by pattern
                 let mut members: Vec<(String, f64)> = all_members
                     .into_iter()
@@ -175,6 +216,12 @@ impl CommandExecutor {
                     (0u64, &results[..])
                 };
 
+                // TigerStyle: Postconditions
+                debug_assert!(
+                    result_members.len() <= count,
+                    "Postcondition violated: ZSCAN result count must not exceed requested count"
+                );
+
                 // Flatten member-score pairs into array
                 let elements: Vec<RespValue> = result_members
                     .iter()
@@ -185,6 +232,13 @@ impl CommandExecutor {
                         ]
                     })
                     .collect();
+
+                // TigerStyle: Postcondition - elements array has 2x member count (member + score)
+                debug_assert_eq!(
+                    elements.len(),
+                    result_members.len() * 2,
+                    "Postcondition violated: ZSCAN elements must have member-score pairs"
+                );
 
                 RespValue::Array(Some(vec![
                     RespValue::BulkString(Some(next_cursor.to_string().into_bytes())),
