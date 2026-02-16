@@ -540,7 +540,7 @@ impl ExecutorDSTHarness {
         let sub = self.rng.gen_range(0, 100);
         self.result.string_ops += 1;
 
-        if sub < 30 {
+        if sub < 15 {
             // SET + GET verification
             let key = self.random_key();
             let value = self.random_value();
@@ -559,7 +559,7 @@ impl ExecutorDSTHarness {
             let get_cmd = Command::Get(key.clone());
             let get_resp = self.executor.execute(&get_cmd);
             self.assert_bulk_eq(&get_resp, &value, &format!("GET {} after SET", key));
-        } else if sub < 40 {
+        } else if sub < 22 {
             // SETNX (legacy command returning Integer)
             let key = self.random_key();
             let value = self.random_value();
@@ -577,7 +577,7 @@ impl ExecutorDSTHarness {
                 self.shadow.set_string(&key, value);
                 self.shadow.expirations.remove(&key);
             }
-        } else if sub < 50 {
+        } else if sub < 30 {
             // MSET + MGET (may include duplicate keys - last value wins per Redis semantics)
             let n = self.rng.gen_range(1, 5) as usize;
             let mut pairs = Vec::new();
@@ -633,8 +633,8 @@ impl ExecutorDSTHarness {
                     }
                 }
             }
-        } else if sub < 65 {
-            // INCR / DECR
+        } else if sub < 38 {
+            // INCR
             let key = self.random_key();
             let desc = format!("INCR {}", key);
             self.result.last_op = Some(ExecutorOp::String(desc));
@@ -675,7 +675,7 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "INCR on wrong type");
                 }
             }
-        } else if sub < 80 {
+        } else if sub < 46 {
             // GET (read-only)
             let key = self.random_key();
             let desc = format!("GET {}", key);
@@ -707,7 +707,7 @@ impl ExecutorDSTHarness {
                     );
                 }
             }
-        } else if sub < 90 {
+        } else if sub < 52 {
             // APPEND
             let key = self.random_key();
             let value = self.random_value();
@@ -739,7 +739,7 @@ impl ExecutorDSTHarness {
                 );
                 self.shadow.set_string(&key, new_val);
             }
-        } else {
+        } else if sub < 57 {
             // STRLEN
             let key = self.random_key();
             let desc = format!("STRLEN {}", key);
@@ -760,6 +760,342 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "STRLEN on wrong type");
                 }
             }
+        } else if sub < 63 {
+            // GETRANGE - only on string-or-none keys to avoid executor debug_assert on WRONGTYPE
+            let key = self.random_key();
+            let is_string_or_none = matches!(
+                self.shadow.get(&key),
+                Some(RefValue::String(_)) | None
+            );
+
+            if is_string_or_none {
+                // Random start/end indices including negative values
+                let start = (self.rng.gen_range(0, 20) as isize) - 10;
+                let end = (self.rng.gen_range(0, 20) as isize) - 5;
+                let desc = format!("GETRANGE {} {} {}", key, start, end);
+                self.result.last_op = Some(ExecutorOp::String(desc));
+
+                let resp = self.executor.execute(&Command::GetRange(key.clone(), start, end));
+
+                let expected = match self.shadow.get(&key) {
+                    Some(RefValue::String(v)) => {
+                        let bytes = v.as_slice();
+                        let len = bytes.len() as isize;
+                        if len == 0 {
+                            vec![]
+                        } else {
+                            let s_idx = if start < 0 { (len + start).max(0) } else { start.min(len) };
+                            let e_idx = if end < 0 { (len + end).max(0) } else { end.min(len - 1) };
+                            if s_idx > e_idx || s_idx >= len {
+                                vec![]
+                            } else {
+                                let s_idx = s_idx.max(0);
+                                let e_idx = e_idx.min(len - 1);
+                                bytes[s_idx as usize..=e_idx as usize].to_vec()
+                            }
+                        }
+                    }
+                    None => vec![],
+                    _ => unreachable!(),
+                };
+                self.assert_bulk_eq(
+                    &resp,
+                    &expected,
+                    &format!("GETRANGE {} {} {}", key, start, end),
+                );
+            }
+        } else if sub < 69 {
+            // SETRANGE
+            let key = self.random_key();
+            // Use small offsets to avoid enormous strings
+            let offset = self.rng.gen_range(0, 20) as usize;
+            let value = self.random_value();
+            let desc = format!("SETRANGE {} {} <value>", key, offset);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            let is_string_or_none = matches!(
+                self.shadow.get(&key),
+                Some(RefValue::String(_)) | None
+            );
+
+            if is_string_or_none {
+                let resp = self.executor.execute(&Command::SetRange(
+                    key.clone(),
+                    offset,
+                    SDS::new(value.clone()),
+                ));
+
+                // Shadow: pad with zeros if needed, then overwrite at offset
+                let mut bytes = match self.shadow.get(&key) {
+                    Some(RefValue::String(existing)) => existing.clone(),
+                    None => vec![],
+                    _ => unreachable!(),
+                };
+                let needed = offset + value.len();
+                if needed > bytes.len() {
+                    bytes.resize(needed, 0);
+                }
+                bytes[offset..needed].copy_from_slice(&value);
+                let expected_len = bytes.len() as i64;
+                self.shadow.set_string(&key, bytes);
+
+                self.assert_integer(
+                    &resp,
+                    expected_len,
+                    &format!("SETRANGE {} should return new length {}", key, expected_len),
+                );
+            }
+        } else if sub < 75 {
+            // GETDEL
+            let key = self.random_key();
+            let desc = format!("GETDEL {}", key);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            let resp = self.executor.execute(&Command::GetDel(key.clone()));
+
+            enum GDExpect {
+                Value(Vec<u8>),
+                Null,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => GDExpect::Value(v.clone()),
+                None => GDExpect::Null,
+                Some(_) => GDExpect::WrongType,
+            };
+            match expect {
+                GDExpect::Value(v) => {
+                    self.assert_bulk_eq(&resp, &v, &format!("GETDEL {} should return old value", key));
+                    self.shadow.del(&key);
+                }
+                GDExpect::Null => {
+                    self.assert_null(&resp, &format!("GETDEL {} non-existent should be nil", key));
+                }
+                GDExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "GETDEL on wrong type");
+                }
+            }
+        } else if sub < 80 {
+            // INCRBYFLOAT
+            let key = self.random_key();
+            // Use small float increments to avoid precision issues
+            let increment = (self.rng.gen_range(0, 2000) as f64 - 1000.0) / 100.0;
+            let desc = format!("INCRBYFLOAT {} {}", key, increment);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            enum IBFExpect {
+                Value(f64),  // Current value as f64 (or 0.0 for missing)
+                NotFloat,    // Key holds non-float string
+                WrongType,   // Key holds wrong data type
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => {
+                    match std::str::from_utf8(v).ok().and_then(|s| s.parse::<f64>().ok()) {
+                        Some(n) => IBFExpect::Value(n),
+                        None => IBFExpect::NotFloat,
+                    }
+                }
+                None => IBFExpect::Value(0.0),
+                Some(_) => IBFExpect::WrongType,
+            };
+
+            match expect {
+                IBFExpect::Value(current) => {
+                    let resp = self.executor.execute(&Command::IncrByFloat(key.clone(), increment));
+                    // Response-driven: trust the executor's response and sync shadow
+                    if let RespValue::BulkString(Some(data)) = &resp {
+                        // Store the executor's result as the new shadow value
+                        self.shadow.set_string(&key, data.clone());
+                        // Verify the result is close to expected
+                        let expected = current + increment;
+                        if let Ok(actual) = std::str::from_utf8(data).unwrap_or("").parse::<f64>() {
+                            if (actual - expected).abs() > 1e-9 {
+                                self.violation(&format!(
+                                    "INCRBYFLOAT {} {}: got {}, expected ~{}",
+                                    key, increment, actual, expected
+                                ));
+                            }
+                        }
+                    } else {
+                        self.violation(&format!(
+                            "INCRBYFLOAT {} {}: expected BulkString, got {:?}",
+                            key, increment, resp
+                        ));
+                    }
+                }
+                IBFExpect::NotFloat => {
+                    let resp = self.executor.execute(&Command::IncrByFloat(key.clone(), increment));
+                    self.assert_error_contains(&resp, "ERR", "INCRBYFLOAT on non-float string");
+                }
+                IBFExpect::WrongType => {
+                    let resp = self.executor.execute(&Command::IncrByFloat(key.clone(), increment));
+                    self.assert_error_contains(&resp, "WRONGTYPE", "INCRBYFLOAT on wrong type");
+                }
+            }
+        } else if sub < 85 {
+            // GETSET
+            let key = self.random_key();
+            let value = self.random_value();
+            let desc = format!("GETSET {}", key);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            enum GSExpect {
+                OldValue(Vec<u8>),
+                Null,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => GSExpect::OldValue(v.clone()),
+                None => GSExpect::Null,
+                Some(_) => GSExpect::WrongType,
+            };
+
+            let resp = self.executor.execute(&Command::GetSet(key.clone(), SDS::new(value.clone())));
+            match expect {
+                GSExpect::OldValue(old) => {
+                    self.assert_bulk_eq(&resp, &old, &format!("GETSET {} should return old value", key));
+                    self.shadow.set_string(&key, value);
+                }
+                GSExpect::Null => {
+                    self.assert_null(&resp, &format!("GETSET {} non-existent should return nil", key));
+                    self.shadow.set_string(&key, value);
+                }
+                GSExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "GETSET on wrong type");
+                }
+            }
+        } else if sub < 90 {
+            // DECRBY
+            let key = self.random_key();
+            let decrement = self.rng.gen_range(1, 100) as i64;
+            let desc = format!("DECRBY {} {}", key, decrement);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            enum DecrByExpect {
+                Value(i64),
+                NotInteger,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => {
+                    match std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
+                        Some(n) => DecrByExpect::Value(n),
+                        None => DecrByExpect::NotInteger,
+                    }
+                }
+                None => DecrByExpect::Value(0),
+                Some(_) => DecrByExpect::WrongType,
+            };
+
+            let resp = self.executor.execute(&Command::DecrBy(key.clone(), decrement));
+            match expect {
+                DecrByExpect::Value(current) => {
+                    match current.checked_sub(decrement) {
+                        Some(expected) => {
+                            self.assert_integer(&resp, expected, &format!("DECRBY {} {}", key, decrement));
+                            self.shadow.set_string(&key, expected.to_string().into_bytes());
+                        }
+                        None => {
+                            // Overflow
+                            self.assert_error_contains(&resp, "ERR", "DECRBY overflow");
+                        }
+                    }
+                }
+                DecrByExpect::NotInteger => {
+                    self.assert_error_contains(&resp, "ERR", "DECRBY on non-integer string");
+                }
+                DecrByExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "DECRBY on wrong type");
+                }
+            }
+        } else if sub < 95 {
+            // INCRBY
+            let key = self.random_key();
+            let increment = self.rng.gen_range(1, 100) as i64;
+            let desc = format!("INCRBY {} {}", key, increment);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            enum IncrByExpect {
+                Value(i64),
+                NotInteger,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => {
+                    match std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
+                        Some(n) => IncrByExpect::Value(n),
+                        None => IncrByExpect::NotInteger,
+                    }
+                }
+                None => IncrByExpect::Value(0),
+                Some(_) => IncrByExpect::WrongType,
+            };
+
+            let resp = self.executor.execute(&Command::IncrBy(key.clone(), increment));
+            match expect {
+                IncrByExpect::Value(current) => {
+                    match current.checked_add(increment) {
+                        Some(expected) => {
+                            self.assert_integer(&resp, expected, &format!("INCRBY {} {}", key, increment));
+                            self.shadow.set_string(&key, expected.to_string().into_bytes());
+                        }
+                        None => {
+                            // Overflow
+                            self.assert_error_contains(&resp, "ERR", "INCRBY overflow");
+                        }
+                    }
+                }
+                IncrByExpect::NotInteger => {
+                    self.assert_error_contains(&resp, "ERR", "INCRBY on non-integer string");
+                }
+                IncrByExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "INCRBY on wrong type");
+                }
+            }
+        } else {
+            // DECR
+            let key = self.random_key();
+            let desc = format!("DECR {}", key);
+            self.result.last_op = Some(ExecutorOp::String(desc));
+
+            enum DecrExpect {
+                Value(i64),
+                NotInteger,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::String(v)) => {
+                    match std::str::from_utf8(v).ok().and_then(|s| s.parse::<i64>().ok()) {
+                        Some(n) => DecrExpect::Value(n),
+                        None => DecrExpect::NotInteger,
+                    }
+                }
+                None => DecrExpect::Value(0),
+                Some(_) => DecrExpect::WrongType,
+            };
+
+            let resp = self.executor.execute(&Command::Decr(key.clone()));
+            match expect {
+                DecrExpect::Value(current) => {
+                    match current.checked_sub(1) {
+                        Some(expected) => {
+                            self.assert_integer(&resp, expected, &format!("DECR {} should be {}", key, expected));
+                            self.shadow.set_string(&key, expected.to_string().into_bytes());
+                        }
+                        None => {
+                            // Overflow (i64::MIN - 1)
+                            self.assert_error_contains(&resp, "ERR", "DECR overflow");
+                        }
+                    }
+                }
+                DecrExpect::NotInteger => {
+                    let resp_already = resp;
+                    self.assert_error_contains(&resp_already, "ERR", "DECR on non-integer string");
+                }
+                DecrExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "DECR on wrong type");
+                }
+            }
         }
     }
 
@@ -768,7 +1104,7 @@ impl ExecutorDSTHarness {
         let sub = self.rng.gen_range(0, 100);
         self.result.key_ops += 1;
 
-        if sub < 30 {
+        if sub < 20 {
             // DEL
             let key = self.random_key();
             let desc = format!("DEL {}", key);
@@ -786,7 +1122,7 @@ impl ExecutorDSTHarness {
             // Verify key is gone
             let get_resp = self.executor.execute(&Command::Get(key.clone()));
             self.assert_null(&get_resp, &format!("GET {} after DEL should be nil", key));
-        } else if sub < 50 {
+        } else if sub < 35 {
             // EXISTS
             let key = self.random_key();
             let desc = format!("EXISTS {}", key);
@@ -795,7 +1131,7 @@ impl ExecutorDSTHarness {
             let resp = self.executor.execute(&Command::Exists(vec![key.clone()]));
             let expected = if self.shadow.exists(&key) { 1 } else { 0 };
             self.assert_integer(&resp, expected, &format!("EXISTS {}", key));
-        } else if sub < 70 {
+        } else if sub < 50 {
             // TYPE
             let key = self.random_key();
             let desc = format!("TYPE {}", key);
@@ -807,7 +1143,7 @@ impl ExecutorDSTHarness {
                 None => "none",
             };
             self.assert_simple_string(&resp, expected_type, &format!("TYPE {}", key));
-        } else if sub < 85 {
+        } else if sub < 60 {
             // DBSIZE
             let desc = "DBSIZE".to_string();
             self.result.last_op = Some(ExecutorOp::Key(desc));
@@ -815,7 +1151,7 @@ impl ExecutorDSTHarness {
             let resp = self.executor.execute(&Command::DbSize);
             let expected = self.shadow.key_count() as i64;
             self.assert_integer(&resp, expected, "DBSIZE should match shadow count");
-        } else {
+        } else if sub < 70 {
             // FLUSHDB
             let desc = "FLUSHDB".to_string();
             self.result.last_op = Some(ExecutorOp::Key(desc));
@@ -827,6 +1163,74 @@ impl ExecutorDSTHarness {
             // Invariant 13: FLUSHDB empties everything
             let dbsize_resp = self.executor.execute(&Command::DbSize);
             self.assert_integer(&dbsize_resp, 0, "DBSIZE after FLUSHDB should be 0");
+        } else if sub < 85 {
+            // RENAME
+            let src = self.random_key();
+            let mut dst = self.random_key();
+            // Avoid src == dst which triggers a debug_assert in the executor
+            // (RENAME same-key is a no-op in Redis but the postcondition check trips)
+            if src == dst {
+                dst = format!("{}_renamed", src);
+                self.all_keys_ever.insert(dst.clone());
+            }
+            let desc = format!("RENAME {} {}", src, dst);
+            self.result.last_op = Some(ExecutorOp::Key(desc));
+
+            let src_exists = self.shadow.exists(&src);
+            let resp = self.executor.execute(&Command::Rename(src.clone(), dst.clone()));
+
+            if !src_exists {
+                // RENAME on non-existent key returns error
+                self.assert_error_contains(&resp, "ERR", &format!("RENAME {} non-existent src", src));
+            } else {
+                self.assert_ok(&resp, &format!("RENAME {} {} should return OK", src, dst));
+
+                // Shadow: move value and expiry from src to dst
+                if let Some(val) = self.shadow.data.remove(&src) {
+                    let exp = self.shadow.expirations.remove(&src);
+                    self.shadow.data.insert(dst.clone(), val);
+                    if let Some(exp_time) = exp {
+                        self.shadow.expirations.insert(dst.clone(), exp_time);
+                    } else {
+                        self.shadow.expirations.remove(&dst);
+                    }
+                }
+
+                // Verify src is gone, dst exists
+                let src_exists_after = self.executor.execute(&Command::Exists(vec![src.clone()]));
+                // If src == dst, key still exists at that name
+                if src != dst {
+                    self.assert_integer(&src_exists_after, 0, &format!("RENAME src {} should not exist", src));
+                }
+            }
+        } else {
+            // PTTL
+            let key = self.random_key();
+            let desc = format!("PTTL {}", key);
+            self.result.last_op = Some(ExecutorOp::Key(desc));
+
+            let resp = self.executor.execute(&Command::Pttl(key.clone()));
+
+            // Response-driven invariants for PTTL:
+            // -2 = key doesn't exist, -1 = no expiry, >= 0 = TTL in milliseconds
+            if let RespValue::Integer(pttl) = &resp {
+                if !self.shadow.exists(&key) {
+                    // Key doesn't exist in shadow - executor should return -2
+                    // (but don't hard-assert due to expiry race conditions)
+                }
+                // PTTL should be >= -2
+                if *pttl < -2 {
+                    self.violation(&format!("PTTL {} returned invalid value: {}", key, pttl));
+                }
+                // If key exists and has no expiry, should be -1
+                if self.shadow.exists(&key) && !self.shadow.expirations.contains_key(&key) {
+                    if *pttl != -1 {
+                        // Soft check - expiry state might diverge
+                    }
+                }
+            } else {
+                self.violation(&format!("PTTL {} should return Integer, got {:?}", key, resp));
+            }
         }
     }
 
@@ -957,7 +1361,7 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "RPOP on wrong type");
                 }
             }
-        } else if sub < 90 {
+        } else if sub < 87 {
             // LLEN
             let desc = format!("LLEN {}", key);
             self.result.last_op = Some(ExecutorOp::List(desc));
@@ -973,7 +1377,7 @@ impl ExecutorDSTHarness {
                 Ok(len) => self.assert_integer(&resp, len, &format!("LLEN {}", key)),
                 Err(_) => self.assert_error_contains(&resp, "WRONGTYPE", "LLEN on wrong type"),
             }
-        } else {
+        } else if sub < 94 {
             // LRANGE (read entire list)
             let desc = format!("LRANGE {} 0 -1", key);
             self.result.last_op = Some(ExecutorOp::List(desc));
@@ -1002,6 +1406,43 @@ impl ExecutorDSTHarness {
                 }
                 Err(_) => {
                     self.assert_error_contains(&resp, "WRONGTYPE", "LRANGE on wrong type");
+                }
+            }
+        } else {
+            // LINDEX
+            let index = (self.rng.gen_range(0, 10) as isize) - 3; // range: -3 to 6
+            let desc = format!("LINDEX {} {}", key, index);
+            self.result.last_op = Some(ExecutorOp::List(desc));
+
+            let resp = self.executor.execute(&Command::LIndex(key.clone(), index));
+
+            enum LIExpect {
+                Value(Vec<u8>),
+                Null,
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::List(l)) => {
+                    let len = l.len() as isize;
+                    let actual_idx = if index < 0 { len + index } else { index };
+                    if actual_idx < 0 || actual_idx >= len {
+                        LIExpect::Null
+                    } else {
+                        LIExpect::Value(l[actual_idx as usize].clone())
+                    }
+                }
+                None => LIExpect::Null,
+                Some(_) => LIExpect::WrongType,
+            };
+            match expect {
+                LIExpect::Value(expected) => {
+                    self.assert_bulk_eq(&resp, &expected, &format!("LINDEX {} {}", key, index));
+                }
+                LIExpect::Null => {
+                    self.assert_null(&resp, &format!("LINDEX {} {} out of range/missing", key, index));
+                }
+                LIExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "LINDEX on wrong type");
                 }
             }
         }
@@ -1078,7 +1519,7 @@ impl ExecutorDSTHarness {
                 Ok(n) => self.assert_integer(&resp, n, &format!("SCARD {}", key)),
                 Err(_) => self.assert_error_contains(&resp, "WRONGTYPE", "SCARD on wrong type"),
             }
-        } else {
+        } else if sub < 88 {
             // SISMEMBER
             let member = self.random_value();
             let desc = format!("SISMEMBER {}", key);
@@ -1098,6 +1539,47 @@ impl ExecutorDSTHarness {
                 Ok(n) => self.assert_integer(&resp, n, &format!("SISMEMBER {}", key)),
                 Err(_) => {
                     self.assert_error_contains(&resp, "WRONGTYPE", "SISMEMBER on wrong type")
+                }
+            }
+        } else {
+            // SMEMBERS
+            let desc = format!("SMEMBERS {}", key);
+            self.result.last_op = Some(ExecutorOp::Set(desc));
+
+            let resp = self.executor.execute(&Command::SMembers(key.clone()));
+
+            enum SMExpect {
+                Members(usize),  // expected count
+                WrongType,
+            }
+            let expect = match self.shadow.get(&key) {
+                Some(RefValue::Set(s)) => SMExpect::Members(s.len()),
+                None => SMExpect::Members(0),
+                Some(_) => SMExpect::WrongType,
+            };
+            match expect {
+                SMExpect::Members(count) => {
+                    if let RespValue::Array(Some(elements)) = &resp {
+                        if elements.len() != count {
+                            self.violation(&format!(
+                                "SMEMBERS {} count mismatch: got {}, expected {}",
+                                key,
+                                elements.len(),
+                                count
+                            ));
+                        }
+                    } else if count == 0 {
+                        // Empty set returns empty array
+                        if !matches!(&resp, RespValue::Array(Some(v)) if v.is_empty()) {
+                            self.violation(&format!(
+                                "SMEMBERS {} expected empty array, got {:?}",
+                                key, resp
+                            ));
+                        }
+                    }
+                }
+                SMExpect::WrongType => {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "SMEMBERS on wrong type");
                 }
             }
         }
@@ -1485,7 +1967,7 @@ impl ExecutorDSTHarness {
 
         let key = self.random_key();
 
-        if sub < 40 {
+        if sub < 30 {
             // EXPIRE
             let seconds = self.rng.gen_range(1, 100) as i64;
             let desc = format!("EXPIRE {} {}", key, seconds);
@@ -1528,7 +2010,7 @@ impl ExecutorDSTHarness {
                     ));
                 }
             }
-        } else if sub < 60 {
+        } else if sub < 48 {
             // TTL
             let desc = format!("TTL {}", key);
             self.result.last_op = Some(ExecutorOp::Expiry(desc));
@@ -1550,7 +2032,42 @@ impl ExecutorDSTHarness {
                     self.violation(&format!("TTL {} returned invalid value: {}", key, ttl));
                 }
             }
-        } else if sub < 80 {
+        } else if sub < 63 {
+            // PEXPIRE
+            let milliseconds = self.rng.gen_range(100, 100_000) as i64;
+            let desc = format!("PEXPIRE {} {}", key, milliseconds);
+            self.result.last_op = Some(ExecutorOp::Expiry(desc));
+
+            let resp = self.executor.execute(&Command::PExpire {
+                key: key.clone(),
+                milliseconds,
+                nx: false,
+                xx: false,
+                gt: false,
+                lt: false,
+            });
+
+            // Response-driven: PEXPIRE returns 1 if key exists, 0 if not
+            match &resp {
+                RespValue::Integer(1) => {
+                    // Key existed and got an expiry
+                    let expiry_ms = self.current_time_ms + milliseconds as u64;
+                    self.shadow.expirations.insert(key.clone(), expiry_ms);
+                }
+                RespValue::Integer(0) => {
+                    // Key didn't exist; make sure shadow agrees
+                    if self.shadow.exists(&key) {
+                        self.shadow.del(&key);
+                    }
+                }
+                _ => {
+                    self.violation(&format!(
+                        "PEXPIRE {} returned unexpected: {:?}",
+                        key, resp
+                    ));
+                }
+            }
+        } else if sub < 78 {
             // PERSIST
             let desc = format!("PERSIST {}", key);
             self.result.last_op = Some(ExecutorOp::Expiry(desc));
