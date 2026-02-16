@@ -34,6 +34,20 @@ pub enum CommandCategory {
     Scripting,
     /// Transaction commands (MULTI, EXEC, etc.) - not implemented
     Transaction,
+    /// Pub/Sub commands (PUBLISH, SUBSCRIBE, etc.) - stub
+    PubSub,
+    /// Slow commands
+    Slow,
+    /// Fast commands
+    Fast,
+    /// Bitmap commands
+    Bitmap,
+    /// HyperLogLog commands
+    Hyperloglog,
+    /// Geo commands
+    Geo,
+    /// Stream commands
+    Stream,
     /// All commands
     All,
 }
@@ -173,6 +187,16 @@ impl CommandCategory {
             CommandCategory::Server => &["INFO", "DBSIZE", "TIME", "COMMAND"],
             CommandCategory::Scripting => &["EVAL", "EVALSHA", "SCRIPT"],
             CommandCategory::Transaction => &["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"],
+            CommandCategory::PubSub => &[
+                "PUBLISH", "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE",
+                "PUBSUB", "SPUBLISH", "SSUBSCRIBE", "SUNSUBSCRIBE",
+            ],
+            CommandCategory::Slow => &[], // Superset category — not enumerable
+            CommandCategory::Fast => &[], // Superset category — not enumerable
+            CommandCategory::Bitmap => &["BITCOUNT", "BITFIELD", "BITOP", "BITPOS", "GETBIT", "SETBIT"],
+            CommandCategory::Hyperloglog => &["PFADD", "PFCOUNT", "PFMERGE"],
+            CommandCategory::Geo => &["GEOADD", "GEODIST", "GEOHASH", "GEOPOS", "GEORADIUS", "GEOSEARCH"],
+            CommandCategory::Stream => &["XADD", "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XINFO", "XTRIM", "XDEL", "XACK", "XCLAIM", "XPENDING", "XGROUP"],
             CommandCategory::All => &[], // Special: allows everything
         }
     }
@@ -195,6 +219,13 @@ impl CommandCategory {
             "server" => Some(CommandCategory::Server),
             "scripting" => Some(CommandCategory::Scripting),
             "transaction" => Some(CommandCategory::Transaction),
+            "pubsub" => Some(CommandCategory::PubSub),
+            "slow" => Some(CommandCategory::Slow),
+            "fast" => Some(CommandCategory::Fast),
+            "bitmap" => Some(CommandCategory::Bitmap),
+            "hyperloglog" => Some(CommandCategory::Hyperloglog),
+            "geo" => Some(CommandCategory::Geo),
+            "stream" => Some(CommandCategory::Stream),
             "all" | "allcommands" => Some(CommandCategory::All),
             _ => None,
         }
@@ -383,6 +414,11 @@ impl AclUser {
         self.password_hashes.contains(&password_hash.to_string())
     }
 
+    /// Check if this user has unrestricted key access (~*)
+    pub fn has_unrestricted_keys(&self) -> bool {
+        self.keys.allow_all
+    }
+
     /// Reset user to default state (disabled, no permissions)
     pub fn reset(&mut self) {
         self.password_hashes.clear();
@@ -414,33 +450,91 @@ impl AclUser {
             parts.push(format!("#{}", hash));
         }
 
-        // Commands
-        if self.commands.allow_all {
-            parts.push("+@all".to_string());
-        }
-        for cat in &self.commands.categories {
-            parts.push(format!("+@{:?}", cat).to_lowercase());
-        }
-        for cat in &self.commands.denied_categories {
-            parts.push(format!("-@{:?}", cat).to_lowercase());
-        }
-        for cmd in &self.commands.allowed {
-            parts.push(format!("+{}", cmd.to_lowercase()));
-        }
-        for cmd in &self.commands.denied {
-            parts.push(format!("-{}", cmd.to_lowercase()));
-        }
+        // Sanitize-payload flag (always present in Redis 7+)
+        parts.push("sanitize-payload".to_string());
 
         // Keys
         if self.keys.allow_all {
             parts.push("~*".to_string());
-        } else {
+        } else if !self.keys.patterns.is_empty() {
             for pattern in &self.keys.patterns {
                 parts.push(format!("~{}", pattern.pattern));
             }
         }
 
+        // Channels (always &* for now since we don't restrict channels)
+        parts.push("&*".to_string());
+
+        // Commands
+        if self.commands.allow_all {
+            parts.push("+@all".to_string());
+        } else {
+            // Start with -@all base, then add category and individual overrides
+            let has_categories = !self.commands.categories.is_empty();
+            let has_allowed = !self.commands.allowed.is_empty();
+            let has_denied = !self.commands.denied.is_empty();
+            let has_denied_categories = !self.commands.denied_categories.is_empty();
+
+            if !has_categories && !has_allowed {
+                parts.push("-@all".to_string());
+            } else {
+                parts.push("-@all".to_string());
+            }
+            for cat in &self.commands.categories {
+                parts.push(format!("+@{}", format_category_name(cat)));
+            }
+            for cmd in &self.commands.allowed {
+                parts.push(format!("+{}", cmd.to_lowercase()));
+            }
+            if has_denied_categories {
+                for cat in &self.commands.denied_categories {
+                    parts.push(format!("-@{}", format_category_name(cat)));
+                }
+            }
+            for cmd in &self.commands.denied {
+                parts.push(format!("-{}", cmd.to_lowercase()));
+            }
+        }
+
+        // Add denied commands/categories even when allow_all
+        if self.commands.allow_all {
+            for cat in &self.commands.denied_categories {
+                parts.push(format!("-@{}", format_category_name(cat)));
+            }
+            for cmd in &self.commands.denied {
+                parts.push(format!("-{}", cmd.to_lowercase()));
+            }
+        }
+
         parts.join(" ")
+    }
+}
+
+/// Format a CommandCategory name as lowercase string (matching Redis format)
+fn format_category_name(cat: &CommandCategory) -> &'static str {
+    match cat {
+        CommandCategory::Read => "read",
+        CommandCategory::Write => "write",
+        CommandCategory::Admin => "admin",
+        CommandCategory::Dangerous => "dangerous",
+        CommandCategory::Keyspace => "keyspace",
+        CommandCategory::String => "string",
+        CommandCategory::List => "list",
+        CommandCategory::Set => "set",
+        CommandCategory::Hash => "hash",
+        CommandCategory::SortedSet => "sortedset",
+        CommandCategory::Connection => "connection",
+        CommandCategory::Server => "server",
+        CommandCategory::Scripting => "scripting",
+        CommandCategory::Transaction => "transaction",
+        CommandCategory::PubSub => "pubsub",
+        CommandCategory::Slow => "slow",
+        CommandCategory::Fast => "fast",
+        CommandCategory::Bitmap => "bitmap",
+        CommandCategory::Hyperloglog => "hyperloglog",
+        CommandCategory::Geo => "geo",
+        CommandCategory::Stream => "stream",
+        CommandCategory::All => "all",
     }
 }
 

@@ -271,6 +271,7 @@ The Tcl harness crashes the entire test file on unimplemented commands. One `ERR
 | `unit/expire` | all | - |
 | `unit/type/string` | 35/39 | SETBIT (bitmaps not implemented) |
 | `unit/multi` | 20/56 | SWAPDB (database swapping not implemented) |
+| ACL (`--features acl`) | 536/536 lib tests | ACL DST + 21 unit tests pass; Tcl `acl.tcl`/`acl-v2.tcl` blocked on ACL LOG, DRYRUN |
 
 **To add a new command without breaking the harness:**
 1. Add variant to `Command` enum in `command.rs`
@@ -308,6 +309,9 @@ With skew=1.0, top 10 keys receive ~40% of accesses (like real workloads).
 | `src/buggify/` | Probabilistic fault injection |
 | `tests/redis-tests/` | Official Redis Tcl test suite (git submodule) |
 | `scripts/run-redis-compat.sh` | Wrapper to run Tcl tests against our server |
+| `src/security/acl/` | ACL system (users, commands, patterns, file) |
+| `src/security/acl_dst.rs` | ACL DST harness with shadow state |
+| `tests/acl_dst_test.rs` | ACL DST multi-seed integration tests |
 
 ## Common Patterns
 

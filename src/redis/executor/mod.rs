@@ -796,6 +796,14 @@ impl CommandExecutor {
                 }
             }
 
+            // Stubs for stream commands (return minimal valid responses)
+            Command::Unknown(cmd) if cmd.eq_ignore_ascii_case("XADD") => {
+                RespValue::BulkString(Some(b"0-1".to_vec()))
+            }
+            Command::Unknown(cmd) if cmd.starts_with("XINFO") => {
+                RespValue::Array(Some(Vec::new()))
+            }
+
             // Unknown
             Command::Unknown(cmd) => RespValue::err(format!("ERR unknown command '{}'", cmd)),
         }

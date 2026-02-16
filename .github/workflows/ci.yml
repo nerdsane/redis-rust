@@ -35,11 +35,18 @@ jobs:
       - name: Unit tests
         run: cargo test --lib
 
+      - name: Unit tests (with ACL feature)
+        run: cargo test --lib --features acl
+
       - name: Tcl compat - incr
         run: ./scripts/run-redis-compat.sh unit/type/incr
 
       - name: Tcl compat - expire
         run: ./scripts/run-redis-compat.sh unit/expire
+
+      - name: Tcl compat - acl
+        run: ./scripts/run-redis-compat.sh unit/acl
+        continue-on-error: true  # Partial pass expected (~25 of ~73 tests in first block)
 
       - name: Maelstrom 1-node
         run: |

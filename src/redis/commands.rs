@@ -159,6 +159,12 @@ impl Command {
                                 };
                                 Ok(Command::AclGenPass { bits })
                             }
+                            // Stubs for unimplemented ACL subcommands
+                            "HELP" => Ok(Command::Unknown("ACL HELP".to_string())),
+                            "LOG" => Ok(Command::Unknown("ACL LOG".to_string())),
+                            "DRYRUN" => Ok(Command::Unknown("ACL DRYRUN".to_string())),
+                            "LOAD" => Ok(Command::Unknown("ACL LOAD".to_string())),
+                            "SAVE" => Ok(Command::Unknown("ACL SAVE".to_string())),
                             _ => Err(format!("Unknown ACL subcommand '{}'", subcommand)),
                         }
                     }

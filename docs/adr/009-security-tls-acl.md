@@ -77,8 +77,9 @@ When features are disabled:
 
 ### Risks
 
-- ACL implementation may have gaps vs Redis behavior
+- ACL implementation may have gaps vs Redis behavior (Tcl ACL tests blocked on ACL LOG, DRYRUN, channel permissions)
 - TLS certificate management is operator responsibility
+- Fast path bypass required careful handling — restricted users must not skip ACL key checks
 
 ## Decision Log
 
@@ -94,6 +95,11 @@ When features are disabled:
 | 2026-01-09 | Per-connection authentication state | Track authenticated user per connection |
 | 2026-01-10 | ACL file loading implemented | Load users from ACL_FILE env at startup |
 | 2026-01-10 | Client certificate authentication | CN from client cert maps to ACL user |
+| 2026-02-16 | Fixed fast path ACL key bypass | Fast path skipped key permission checks for restricted users; gated on `user_has_unrestricted_keys()` |
+| 2026-02-16 | Replaced dead executor ACL stubs | AUTH/WHOAMI/LIST/USERS/GETUSER/SETUSER/DELUSER in executor now `debug_assert!(false)` — these are handled at connection level |
+| 2026-02-16 | Added `verify_invariants()` to AclManager | Checks default user exists/enabled, password hash validity, no empty usernames |
+| 2026-02-16 | ACL DST harness with shadow state | `src/security/acl_dst.rs` — symbolic verification: shadow model as spec, 5 op types, 4 config presets |
+| 2026-02-16 | Enabled `--features acl` in CI | 536 lib tests pass (507 base + 29 ACL), integration DST tests with 100+ seeds |
 
 ## Implementation Status
 
@@ -122,10 +128,15 @@ When features are disabled:
 | ACL file integration | `src/production/server_optimized.rs` | Complete |
 | Client cert CN extraction | `src/security/tls/stream.rs` | Complete |
 | Client cert authentication | `src/production/connection_optimized.rs` | Complete |
+| Fast path ACL key gate | `src/production/connection_optimized.rs` | Complete |
+| ACL `verify_invariants()` | `src/security/acl/mod.rs` | Complete |
+| ACL DST harness | `src/security/acl_dst.rs` | Complete |
+| ACL DST integration tests | `tests/acl_dst_test.rs` | Complete |
+| CI `--features acl` step | `.github/workflows/ci.yml` | Complete |
 
 ### Validated
 
-- ACL data model tests (19 tests passing)
+- ACL data model unit tests (29 ACL-specific tests passing with `--features acl`)
 - Password hashing (SHA256)
 - Command category permissions
 - Key pattern glob matching
@@ -135,17 +146,23 @@ When features are disabled:
 - ACL feature compiles correctly (cargo check --features acl)
 - Security feature compiles correctly (cargo check --features security)
 - AUTH command authenticates users and updates connection state
-- ACL commands (WHOAMI, LIST, USERS, GETUSER, SETUSER, DELUSER, CAT, GENPASS) work
+- ACL commands (WHOAMI, LIST, USERS, GETUSER, SETUSER, DELUSER, CAT, GENPASS) handled at connection level
 - Permission checking rejects unauthorized commands
 - ACL file parsing (7 tests passing)
 - ACL file loading at startup loads users correctly
-- Key pattern restrictions work correctly
+- Key pattern restrictions enforced for both fast path and regular path
 - Client certificate authentication auto-authenticates users based on CN
 - Client cert CN maps to ACL user name for authorization
+- **ACL DST**: Shadow state verification across 400+ seeds (100 seeds x 4 configs), 500-5000 ops/seed
+- **CI**: `cargo test --lib --features acl` runs 536 tests in GitHub Actions
+- Fast path correctly bypassed for restricted key users (`has_unrestricted_keys()` gate)
 
-### Not Yet Implemented
+### Known Gaps (Not In Scope)
 
-All security features have been implemented.
+- Tcl ACL tests (`acl.tcl`, `acl-v2.tcl`) — require ACL LOG, ACL DRYRUN, channel permissions
+- Read/write key patterns (`%R~`, `%W~`) — parsed but not enforced
+- ACL file hot-reload (`ACL LOAD`) — command not wired
+- Transaction ACL re-check — permissions not re-verified during EXEC
 
 ## References
 
