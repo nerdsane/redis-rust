@@ -32,27 +32,51 @@ impl AclCommandHandler {
 
     /// Handle ACL LIST command
     pub fn handle_list(manager: &AclManager) -> Vec<String> {
-        manager
-            .list_users()
-            .iter()
-            .map(|u| u.to_acl_string())
-            .collect()
+        let mut users = manager.list_users();
+        users.sort_by(|a, b| a.name.cmp(&b.name));
+        users.iter().map(|u| u.to_acl_string()).collect()
     }
 
     /// Handle ACL USERS command
     pub fn handle_users(manager: &AclManager) -> Vec<String> {
-        manager.user_names().iter().map(|s| s.to_string()).collect()
+        let mut names: Vec<String> = manager.user_names().iter().map(|s| s.to_string()).collect();
+        names.sort();
+        names
     }
 
     /// Handle ACL GETUSER command
-    pub fn handle_getuser(manager: &AclManager, username: &str) -> Option<Vec<(String, String)>> {
+    /// Returns structured data for building the RESP response
+    pub fn handle_getuser(manager: &AclManager, username: &str) -> Option<AclGetUserInfo> {
         manager.get_user(username).map(|user| {
-            vec![
-                ("flags".to_string(), format_flags(&user)),
-                ("passwords".to_string(), format_passwords(&user)),
-                ("commands".to_string(), format_commands(&user)),
-                ("keys".to_string(), format_keys(&user)),
-            ]
+            let flags = {
+                let mut f = Vec::new();
+                if user.enabled {
+                    f.push("on".to_string());
+                } else {
+                    f.push("off".to_string());
+                }
+                if user.nopass {
+                    f.push("nopass".to_string());
+                }
+                f
+            };
+
+            let passwords: Vec<String> = user
+                .password_hashes
+                .iter()
+                .map(|h| format!("#{}", h))
+                .collect();
+
+            let commands = format_commands(&user);
+            let keys = format_keys(&user);
+
+            AclGetUserInfo {
+                flags,
+                passwords,
+                commands,
+                keys,
+                channels: "&*".to_string(),
+            }
         })
     }
 
@@ -63,6 +87,14 @@ impl AclCommandHandler {
         username: &str,
         rules: &[&str],
     ) -> Result<(), AclError> {
+        // Validate username
+        if username.contains(' ') || username.contains('\0') {
+            return Err(AclError::InvalidRule {
+                rule: "SETUSER".to_string(),
+                reason: "Usernames can't contain spaces or null characters".to_string(),
+            });
+        }
+
         // Get existing user or create new one
         let mut user = manager
             .get_user(username)
@@ -79,7 +111,7 @@ impl AclCommandHandler {
     }
 
     /// Handle ACL DELUSER command
-    pub fn handle_deluser(manager: &mut AclManager, usernames: &[&str]) -> Result<usize, AclError> {
+    pub fn handle_deluser(manager: &mut AclManager, usernames: &[&str]) -> Result<usize, String> {
         let mut deleted = 0;
         for username in usernames {
             if manager.del_user(username)? {
@@ -95,20 +127,27 @@ impl AclCommandHandler {
             None => {
                 // List all categories
                 Ok(vec![
+                    "keyspace",
                     "read",
                     "write",
-                    "admin",
-                    "dangerous",
-                    "keyspace",
-                    "string",
-                    "list",
                     "set",
-                    "hash",
                     "sortedset",
+                    "list",
+                    "hash",
+                    "string",
+                    "bitmap",
+                    "hyperloglog",
+                    "geo",
+                    "stream",
+                    "pubsub",
+                    "admin",
+                    "fast",
+                    "slow",
+                    "dangerous",
                     "connection",
-                    "server",
-                    "scripting",
                     "transaction",
+                    "scripting",
+                    "server",
                 ]
                 .into_iter()
                 .map(|s| s.to_string())
@@ -131,10 +170,18 @@ impl AclCommandHandler {
     }
 
     /// Handle ACL GENPASS command
-    pub fn handle_genpass(bits: Option<u32>) -> String {
+    pub fn handle_genpass(bits: Option<u32>) -> Result<String, String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let bits = bits.unwrap_or(256).min(1024);
+        if let Some(b) = bits {
+            if b == 0 || b > 4096 {
+                return Err(
+                    "ERR ACL GENPASS argument must be the number of bits for the output password, a positive number up to 4096".to_string()
+                );
+            }
+        }
+
+        let bits = bits.unwrap_or(256);
         let bytes = (bits as usize).div_ceil(8);
 
         // Simple pseudo-random generation (not cryptographically secure)
@@ -152,8 +199,17 @@ impl AclCommandHandler {
             result.push_str(&format!("{:02x}", byte));
         }
 
-        result
+        Ok(result)
     }
+}
+
+/// Structured GETUSER response data
+pub struct AclGetUserInfo {
+    pub flags: Vec<String>,
+    pub passwords: Vec<String>,
+    pub commands: String,
+    pub keys: String,
+    pub channels: String,
 }
 
 /// Apply a single ACL rule to a user
@@ -191,10 +247,22 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
             user.keys.reset();
         }
 
+        // Channel permissions (stored but not enforced — PubSub not implemented)
+        "allchannels" | "&*" => {
+            // No-op: we don't enforce channel ACLs
+        }
+        "resetchannels" => {
+            // No-op: we don't enforce channel ACLs
+        }
+
         // Reset everything
         "reset" => {
             user.reset();
         }
+
+        // Sanitize payload flags (no-op, accepted for compatibility)
+        "sanitize-payload" | "skip-sanitize-payload" => {}
+
 
         // Pattern-based rules
         _ => {
@@ -205,8 +273,17 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
                 // Remove password
                 user.remove_password(rest);
             } else if let Some(rest) = rule.strip_prefix('#') {
-                // Add password hash directly
+                // Add password hash directly — validate it's a valid SHA256 hex string
+                if rest.len() != 64 || !rest.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(AclError::InvalidRule {
+                        rule: format!("#{}", rest),
+                        reason: "Syntax error in ACL SETUSER modifier".to_string(),
+                    });
+                }
                 user.add_password_hash(rest.to_string());
+            } else if let Some(rest) = rule.strip_prefix('!') {
+                // Remove password hash directly
+                user.password_hashes.retain(|h| h != rest);
             } else if let Some(rest) = rule.strip_prefix('+') {
                 // Allow command or category
                 if let Some(cat) = rest.strip_prefix('@') {
@@ -218,6 +295,10 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
                             reason: format!("unknown category: {}", cat),
                         });
                     }
+                } else if rest.contains('|') {
+                    // Subcommand syntax: +command|subcommand
+                    // Store the full form for display, and also allow the base command
+                    user.commands.allowed.insert(rest.to_uppercase());
                 } else {
                     user.commands.allow_command(rest);
                 }
@@ -232,12 +313,17 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
                             reason: format!("unknown category: {}", cat),
                         });
                     }
+                } else if rest.contains('|') {
+                    // Subcommand syntax: -command|subcommand
+                    user.commands.denied.insert(rest.to_uppercase());
                 } else {
                     user.commands.deny_command(rest);
                 }
             } else if let Some(rest) = rule.strip_prefix('~') {
                 // Key pattern
                 user.keys.add_pattern(KeyPattern::new(rest.to_string()));
+            } else if rule.starts_with('&') {
+                // Channel pattern — no-op (PubSub not implemented)
             } else if let Some(rest) = rule.strip_prefix('%') {
                 // Read/write key pattern (advanced feature)
                 if let Some(pattern) = rest.strip_prefix("R~") {
@@ -303,7 +389,10 @@ fn format_commands(user: &AclUser) -> String {
         parts.push("+@all".to_string());
     }
     for cat in &user.commands.categories {
-        parts.push(format!("+@{:?}", cat).to_lowercase());
+        parts.push(format!("+@{}", format_category_name_cmd(cat)));
+    }
+    for cat in &user.commands.denied_categories {
+        parts.push(format!("-@{}", format_category_name_cmd(cat)));
     }
     for cmd in &user.commands.allowed {
         parts.push(format!("+{}", cmd.to_lowercase()));
@@ -315,6 +404,33 @@ fn format_commands(user: &AclUser) -> String {
         "-@all".to_string()
     } else {
         parts.join(" ")
+    }
+}
+
+fn format_category_name_cmd(cat: &CommandCategory) -> &'static str {
+    match cat {
+        CommandCategory::Read => "read",
+        CommandCategory::Write => "write",
+        CommandCategory::Admin => "admin",
+        CommandCategory::Dangerous => "dangerous",
+        CommandCategory::Keyspace => "keyspace",
+        CommandCategory::String => "string",
+        CommandCategory::List => "list",
+        CommandCategory::Set => "set",
+        CommandCategory::Hash => "hash",
+        CommandCategory::SortedSet => "sortedset",
+        CommandCategory::Connection => "connection",
+        CommandCategory::Server => "server",
+        CommandCategory::Scripting => "scripting",
+        CommandCategory::Transaction => "transaction",
+        CommandCategory::PubSub => "pubsub",
+        CommandCategory::Slow => "slow",
+        CommandCategory::Fast => "fast",
+        CommandCategory::Bitmap => "bitmap",
+        CommandCategory::Hyperloglog => "hyperloglog",
+        CommandCategory::Geo => "geo",
+        CommandCategory::Stream => "stream",
+        CommandCategory::All => "all",
     }
 }
 

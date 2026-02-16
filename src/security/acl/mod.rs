@@ -44,20 +44,23 @@ pub enum AclError {
 impl std::fmt::Display for AclError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AclError::AuthFailed => write!(f, "WRONGPASS invalid username-password pair"),
+            AclError::AuthFailed => write!(
+                f,
+                "WRONGPASS invalid username-password pair or user is disabled."
+            ),
             AclError::UserDisabled => write!(f, "NOPERM user is disabled"),
             AclError::CommandNotPermitted { command, user } => {
                 write!(
                     f,
-                    "NOPERM User {} has no permissions to run the '{}' command",
-                    user, command
+                    "NOPERM this user has no permissions to run the '{}' command",
+                    command.to_lowercase()
                 )
             }
             AclError::KeyNotPermitted { key, user } => {
+                let _ = user;
                 write!(
                     f,
-                    "NOPERM User {} has no permissions to access the '{}' key",
-                    user, key
+                    "NOPERM this user has no permissions to access one of the keys used as arguments"
                 )
             }
             AclError::UserNotFound { username } => {
@@ -67,7 +70,7 @@ impl std::fmt::Display for AclError {
                 write!(f, "ERR User {} already exists", username)
             }
             AclError::InvalidRule { rule, reason } => {
-                write!(f, "ERR Invalid ACL rule '{}': {}", rule, reason)
+                write!(f, "ERR Error in ACL SETUSER modifier '{}': {}", rule, reason)
             }
             AclError::NotAuthenticated => {
                 write!(f, "NOAUTH Authentication required")
@@ -127,10 +130,14 @@ impl AclManager {
 
     /// Authenticate a user with username and password
     pub fn authenticate(&self, username: &str, password: &str) -> Result<Arc<AclUser>, AclError> {
+        self.verify_invariants();
+
         let user = self.users.get(username).ok_or(AclError::AuthFailed)?;
 
+        // Redis returns WRONGPASS for both disabled users and wrong passwords
+        // (security: don't reveal whether user exists or is disabled)
         if !user.enabled {
-            return Err(AclError::UserDisabled);
+            return Err(AclError::AuthFailed);
         }
 
         let password_hash = Self::hash_password(password);
@@ -185,9 +192,54 @@ impl AclManager {
         Ok(())
     }
 
+    /// Verify structural invariants of the ACL state.
+    /// Called after mutations in debug builds.
+    #[cfg(debug_assertions)]
+    pub fn verify_invariants(&self) {
+        // INV-1: Default user always exists
+        debug_assert!(
+            self.users.contains_key("default"),
+            "ACL invariant violated: default user must always exist"
+        );
+        // INV-2: Default user is always enabled
+        debug_assert!(
+            self.users["default"].enabled,
+            "ACL invariant violated: default user must always be enabled"
+        );
+        // INV-3: Password hashes are valid SHA256 hex (64 chars)
+        for user in self.users.values() {
+            for hash in &user.password_hashes {
+                debug_assert_eq!(
+                    hash.len(),
+                    64,
+                    "ACL invariant violated: password hash for '{}' has length {} (expected 64)",
+                    user.name,
+                    hash.len()
+                );
+                debug_assert!(
+                    hash.chars().all(|c| c.is_ascii_hexdigit()),
+                    "ACL invariant violated: password hash for '{}' contains non-hex chars",
+                    user.name
+                );
+            }
+        }
+        // INV-4: No empty username
+        for name in self.users.keys() {
+            debug_assert!(
+                !name.is_empty(),
+                "ACL invariant violated: empty username found"
+            );
+        }
+    }
+
+    /// No-op in release builds
+    #[cfg(not(debug_assertions))]
+    pub fn verify_invariants(&self) {}
+
     /// Add or update a user
     pub fn set_user(&mut self, user: AclUser) {
         self.users.insert(user.name.clone(), Arc::new(user));
+        self.verify_invariants();
     }
 
     /// Get a user by name
@@ -196,14 +248,13 @@ impl AclManager {
     }
 
     /// Delete a user (cannot delete "default" user)
-    pub fn del_user(&mut self, username: &str) -> Result<bool, AclError> {
+    pub fn del_user(&mut self, username: &str) -> Result<bool, String> {
         if username == "default" {
-            return Err(AclError::InvalidRule {
-                rule: "deluser default".to_string(),
-                reason: "cannot delete the default user".to_string(),
-            });
+            return Err("ERR The 'default' user cannot be removed".to_string());
         }
-        Ok(self.users.remove(username).is_some())
+        let removed = self.users.remove(username).is_some();
+        self.verify_invariants();
+        Ok(removed)
     }
 
     /// List all users

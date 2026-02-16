@@ -323,9 +323,9 @@ where
     #[inline]
     async fn try_execute_command(&mut self) -> CommandResult {
         // Try fast path first for GET/SET commands (80%+ of traffic)
-        // Fast path skips ACL checks for performance - only use when auth not required
+        // Fast path skips ACL key checks for performance - only safe when user has ~* (all keys)
         // MUST NOT use fast path during MULTI — commands must be queued
-        if self.authenticated_user.is_some() && !self.in_transaction {
+        if self.user_has_unrestricted_keys() && !self.in_transaction {
             match self.try_fast_path().await {
                 FastPathResult::Handled => return CommandResult::Executed,
                 FastPathResult::NeedMoreData => return CommandResult::NeedMoreData,
@@ -395,6 +395,22 @@ where
                             Command::Watch(_) => {
                                 RespValue::err("ERR WATCH inside MULTI is not allowed")
                             }
+                            Command::Unknown(ref name) if Self::is_stub_command(name) => {
+                                // PubSub stubs in MULTI: return NOPERM for channel commands
+                                // (mimics Redis channel ACL enforcement at queue time)
+                                let upper = name.to_uppercase();
+                                if matches!(upper.as_str(),
+                                    "PUBLISH" | "SPUBLISH" | "SUBSCRIBE" | "SSUBSCRIBE"
+                                    | "PSUBSCRIBE" | "UNSUBSCRIBE" | "SUNSUBSCRIBE" | "PUNSUBSCRIBE"
+                                ) {
+                                    self.transaction_errors = true;
+                                    RespValue::err("NOPERM this user has no permissions to access the channel used as argument")
+                                } else {
+                                    // Other stubs in MULTI: queue them
+                                    self.transaction_queue.push(cmd.clone());
+                                    RespValue::simple("QUEUED")
+                                }
+                            }
                             Command::Unknown(name) => {
                                 // Unknown command during MULTI: return error, mark transaction
                                 self.transaction_errors = true;
@@ -458,6 +474,10 @@ where
                                 self.handle_acl_cat(category.as_deref())
                             }
                             Command::AclGenPass { bits } => self.handle_acl_genpass(*bits),
+                            // Stub commands (PubSub, HELLO, etc.) — skip ACL check
+                            Command::Unknown(ref name) if Self::is_stub_command(name) => {
+                                Self::handle_stub_command(name)
+                            }
                             _ => {
                                 // Check ACL permissions for regular commands
                                 if let Err(acl_err) = self.check_acl_permission(&cmd) {
@@ -491,7 +511,17 @@ where
         }
     }
 
+    /// Check if the authenticated user has unrestricted key access (~*).
+    /// Returns false if no user is authenticated.
+    fn user_has_unrestricted_keys(&self) -> bool {
+        match &self.authenticated_user {
+            Some(user) => user.has_unrestricted_keys(),
+            None => false,
+        }
+    }
+
     /// Check ACL permissions for a command
+    /// Uses the latest user state from the ACL manager (not the cached connection copy)
     fn check_acl_permission(&self, cmd: &Command) -> Result<(), String> {
         let manager = self.acl_manager.read();
 
@@ -500,8 +530,57 @@ where
             return Err("NOAUTH Authentication required".to_string());
         }
 
-        // Get the authenticated user (if any)
-        let user = self.authenticated_user.as_ref().map(|u| u.as_ref());
+        // Get the latest user state from the manager (not the cached connection copy,
+        // which may be stale after ACL SETUSER modifications)
+        let user = match &self.authenticated_user {
+            Some(cached) => manager.get_user(&cached.name),
+            None => None,
+        };
+        let user_ref = user.as_deref();
+
+        // Get the actual command name (for Unknown commands, use the stored name)
+        // Also build a subcommand form for pipe-delimited ACL checks (e.g., "DEBUG OBJECT" → "DEBUG|OBJECT")
+        let (cmd_name, subcmd_form) = match cmd {
+            Command::Unknown(name) => {
+                let parts: Vec<&str> = name.split_whitespace().collect();
+                let base = parts[0].to_string();
+                let sub = if parts.len() > 1 {
+                    Some(format!("{}|{}", parts[0], parts[1]))
+                } else {
+                    None
+                };
+                (base, sub)
+            }
+            // Known commands with subcommands — build pipe form
+            Command::DebugObject(_) => ("DEBUG".to_string(), Some("DEBUG|OBJECT".to_string())),
+            Command::DebugSleep(_) => ("DEBUG".to_string(), Some("DEBUG|SLEEP".to_string())),
+            Command::DebugSet(sub, _) => ("DEBUG".to_string(), Some(format!("DEBUG|{}", sub))),
+            Command::ClientSetName(_) => ("CLIENT".to_string(), Some("CLIENT|SETNAME".to_string())),
+            Command::ClientGetName => ("CLIENT".to_string(), Some("CLIENT|GETNAME".to_string())),
+            Command::ClientId => ("CLIENT".to_string(), Some("CLIENT|ID".to_string())),
+            Command::ClientInfo => ("CLIENT".to_string(), Some("CLIENT|INFO".to_string())),
+            _ => (cmd.name().to_string(), None),
+        };
+
+        // Check if the user has subcommand-level permission (e.g., +debug|object)
+        if let Some(ref sub) = subcmd_form {
+            if let Some(ref u) = user {
+                if u.commands.allowed.contains(&sub.to_uppercase()) {
+                    // Subcommand explicitly allowed — permit it
+                    // Still check key permissions below
+                    let owned_keys = cmd.get_keys();
+                    let keys: Vec<&str> = owned_keys.iter().map(|s| s.as_str()).collect();
+                    for key in &keys {
+                        if !u.keys.is_key_permitted(key) {
+                            return Err(format!(
+                                "NOPERM this user has no permissions to access one of the keys used as arguments"
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
 
         // Get the keys involved in this command
         let owned_keys = cmd.get_keys();
@@ -509,7 +588,7 @@ where
 
         // Check permissions
         manager
-            .check_command(user, cmd.name(), &keys)
+            .check_command(user_ref, &cmd_name, &keys)
             .map_err(|e| e.to_string())
     }
 
@@ -600,10 +679,48 @@ where
             match AclCommandHandler::handle_getuser(&manager, username) {
                 Some(info) => {
                     let mut result = Vec::new();
-                    for (key, value) in info {
-                        result.push(RespValue::BulkString(Some(key.into_bytes())));
-                        result.push(RespValue::BulkString(Some(value.into_bytes())));
-                    }
+
+                    // flags: nested array of strings
+                    result.push(RespValue::BulkString(Some("flags".as_bytes().to_vec())));
+                    result.push(RespValue::Array(Some(
+                        info.flags
+                            .into_iter()
+                            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                            .collect(),
+                    )));
+
+                    // passwords: nested array of strings
+                    result.push(RespValue::BulkString(Some(
+                        "passwords".as_bytes().to_vec(),
+                    )));
+                    result.push(RespValue::Array(Some(
+                        info.passwords
+                            .into_iter()
+                            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                            .collect(),
+                    )));
+
+                    // commands: bulk string
+                    result.push(RespValue::BulkString(Some(
+                        "commands".as_bytes().to_vec(),
+                    )));
+                    result.push(RespValue::BulkString(Some(info.commands.into_bytes())));
+
+                    // keys: bulk string
+                    result.push(RespValue::BulkString(Some("keys".as_bytes().to_vec())));
+                    result.push(RespValue::BulkString(Some(info.keys.into_bytes())));
+
+                    // channels: bulk string
+                    result.push(RespValue::BulkString(Some(
+                        "channels".as_bytes().to_vec(),
+                    )));
+                    result.push(RespValue::BulkString(Some(info.channels.into_bytes())));
+
+                    // selectors: empty array
+                    result
+                        .push(RespValue::BulkString(Some("selectors".as_bytes().to_vec())));
+                    result.push(RespValue::Array(Some(Vec::new())));
+
                     RespValue::Array(Some(result))
                 }
                 None => RespValue::Array(None), // Null array for non-existent user
@@ -614,7 +731,20 @@ where
             if username == "default" {
                 RespValue::Array(Some(vec![
                     RespValue::BulkString(Some("flags".as_bytes().to_vec())),
-                    RespValue::BulkString(Some("on nopass".as_bytes().to_vec())),
+                    RespValue::Array(Some(vec![
+                        RespValue::BulkString(Some("on".as_bytes().to_vec())),
+                        RespValue::BulkString(Some("nopass".as_bytes().to_vec())),
+                    ])),
+                    RespValue::BulkString(Some("passwords".as_bytes().to_vec())),
+                    RespValue::Array(Some(Vec::new())),
+                    RespValue::BulkString(Some("commands".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("+@all".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("keys".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("~*".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("channels".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("&*".as_bytes().to_vec())),
+                    RespValue::BulkString(Some("selectors".as_bytes().to_vec())),
+                    RespValue::Array(Some(Vec::new())),
                 ]))
             } else {
                 RespValue::Array(None)
@@ -650,7 +780,7 @@ where
             let username_refs: Vec<&str> = usernames.iter().map(|s| s.as_str()).collect();
             match AclCommandHandler::handle_deluser(&mut manager, &username_refs) {
                 Ok(count) => RespValue::Integer(count as i64),
-                Err(e) => RespValue::err(e.to_string()),
+                Err(e) => RespValue::err(e),
             }
         }
         #[cfg(not(feature = "acl"))]
@@ -707,8 +837,10 @@ where
         #[cfg(feature = "acl")]
         {
             use crate::security::acl::AclCommandHandler;
-            let password = AclCommandHandler::handle_genpass(bits);
-            RespValue::BulkString(Some(password.into_bytes()))
+            match AclCommandHandler::handle_genpass(bits) {
+                Ok(password) => RespValue::BulkString(Some(password.into_bytes())),
+                Err(e) => RespValue::err(e),
+            }
         }
         #[cfg(not(feature = "acl"))]
         {
@@ -728,6 +860,106 @@ where
                 result.push_str(&format!("{:02x}", byte));
             }
             RespValue::BulkString(Some(result.into_bytes()))
+        }
+    }
+
+    /// Check if a command name is a stub command (PubSub, HELLO, CLIENT subcommands, etc.)
+    fn is_stub_command(name: &str) -> bool {
+        let upper = name.to_uppercase();
+        matches!(
+            upper.as_str(),
+            "PUBLISH" | "SPUBLISH" | "SUBSCRIBE" | "SSUBSCRIBE" | "PSUBSCRIBE"
+                | "UNSUBSCRIBE" | "SUNSUBSCRIBE" | "PUNSUBSCRIBE"
+                | "HELLO" | "RESET"
+        ) || upper.starts_with("CLIENT ")
+          || upper.starts_with("CONFIG ")
+          || upper.starts_with("ACL ")
+    }
+
+    /// Handle stub commands — return benign responses
+    fn handle_stub_command(name: &str) -> RespValue {
+        match name.to_uppercase().as_str() {
+            "PUBLISH" | "SPUBLISH" => RespValue::Integer(0),
+            "SUBSCRIBE" | "SSUBSCRIBE" => RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"subscribe".to_vec())),
+                RespValue::BulkString(Some(b"channel".to_vec())),
+                RespValue::Integer(1),
+            ])),
+            "PSUBSCRIBE" => RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"psubscribe".to_vec())),
+                RespValue::BulkString(Some(b"*".to_vec())),
+                RespValue::Integer(1),
+            ])),
+            "UNSUBSCRIBE" | "SUNSUBSCRIBE" => RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"unsubscribe".to_vec())),
+                RespValue::BulkString(None),
+                RespValue::Integer(0),
+            ])),
+            "PUNSUBSCRIBE" => RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"punsubscribe".to_vec())),
+                RespValue::BulkString(None),
+                RespValue::Integer(0),
+            ])),
+            // CLIENT subcommands
+            name if name.starts_with("CLIENT ") => {
+                let sub = &name[7..];
+                match sub {
+                    "LIST" => {
+                        // Return empty client list
+                        RespValue::BulkString(Some(Vec::new()))
+                    }
+                    "KILL" => RespValue::simple("OK"),
+                    "NO-EVICT" => RespValue::simple("OK"),
+                    _ => RespValue::err(format!("ERR unknown subcommand '{}'", sub.to_lowercase())),
+                }
+            }
+            // CONFIG subcommands
+            name if name.starts_with("CONFIG ") => {
+                let sub = &name[7..];
+                match sub {
+                    "RESETSTAT" => RespValue::simple("OK"),
+                    s if s.starts_with("SET") => RespValue::simple("OK"),
+                    s if s.starts_with("GET") => RespValue::Array(Some(Vec::new())),
+                    _ => RespValue::simple("OK"),
+                }
+            }
+            "HELLO" => {
+                // Return basic RESP2 server info
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(b"server".to_vec())),
+                    RespValue::BulkString(Some(b"redis".to_vec())),
+                    RespValue::BulkString(Some(b"version".to_vec())),
+                    RespValue::BulkString(Some(b"7.0.0".to_vec())),
+                    RespValue::BulkString(Some(b"proto".to_vec())),
+                    RespValue::Integer(2),
+                    RespValue::BulkString(Some(b"id".to_vec())),
+                    RespValue::Integer(1),
+                    RespValue::BulkString(Some(b"mode".to_vec())),
+                    RespValue::BulkString(Some(b"standalone".to_vec())),
+                    RespValue::BulkString(Some(b"role".to_vec())),
+                    RespValue::BulkString(Some(b"master".to_vec())),
+                    RespValue::BulkString(Some(b"modules".to_vec())),
+                    RespValue::Array(Some(Vec::new())),
+                ]))
+            }
+            "RESET" => RespValue::simple("RESET"),
+            // ACL stub subcommands
+            name if name.starts_with("ACL ") => {
+                let sub = &name[4..];
+                match sub {
+                    "LOG" => {
+                        // Return empty log
+                        RespValue::Array(Some(Vec::new()))
+                    }
+                    "DRYRUN" => RespValue::simple("OK"),
+                    "HELP" => RespValue::Array(Some(vec![
+                        RespValue::BulkString(Some(b"ACL <subcommand>".to_vec())),
+                    ])),
+                    "LOAD" | "SAVE" => RespValue::simple("OK"),
+                    _ => RespValue::err(format!("ERR unknown ACL subcommand '{}'", sub.to_lowercase())),
+                }
+            }
+            _ => RespValue::err("ERR not implemented"),
         }
     }
 
@@ -1120,6 +1352,7 @@ where
         buf.put_u8(b'-');
         if !msg.starts_with("ERR ")
             && !msg.starts_with("WRONGTYPE ")
+            && !msg.starts_with("WRONGPASS ")
             && !msg.starts_with("EXECABORT ")
             && !msg.starts_with("NOAUTH ")
             && !msg.starts_with("NOPERM ")
