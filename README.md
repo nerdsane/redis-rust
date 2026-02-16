@@ -1,3 +1,5 @@
+[![CI](https://github.com/nerdsane/redis-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/nerdsane/redis-rust/actions/workflows/ci.yml)
+
 # redis-rust
 
 An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming.
