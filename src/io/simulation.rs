@@ -44,7 +44,7 @@ impl SimulatedRuntime {
 
     /// Get mutable reference to RNG
     pub fn rng(&self) -> impl std::ops::DerefMut<Target = SimulatedRng> + '_ {
-        self.ctx.rng.lock().unwrap()
+        self.ctx.rng.lock().expect("mutex poisoned")
     }
 }
 
@@ -86,7 +86,7 @@ impl Runtime for SimulatedRuntime {
         F: Future<Output = ()> + Send + 'static,
     {
         // In simulation, we queue tasks for later execution
-        let mut tasks = self.ctx.pending_tasks.lock().unwrap();
+        let mut tasks = self.ctx.pending_tasks.lock().expect("mutex poisoned");
         tasks.push(Box::pin(future));
     }
 }
@@ -130,12 +130,12 @@ impl SimulationContext {
 
     /// Get current global time
     pub fn now(&self) -> Timestamp {
-        *self.time.lock().unwrap()
+        *self.time.lock().expect("mutex poisoned")
     }
 
     /// Advance time to the specified timestamp
     pub fn advance_to(&self, time: Timestamp) {
-        let mut t = self.time.lock().unwrap();
+        let mut t = self.time.lock().expect("mutex poisoned");
         if time > *t {
             *t = time;
         }
@@ -143,13 +143,13 @@ impl SimulationContext {
 
     /// Advance time by duration
     pub fn advance_by(&self, duration: Duration) {
-        let mut t = self.time.lock().unwrap();
+        let mut t = self.time.lock().expect("mutex poisoned");
         *t = *t + duration;
     }
 
     /// Get next unique ID
     pub fn next_id(&self) -> u64 {
-        let mut id = self.next_id.lock().unwrap();
+        let mut id = self.next_id.lock().expect("mutex poisoned");
         let result = *id;
         *id += 1;
         result
@@ -157,13 +157,13 @@ impl SimulationContext {
 
     /// Set clock offset for a node (for skew simulation)
     pub fn set_clock_offset(&self, node: NodeId, offset: ClockOffset) {
-        self.clock_offsets.lock().unwrap().insert(node, offset);
+        self.clock_offsets.lock().expect("mutex poisoned").insert(node, offset);
     }
 
     /// Get local time for a node (applies clock offset)
     pub fn local_time(&self, node: NodeId) -> Timestamp {
         let global = self.now();
-        let offsets = self.clock_offsets.lock().unwrap();
+        let offsets = self.clock_offsets.lock().expect("mutex poisoned");
         if let Some(offset) = offsets.get(&node) {
             offset.apply(global)
         } else {
@@ -174,7 +174,7 @@ impl SimulationContext {
     /// Add a timer
     pub fn add_timer(&self, wake_time: Timestamp, waker: Waker) -> u64 {
         let id = self.next_id();
-        let mut timers = self.timers.lock().unwrap();
+        let mut timers = self.timers.lock().expect("mutex poisoned");
         timers.push(TimerEntry {
             wake_time,
             id,
@@ -186,11 +186,11 @@ impl SimulationContext {
     /// Process timers that should fire
     pub fn process_timers(&self) {
         let now = self.now();
-        let mut timers = self.timers.lock().unwrap();
+        let mut timers = self.timers.lock().expect("mutex poisoned");
 
         while let Some(entry) = timers.peek() {
             if entry.wake_time <= now {
-                let entry = timers.pop().unwrap();
+                let entry = timers.pop().expect("heap non-empty after peek");
                 entry.waker.wake();
             } else {
                 break;
@@ -200,7 +200,7 @@ impl SimulationContext {
 
     /// Get next timer wake time (if any)
     pub fn next_timer_time(&self) -> Option<Timestamp> {
-        self.timers.lock().unwrap().peek().map(|e| e.wake_time)
+        self.timers.lock().expect("mutex poisoned").peek().map(|e| e.wake_time)
     }
 }
 
@@ -464,7 +464,7 @@ impl Network for SimulatedNetwork {
         Box::pin(async move {
             // Scope the network lock so it's dropped before we move ctx
             {
-                let mut network = ctx.network_state.lock().unwrap();
+                let mut network = ctx.network_state.lock().expect("mutex poisoned");
 
                 if network.listeners.contains_key(&addr) {
                     return Err(IoError::new(ErrorKind::AddrInUse, "Address already in use"));
@@ -497,7 +497,7 @@ impl Network for SimulatedNetwork {
         Box::pin(async move {
             // BUGGIFY: connection timeout
             {
-                let mut rng = ctx.rng.lock().unwrap();
+                let mut rng = ctx.rng.lock().expect("mutex poisoned");
                 if check_buggify(&mut *rng, faults::network::CONNECT_TIMEOUT) {
                     return Err(IoError::new(ErrorKind::TimedOut, "Connection timed out"));
                 }
@@ -507,7 +507,7 @@ impl Network for SimulatedNetwork {
 
             // Extract what we need in a scoped block so network lock is dropped before we move ctx
             let remote_node = {
-                let mut network = ctx.network_state.lock().unwrap();
+                let mut network = ctx.network_state.lock().expect("mutex poisoned");
 
                 // Check if listener exists
                 let listener = network.listeners.get(&addr).ok_or_else(|| {
@@ -584,7 +584,7 @@ impl NetworkListener for SimulatedListener {
 
         Box::pin(async move {
             // Check for pending connection
-            let mut network = ctx.network_state.lock().unwrap();
+            let mut network = ctx.network_state.lock().expect("mutex poisoned");
             let pending = network.pending_connections.get_mut(&addr);
 
             if let Some(pending) = pending {
@@ -641,10 +641,10 @@ impl NetworkStream for SimulatedStream {
         let closed = self.closed.clone();
 
         Box::pin(async move {
-            let mut buffer = read_buffer.lock().unwrap();
+            let mut buffer = read_buffer.lock().expect("mutex poisoned");
 
             if buffer.is_empty() {
-                if *closed.lock().unwrap() {
+                if *closed.lock().expect("mutex poisoned") {
                     return Ok(0); // EOF
                 }
                 return Err(IoError::new(ErrorKind::WouldBlock, "No data available"));
@@ -652,7 +652,7 @@ impl NetworkStream for SimulatedStream {
 
             let to_read = buf.len().min(buffer.len());
             for i in 0..to_read {
-                buf[i] = buffer.pop_front().unwrap();
+                buf[i] = buffer.pop_front().expect("buffer verified non-empty");
             }
 
             Ok(to_read)
@@ -667,17 +667,17 @@ impl NetworkStream for SimulatedStream {
         let closed = self.closed.clone();
 
         Box::pin(async move {
-            let mut buffer = read_buffer.lock().unwrap();
+            let mut buffer = read_buffer.lock().expect("mutex poisoned");
 
             if buffer.len() < buf.len() {
-                if *closed.lock().unwrap() {
+                if *closed.lock().expect("mutex poisoned") {
                     return Err(IoError::new(ErrorKind::UnexpectedEof, "Unexpected EOF"));
                 }
                 return Err(IoError::new(ErrorKind::WouldBlock, "Insufficient data"));
             }
 
             for byte in buf.iter_mut() {
-                *byte = buffer.pop_front().unwrap();
+                *byte = buffer.pop_front().expect("buffer length checked above");
             }
 
             Ok(())
@@ -698,7 +698,7 @@ impl NetworkStream for SimulatedStream {
             // Check if stream is closed
             // Apply BUGGIFY faults
             {
-                let mut rng = ctx.rng.lock().unwrap();
+                let mut rng = ctx.rng.lock().expect("mutex poisoned");
 
                 // BUGGIFY: packet drop
                 if check_buggify(&mut *rng, faults::network::PACKET_DROP) {
@@ -728,7 +728,7 @@ impl NetworkStream for SimulatedStream {
             // Calculate delivery time (with potential delay)
             let base_delay = Duration::from_millis(1);
             let delivery_time = {
-                let mut rng = ctx.rng.lock().unwrap();
+                let mut rng = ctx.rng.lock().expect("mutex poisoned");
                 let delay = if check_buggify(&mut *rng, faults::network::DELAY) {
                     // Add significant delay
                     Duration::from_millis(rng.gen_range(10, 1000))
@@ -739,7 +739,7 @@ impl NetworkStream for SimulatedStream {
             };
 
             // Queue packet
-            let mut network = ctx.network_state.lock().unwrap();
+            let mut network = ctx.network_state.lock().expect("mutex poisoned");
 
             // BUGGIFY: reorder - insert at random position
             let packet = InFlightPacket {
@@ -751,7 +751,7 @@ impl NetworkStream for SimulatedStream {
             };
 
             {
-                let mut rng = ctx.rng.lock().unwrap();
+                let mut rng = ctx.rng.lock().expect("mutex poisoned");
                 if check_buggify(&mut *rng, faults::network::REORDER) && !network.packets.is_empty()
                 {
                     let pos = rng.gen_range(0, network.packets.len() as u64) as usize;

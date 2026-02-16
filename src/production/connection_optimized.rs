@@ -718,7 +718,7 @@ where
             let bytes = (bits as usize + 7) / 8;
             let seed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("system clock before UNIX_EPOCH")
                 .as_nanos();
             let mut result = String::with_capacity(bytes * 2);
             let mut state = seed;

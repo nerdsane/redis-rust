@@ -41,7 +41,7 @@ impl DatadogConfig {
             statsd_addr: std::env::var("DD_DOGSTATSD_URL")
                 .unwrap_or_else(|_| "127.0.0.1:8125".to_string())
                 .parse()
-                .unwrap_or_else(|_| "127.0.0.1:8125".parse().unwrap()),
+                .unwrap_or_else(|_| "127.0.0.1:8125".parse().expect("hardcoded address must parse")),
             trace_addr: std::env::var("DD_TRACE_AGENT_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8126".to_string()),
             service_name: std::env::var("DD_SERVICE").unwrap_or_else(|_| "redis-rust".to_string()),

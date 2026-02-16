@@ -97,7 +97,7 @@ impl GossipRouter {
 
     /// Selective routing: only send to responsible nodes
     fn route_selective(&self, deltas: Vec<ReplicationDelta>) -> RoutingTable {
-        let ring = self.hash_ring.read().unwrap();
+        let ring = self.hash_ring.read().expect("rwlock poisoned");
         let mut routing_table: RoutingTable = HashMap::new();
 
         for delta in deltas {
@@ -187,7 +187,7 @@ impl GossipRouter {
     ///
     /// Returns (selective_msgs, broadcast_msgs, reduction_ratio)
     pub fn calculate_reduction_ratio(&self, sample_keys: &[&str]) -> (usize, usize, f64) {
-        let ring = self.hash_ring.read().unwrap();
+        let ring = self.hash_ring.read().expect("rwlock poisoned");
         let peer_count = self.peer_addresses.len();
 
         if peer_count == 0 {
