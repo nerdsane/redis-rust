@@ -10,6 +10,21 @@ Before writing any code, read these three documents — they are the source of t
 
 Violations of RUST_STYLE.md or DST_GUIDE.md will be caught by code review and CI. Do not skip them.
 
+### On-Demand Skills
+
+Invoke these skills to inject domain expertise before working on specific areas:
+
+| Skill | When to use |
+|-------|-------------|
+| `/distributed-systems` | Before working on replication, gossip, CRDTs, or multi-node code |
+| `/actor-model` | Before working on sharded_actor, connection handler, or message passing |
+| `/dst` | Before writing or modifying DST tests, fault injection, or shadow state |
+| `/tigerstyle` | Before modifying executor or data structure code (assertions, checked arithmetic) |
+| `/rust-dev` | Before writing any Rust code in this project (style, conventions, patterns) |
+| `/formal-verification` | Before working on TLA+ specs, Stateright models, Kani proofs, or Maelstrom |
+
+Skills are defined in `.claude/agents/` and are invocable via `/skill-name` in Claude Code.
+
 ## ⚠️ MANDATORY: Default Development Workflow
 
 **For EVERY code change, follow this order:**
