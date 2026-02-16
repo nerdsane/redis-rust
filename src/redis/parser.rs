@@ -342,6 +342,11 @@ impl Command {
                             );
                         }
 
+                        // KEEPTTL is incompatible with any explicit expiry option
+                        if keepttl && (ex.is_some() || px.is_some() || exat.is_some() || pxat.is_some()) {
+                            return Err("ERR syntax error".to_string());
+                        }
+
                         Ok(Command::Set {
                             key,
                             value,
@@ -1283,6 +1288,13 @@ impl Command {
                             }
                             i += 1;
                         }
+
+                        // GETEX options are mutually exclusive
+                        let option_count = [ex.is_some(), px.is_some(), exat.is_some(), pxat.is_some(), persist].iter().filter(|&&x| x).count();
+                        if option_count > 1 {
+                            return Err("ERR syntax error".to_string());
+                        }
+
                         Ok(Command::GetEx { key, ex, px, exat, pxat, persist })
                     }
                     "GETDEL" => {

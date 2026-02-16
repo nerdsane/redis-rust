@@ -352,6 +352,10 @@ where
                                     RespValue::err("EXECABORT Transaction discarded because of previous errors.")
                                 } else {
                                     // Check watched keys for modifications
+                                    // NOTE: This is a value-based comparison, not a dirty-flag check like Redis.
+                                    // If a key changes and reverts to the same value, EXEC will succeed here
+                                    // but would abort in Redis. This is an intentional simplification for the
+                                    // sharded architecture -- we can't track per-key modification flags across shards.
                                     let watched = std::mem::take(&mut self.watched_keys);
                                     let mut watch_failed = false;
                                     for (key, old_value) in &watched {

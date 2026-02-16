@@ -112,7 +112,9 @@ impl CommandExecutor {
             let timestamp_ms = timestamp.saturating_mul(1000);
             let simulation_relative_ms = timestamp_ms.saturating_sub(self.simulation_start_epoch_ms);
             if simulation_relative_ms <= 0 {
+                self.data.remove(key);
                 self.expirations.remove(key);
+                self.access_times.remove(key);
             } else {
                 let expiration = crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
                 self.expirations.insert(key.to_string(), expiration);
@@ -121,7 +123,9 @@ impl CommandExecutor {
             // PXAT: absolute Unix timestamp in milliseconds
             let simulation_relative_ms = timestamp_ms.saturating_sub(self.simulation_start_epoch_ms);
             if simulation_relative_ms <= 0 {
+                self.data.remove(key);
                 self.expirations.remove(key);
+                self.access_times.remove(key);
             } else {
                 let expiration =
                     crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
