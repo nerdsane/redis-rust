@@ -6,11 +6,11 @@
 
 # redis-rust
 
-An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming. Read the [full paper](PAPER.md) for architecture, verification methodology, and lessons learned.
+An experimental Redis-compatible in-memory data store in Rust with CRDT-based multi-node replication. Co-authored with [Claude Code](https://claude.ai/claude-code) (Opus 4.5 → Opus 4.6) as an exercise in [AI-Driven Research for Systems](https://adrs-ucb.notion.site/datadog) (ADRS). See also: [BitsEvolve](https://www.datadoghq.com/blog/engineering/self-optimizing-system/) for production-aware self-optimizing systems. Read the [full paper](PAPER.md) for architecture, verification methodology, and lessons learned.
 
 > **This is not production software.** It is a research project exploring deterministic simulation testing, actor architectures, and human-AI collaboration on distributed systems code. Do not use this as a Redis replacement.
 
-> **What it actually is:** An in-memory cache that speaks RESP2, with CRDT-based multi-node replication (Anna KVS-style). Passes the official Redis Tcl test suite for implemented commands. Runs within 80-100% of Redis 7.4 throughput on equivalent hardware.
+> **What it actually is:** A Redis-compatible server that speaks RESP2, with actor-per-shard concurrency, CRDT replication (Anna KVS-style gossip + anti-entropy), Lua scripting, transactions, TLS, and ACL auth. Passes the official Redis Tcl test suite for implemented commands. Runs within 80-100% of Redis 7.4 throughput on equivalent hardware.
 
 ## What works
 
