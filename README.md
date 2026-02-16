@@ -1,8 +1,12 @@
 [![CI](https://github.com/nerdsane/redis-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/nerdsane/redis-rust/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
+[![Redis Compat](https://img.shields.io/badge/redis--compat-75%2B_commands-green.svg)](#what-works)
+[![Maelstrom](https://img.shields.io/badge/maelstrom-5_node_valid-brightgreen.svg)](#replication)
 
 # redis-rust
 
-An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming.
+An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming. Read the [full paper](PAPER.md) for architecture, verification methodology, and lessons learned.
 
 > **This is not production software.** It is a research project exploring deterministic simulation testing, actor architectures, and human-AI collaboration on distributed systems code. Do not use this as a Redis replacement.
 
