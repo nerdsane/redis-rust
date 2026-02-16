@@ -26,6 +26,8 @@ impl CommandExecutor {
                     }
                     h.set(field.clone(), value.clone());
                 }
+                #[cfg(debug_assertions)]
+                debug_assert!(self.data.contains_key(key), "Postcondition: HSET key must exist after setting fields");
                 RespValue::Integer(new_fields)
             }
             _ => {

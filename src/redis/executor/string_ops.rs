@@ -29,6 +29,11 @@ impl CommandExecutor {
             .insert(key.to_string(), Value::String(value.clone()));
         self.access_times.insert(key.to_string(), self.current_time);
         self.expirations.remove(key);
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            self.data.contains_key(key),
+            "Postcondition: key must exist after SETNX success"
+        );
         RespValue::Integer(1)
     }
 
@@ -135,6 +140,17 @@ impl CommandExecutor {
             self.expirations.remove(key);
         }
 
+        #[cfg(debug_assertions)]
+        if !*get {
+            // Verify key was stored (unless deleted by past EXAT/PXAT)
+            if ex.is_some() || px.is_some() || (!exat.is_some() && !pxat.is_some()) {
+                debug_assert!(
+                    self.data.contains_key(key) || *nx || *xx,
+                    "Postcondition: key must exist after SET (unless NX/XX rejected)"
+                );
+            }
+        }
+
         // Return appropriate response
         if *get {
             match old_value {
@@ -150,6 +166,7 @@ impl CommandExecutor {
         match self.get_value_mut(key) {
             Some(Value::String(s)) => {
                 s.append(value);
+                debug_assert!(s.len() >= value.len(), "Postcondition: APPEND length must be >= appended value length");
                 RespValue::Integer(s.len() as i64)
             }
             Some(_) => {
@@ -178,6 +195,11 @@ impl CommandExecutor {
         self.data
             .insert(key.to_string(), Value::String(value.clone()));
         self.access_times.insert(key.to_string(), self.current_time);
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            matches!(self.data.get(key), Some(Value::String(v)) if v == value),
+            "Postcondition: GETSET must store new value"
+        );
         old_value
     }
 
@@ -257,6 +279,15 @@ impl CommandExecutor {
             self.data.insert(key.clone(), Value::String(value.clone()));
             self.access_times.insert(key.clone(), self.current_time);
         }
+        #[cfg(debug_assertions)]
+        {
+            for (key, _) in pairs {
+                debug_assert!(
+                    self.data.contains_key(key),
+                    "Postcondition: MSETNX must store all keys when returning 1"
+                );
+            }
+        }
         RespValue::Integer(1)
     }
 
@@ -265,6 +296,15 @@ impl CommandExecutor {
         for (key, value) in pairs {
             self.data.insert(key.clone(), Value::String(value.clone()));
             self.access_times.insert(key.clone(), self.current_time);
+        }
+        #[cfg(debug_assertions)]
+        {
+            for (key, value) in pairs {
+                debug_assert!(
+                    matches!(self.data.get(key), Some(Value::String(v)) if v == value),
+                    "Postcondition: batch_set must store each key-value pair"
+                );
+            }
         }
         RespValue::simple("OK")
     }
@@ -293,7 +333,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_getrange(&mut self, key: &str, start: isize, end: isize) -> RespValue {
-        match self.get_value(key) {
+        let result = match self.get_value(key) {
             Some(Value::String(s)) => {
                 let bytes = s.as_bytes();
                 let len = bytes.len() as isize;
@@ -308,14 +348,16 @@ impl CommandExecutor {
                 }
                 s_idx = s_idx.max(0);
                 e_idx = e_idx.min(len - 1);
-                let result = bytes[s_idx as usize..=e_idx as usize].to_vec();
-                RespValue::BulkString(Some(result))
+                let slice = bytes[s_idx as usize..=e_idx as usize].to_vec();
+                RespValue::BulkString(Some(slice))
             }
             Some(_) => {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::BulkString(Some(vec![])),
-        }
+        };
+        debug_assert!(matches!(&result, RespValue::BulkString(Some(_)) | RespValue::BulkString(None)), "Postcondition: GETRANGE must return bulk string");
+        result
     }
 
     pub(super) fn execute_setrange(&mut self, key: &str, offset: usize, value: &SDS) -> RespValue {
@@ -338,6 +380,11 @@ impl CommandExecutor {
                 bytes[offset..needed].copy_from_slice(val_bytes);
                 let new_len = bytes.len() as i64;
                 self.data.insert(key.to_string(), Value::String(SDS::new(bytes)));
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    self.data.contains_key(key),
+                    "Postcondition: SETRANGE must store result"
+                );
                 RespValue::Integer(new_len)
             }
             Some(_) => {
@@ -349,6 +396,11 @@ impl CommandExecutor {
                 let new_len = bytes.len() as i64;
                 self.data.insert(key.to_string(), Value::String(SDS::new(bytes)));
                 self.access_times.insert(key.to_string(), self.current_time);
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    self.data.contains_key(key),
+                    "Postcondition: SETRANGE must store result"
+                );
                 RespValue::Integer(new_len)
             }
         }
@@ -425,6 +477,11 @@ impl CommandExecutor {
                 self.data.remove(key);
                 self.expirations.remove(key);
                 self.access_times.remove(key);
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(!self.data.contains_key(key), "Postcondition: GETDEL must remove key");
+                    debug_assert!(!self.expirations.contains_key(key), "Postcondition: GETDEL must remove expiration");
+                }
                 result
             }
             Some(_) => {
@@ -452,6 +509,13 @@ impl CommandExecutor {
                 let new_str = format_float(new_value);
                 let sds = SDS::from_str(&new_str);
                 self.data.insert(key.to_string(), Value::String(sds));
+                #[cfg(debug_assertions)]
+                if let Some(Value::String(s)) = self.data.get(key) {
+                    debug_assert!(
+                        s.to_string().parse::<f64>().is_ok(),
+                        "Postcondition: INCRBYFLOAT stored value must be valid float"
+                    );
+                }
                 RespValue::BulkString(Some(new_str.into_bytes()))
             }
             Some(_) => {
@@ -466,6 +530,13 @@ impl CommandExecutor {
                 let sds = SDS::from_str(&new_str);
                 self.data.insert(key.to_string(), Value::String(sds));
                 self.access_times.insert(key.to_string(), self.current_time);
+                #[cfg(debug_assertions)]
+                if let Some(Value::String(s)) = self.data.get(key) {
+                    debug_assert!(
+                        s.to_string().parse::<f64>().is_ok(),
+                        "Postcondition: INCRBYFLOAT stored value must be valid float"
+                    );
+                }
                 RespValue::BulkString(Some(new_str.into_bytes()))
             }
         }

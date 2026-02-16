@@ -187,6 +187,7 @@ impl CommandExecutor {
         }
 
         self.expirations.insert(key.to_string(), new_expiration);
+        debug_assert!(self.expirations.contains_key(key), "Postcondition: EXPIRE must set expiration when returning 1");
         RespValue::Integer(1)
     }
 
@@ -247,6 +248,7 @@ impl CommandExecutor {
         }
 
         self.expirations.insert(key.to_string(), new_expiration);
+        debug_assert!(self.expirations.contains_key(key), "Postcondition: PEXPIRE must set expiration when returning 1");
         RespValue::Integer(1)
     }
 
@@ -302,6 +304,7 @@ impl CommandExecutor {
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_ms as u64);
                 self.expirations.insert(key.to_string(), expiration);
+                debug_assert!(self.expirations.contains_key(key) || !self.data.contains_key(key), "Postcondition: EXPIREAT key must have expiration or be deleted");
                 RespValue::Integer(1)
             }
         }
@@ -326,6 +329,7 @@ impl CommandExecutor {
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_millis as u64);
                 self.expirations.insert(key.to_string(), expiration);
+                debug_assert!(self.expirations.contains_key(key) || !self.data.contains_key(key), "Postcondition: PEXPIREAT key must have expiration or be deleted");
                 RespValue::Integer(1)
             }
         }

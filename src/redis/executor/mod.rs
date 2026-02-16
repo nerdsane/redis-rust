@@ -177,6 +177,12 @@ impl CommandExecutor {
             self.access_times.insert(key.to_string(), self.current_time);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.data.contains_key(key), "Postcondition: set_direct must store key");
+            debug_assert!(!self.expirations.contains_key(key), "Postcondition: set_direct must clear expiration");
+        }
+
         RespValue::ok()
     }
 
@@ -714,6 +720,11 @@ impl CommandExecutor {
                 }
                 self.access_times.remove(src);
                 self.access_times.insert(dst.clone(), self.current_time);
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAME dst must exist");
+                    debug_assert!(!self.data.contains_key(src.as_str()), "Postcondition: RENAME src must not exist");
+                }
                 RespValue::ok()
             }
             Command::RenameNx(src, dst) => {
@@ -733,6 +744,11 @@ impl CommandExecutor {
                 }
                 self.access_times.remove(src);
                 self.access_times.insert(dst.clone(), self.current_time);
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAMENX dst must exist");
+                    debug_assert!(!self.data.contains_key(src.as_str()), "Postcondition: RENAMENX src must not exist");
+                }
                 RespValue::Integer(1)
             }
 
