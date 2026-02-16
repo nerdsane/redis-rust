@@ -79,7 +79,7 @@ pub struct AdaptiveReplicationManager {
 }
 
 impl AdaptiveReplicationManager {
-    /// VOPR: Verify all invariants hold for this manager
+    /// Verify all invariants hold for this manager
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: All RF overrides must be >= base_rf

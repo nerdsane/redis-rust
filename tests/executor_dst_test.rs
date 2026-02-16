@@ -1,6 +1,6 @@
 //! Executor Deterministic Simulation Tests
 //!
-//! VOPR-style tests for CommandExecutor with multiple seeds.
+//! DST tests for CommandExecutor with multiple seeds.
 //! These tests verify that the executor maintains invariants across
 //! ALL command types under various random operation sequences.
 

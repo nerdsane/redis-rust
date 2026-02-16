@@ -4,7 +4,7 @@
 
 Before writing any code, read these three documents — they are the source of truth:
 
-1. **[HARNESS.md](HARNESS.md)** — 4-layer verification loop, expected outputs, Tcl harness pitfalls, command addition checklist
+1. **[docs/HARNESS.md](docs/HARNESS.md)** — 4-layer verification loop, expected outputs, Tcl harness pitfalls, command addition checklist
 2. **[docs/RUST_STYLE.md](docs/RUST_STYLE.md)** — Rust coding standards: error handling, file size limits, clone avoidance, iterator patterns, assertion requirements, checked arithmetic
 3. **[docs/DST_GUIDE.md](docs/DST_GUIDE.md)** — Deterministic simulation testing methodology: SimulatedRng, VirtualTime, buggify fault injection, shadow state comparison
 
@@ -62,7 +62,7 @@ Every new component must be:
 - Add `verify_invariants()` methods to stateful structs
 - Run invariant checks in debug builds after every mutation
 
-Note: VOPR (Viewstamped Operation Replicator) is TigerBeetle's name for DST (Deterministic Simulation Testing) - see Phase 3 in the plan. The `verify_invariants()` pattern is a separate TigerStyle concept.
+Note: VOPR (Viewstamped Operation Replicator) is TigerBeetle's specific DST tool for testing their Viewstamped Replication consensus protocol — it is NOT a synonym for DST in general. Our DST methodology follows the FoundationDB approach (seed-based determinism, simulated I/O, fault injection). The `verify_invariants()` pattern comes from TigerStyle / Design-by-Contract, not VOPR.
 
 ---
 
@@ -198,7 +198,7 @@ Systems must remain stable under partial failures:
 
 ## Testing Strategy
 
-> **Read [HARNESS.md](HARNESS.md) first.** It documents the full 4-layer verification loop, expected outputs, Tcl harness pitfalls, and the command addition checklist. Everything below is supplementary.
+> **Read [docs/HARNESS.md](docs/HARNESS.md) first.** It documents the full 4-layer verification loop, expected outputs, Tcl harness pitfalls, and the command addition checklist. Everything below is supplementary.
 
 **Priority Order (most to least important):**
 

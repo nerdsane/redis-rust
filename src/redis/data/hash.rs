@@ -15,7 +15,7 @@ impl RedisHash {
         }
     }
 
-    /// VOPR: Verify all invariants hold for this hash
+    /// Verify all invariants hold for this hash
     /// Called in debug builds after every mutation
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {

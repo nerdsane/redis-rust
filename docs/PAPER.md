@@ -209,7 +209,7 @@ This principle is the foundation of the project's engineering discipline. When a
 
 ### 3.2 Layer 1: Deterministic Simulation Testing
 
-The first layer draws directly from FoundationDB's simulation testing philosophy and TigerBeetle's VOPR approach: replace all sources of nondeterminism with controlled abstractions, then run thousands of randomized scenarios from fixed seeds.
+The first layer draws directly from FoundationDB's simulation testing philosophy (also adopted by TigerBeetle and Antithesis): replace all sources of nondeterminism with controlled abstractions, then run thousands of randomized scenarios from fixed seeds.
 
 **Controlled time and randomness.** `VirtualTime` replaces wall-clock time throughout the simulation path -- a monotonic u64 of milliseconds, advanced explicitly by the harness. `SimulatedRng` provides a deterministic PRNG seeded from a u64. Given seed 42, the ten-thousandth random number is always the same, across platforms, across runs. A failing test prints its seed; re-running with that seed reproduces the exact same execution.
 
@@ -360,4 +360,4 @@ We do not yet have an answer, and we are skeptical of anyone who claims to.
 
 **Source code:** https://github.com/nerdsane/redis-rust
 
-**Verification harness:** See `HARNESS.md` in the repository for runnable commands and expected outputs.
+**Verification harness:** See `docs/HARNESS.md` in the repository for runnable commands and expected outputs.

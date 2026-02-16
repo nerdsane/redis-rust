@@ -1,6 +1,6 @@
 //! Deterministic Simulation Testing for the Command Executor
 //!
-//! VOPR-style testing harness for `CommandExecutor` that exercises ALL command
+//! Shadow-state testing harness for `CommandExecutor` that exercises ALL command
 //! types through `CommandExecutor::execute()`, not the data structures directly.
 //! This closes the critical coverage gap where the executor dispatch layer had 0% DST coverage.
 //!

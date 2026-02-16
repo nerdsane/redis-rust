@@ -1,12 +1,12 @@
 //! Deterministic Simulation Testing for Streaming Persistence
 //!
-//! VOPR-style testing harness for streaming persistence that enables:
+//! Shadow-state testing harness for streaming persistence that enables:
 //! - Deterministic random workload generation
 //! - Fault injection at the object store layer
 //! - Invariant checking after each operation
 //! - Seed-based reproducibility for debugging
 //!
-//! ## Design (Inspired by TigerBeetle VOPR)
+//! ## Design (FoundationDB-style DST with shadow state)
 //!
 //! ```text
 //! for seed in 0..10000 {

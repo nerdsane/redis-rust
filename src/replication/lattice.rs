@@ -65,7 +65,7 @@ pub struct LwwRegister<T> {
 }
 
 impl<T: Clone> LwwRegister<T> {
-    /// VOPR: Verify all invariants hold for this register
+    /// Verify all invariants hold for this register
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: If tombstone is true, get() must return None
@@ -141,7 +141,7 @@ pub struct VectorClock {
 }
 
 impl VectorClock {
-    /// VOPR: Verify all invariants hold for this vector clock
+    /// Verify all invariants hold for this vector clock
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: No zero entries should be stored (they are semantically equivalent to absent)
@@ -243,7 +243,7 @@ pub struct GCounter {
 }
 
 impl GCounter {
-    /// VOPR: Verify all invariants hold for this counter
+    /// Verify all invariants hold for this counter
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: value() must equal sum of all counts
@@ -340,7 +340,7 @@ pub struct PNCounter {
 }
 
 impl PNCounter {
-    /// VOPR: Verify all invariants hold for this counter
+    /// Verify all invariants hold for this counter
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: Both internal counters must be valid
@@ -442,7 +442,7 @@ impl<T: Clone + Eq + Hash> Default for GSet<T> {
 }
 
 impl<T: Clone + Eq + Hash> GSet<T> {
-    /// VOPR: Verify all invariants hold for this set
+    /// Verify all invariants hold for this set
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: len() must equal elements.len()
@@ -556,7 +556,7 @@ impl<T: Clone + Eq + Hash> Default for ORSet<T> {
 }
 
 impl<T: Clone + Eq + Hash> ORSet<T> {
-    /// VOPR: Verify all invariants hold for this set
+    /// Verify all invariants hold for this set
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: No empty tag sets should be stored

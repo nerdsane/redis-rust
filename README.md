@@ -6,7 +6,7 @@
 
 # redis-rust
 
-An experimental Redis-compatible in-memory data store in Rust with CRDT-based multi-node replication. Co-authored with [Claude Code](https://claude.ai/claude-code) (Opus 4.5 → Opus 4.6) as an exercise in [AI-Driven Research for Systems](https://adrs-ucb.notion.site/datadog) (ADRS). See also: [BitsEvolve](https://www.datadoghq.com/blog/engineering/self-optimizing-system/) for production-aware self-optimizing systems. Read the [full paper](PAPER.md) for architecture, verification methodology, and lessons learned.
+An experimental Redis-compatible in-memory data store in Rust with CRDT-based multi-node replication. Co-authored with [Claude Code](https://claude.ai/claude-code) (Opus 4.5 → Opus 4.6) as an exercise in [AI-Driven Research for Systems](https://adrs-ucb.notion.site/datadog) (ADRS). See also: [BitsEvolve](https://www.datadoghq.com/blog/engineering/self-optimizing-system/) for production-aware self-optimizing systems. Read the [full paper](docs/PAPER.md) for architecture, verification methodology, and lessons learned.
 
 > **This is not production software.** It is a research project exploring deterministic simulation testing, actor architectures, and human-AI collaboration on distributed systems code. Do not use this as a Redis replacement.
 
@@ -59,7 +59,7 @@ Default port is 6379 (standard Redis port). Override with `REDIS_PORT=3000`.
 
 ## Testing
 
-See [HARNESS.md](HARNESS.md) for the full verification guide — what each layer tests, expected outputs, pitfalls, and how to add new commands without breaking things.
+See [docs/HARNESS.md](docs/HARNESS.md) for the full verification guide — what each layer tests, expected outputs, pitfalls, and how to add new commands without breaking things.
 
 ```bash
 # Unit tests (507 tests including 87 replication tests)

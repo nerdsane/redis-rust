@@ -1,6 +1,6 @@
 //! List Deterministic Simulation Tests
 //!
-//! VOPR-style tests for RedisList with multiple seeds.
+//! DST tests for RedisList with multiple seeds.
 
 use redis_sim::redis::{run_list_batch, summarize_list_batch, ListDSTConfig, ListDSTHarness};
 

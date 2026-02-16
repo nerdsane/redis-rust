@@ -1,12 +1,12 @@
 //! Deterministic Simulation Testing for CRDTs
 //!
-//! VOPR-style testing harness for CRDT convergence that enables:
+//! Shadow-state testing harness for CRDT convergence that enables:
 //! - Deterministic random operation generation
 //! - Network partition and message drop simulation
 //! - Invariant checking after each operation
 //! - Seed-based reproducibility for debugging
 //!
-//! ## Design (Inspired by TigerBeetle VOPR)
+//! ## Design (FoundationDB-style DST with shadow state)
 //!
 //! ```text
 //! for seed in 0..100 {

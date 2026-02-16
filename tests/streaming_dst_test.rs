@@ -1,6 +1,6 @@
 //! Streaming Persistence DST Tests
 //!
-//! VOPR-style (Viewstamped Operation Replication Protocol) deterministic simulation tests
+//! Deterministic simulation tests (FoundationDB-style, seed-based)
 //! for the streaming persistence module. These tests run many seeds to find edge cases.
 //!
 //! ## Design Philosophy (TigerBeetle/FoundationDB inspired)
@@ -75,7 +75,7 @@ async fn test_streaming_dst_single_chaos() {
 }
 
 // =============================================================================
-// Multi-Seed Batch Tests (VOPR-style)
+// Multi-Seed Batch Tests (DST)
 // =============================================================================
 
 #[tokio::test]

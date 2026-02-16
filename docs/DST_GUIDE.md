@@ -148,8 +148,8 @@ building a separate mathematical model, run the real `CommandExecutor`, real CRD
 merge logic, and real transaction state machine -- but replace everything
 non-deterministic (time, randomness, network, disk) with controlled stubs.
 
-Our DST harnesses follow the **VOPR pattern** from TigerBeetle (named after the
-WOPR computer in WarGames). Each harness:
+Our DST harnesses follow the **FoundationDB simulation testing** methodology
+(also adopted by TigerBeetle and Antithesis). Each harness:
 
 1. Takes a **seed** that controls all randomness.
 2. Generates a **random workload** (commands, fault injections, timing).
@@ -438,7 +438,7 @@ let ms = ts.now_millis(); // reads ctx.local_time(NodeId(0))
 
 Source: `src/redis/executor_dst.rs`
 
-The `ExecutorDSTHarness` is a VOPR-style harness that exercises every command type
+The `ExecutorDSTHarness` is a shadow-state harness that exercises every command type
 through `CommandExecutor::execute()`. It maintains a **shadow state** (reference
 model) and checks invariants after every operation.
 
@@ -587,7 +587,7 @@ cargo test --test connection_transaction_dst
 
 Source: `src/replication/crdt_dst.rs`
 
-Four VOPR-style harnesses verify CRDT convergence for:
+Four shadow-state DST harnesses verify CRDT convergence for:
 
 | Harness | CRDT type | Operations |
 |---------|-----------|------------|

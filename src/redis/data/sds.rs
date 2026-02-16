@@ -19,7 +19,7 @@ pub enum SDS {
 }
 
 impl SDS {
-    /// VOPR: Verify all invariants hold for this SDS
+    /// Verify all invariants hold for this SDS
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         match self {

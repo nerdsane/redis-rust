@@ -1,6 +1,6 @@
 //! Deterministic Simulation Testing for Hashes
 //!
-//! VOPR-style testing harness for RedisHash that enables:
+//! Shadow-state testing harness for RedisHash that enables:
 //! - Deterministic random operation generation
 //! - Invariant checking after each operation
 //! - Seed-based reproducibility for debugging

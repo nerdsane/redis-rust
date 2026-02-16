@@ -1,6 +1,6 @@
 //! Set Deterministic Simulation Tests
 //!
-//! VOPR-style tests for RedisSet with multiple seeds.
+//! DST tests for RedisSet with multiple seeds.
 
 use redis_sim::redis::{run_set_batch, summarize_set_batch, SetDSTConfig, SetDSTHarness};
 
