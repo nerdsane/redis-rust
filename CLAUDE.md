@@ -208,15 +208,11 @@ fn test_with_fault_injection() {
 - Test component interactions
 - Use real async runtime but simulated I/O
 
-### 4. Redis Equivalence Tests (Differential Testing)
-Run commands against both real Redis and our implementation, compare responses:
+### 4. Redis Compatibility Tests (Official Tcl Suite)
+Run the official Redis test suite against our implementation:
 ```bash
-# Start real Redis and our server
-docker run -d -p 6379:6379 redis:7-alpine
-REDIS_PORT=3000 cargo run --bin redis-server-optimized --release &
-
-# Run equivalence tests
-cargo test redis_equivalence --release -- --ignored
+./scripts/run-redis-compat.sh                          # default test files
+./scripts/run-redis-compat.sh tests/unit/type/string   # specific test file
 ```
 
 ### 5. Linearizability Tests (Jepsen-style)
@@ -245,7 +241,8 @@ With skew=1.0, top 10 keys receive ~40% of accesses (like real workloads).
 | `src/simulator/dst_integration.rs` | DST with Zipfian distribution |
 | `src/streaming/simulated_store.rs` | Fault-injectable object store |
 | `src/buggify/` | Probabilistic fault injection |
-| `tests/redis_equivalence_test.rs` | Differential testing vs real Redis |
+| `tests/redis-tests/` | Official Redis Tcl test suite (git submodule) |
+| `scripts/run-redis-compat.sh` | Wrapper to run Tcl tests against our server |
 
 ## Common Patterns
 

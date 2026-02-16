@@ -113,7 +113,7 @@ pub enum Command {
         ch: bool, // Return number of elements changed (not just added)
     },
     ZRem(String, Vec<SDS>),
-    ZRange(String, isize, isize),
+    ZRange(String, isize, isize, bool), // bool = WITHSCORES
     ZRevRange(String, isize, isize, bool), // bool = WITHSCORES
     ZScore(String, SDS),
     ZRank(String, SDS),
@@ -167,9 +167,12 @@ pub enum Command {
     ScriptExists(Vec<String>),
     /// SCRIPT FLUSH command - clears script cache
     ScriptFlush,
+    // String commands (legacy)
+    /// SETNX key value - legacy command returning Integer(1)/Integer(0)
+    SetNx(String, SDS),
     // Server commands
     Info,
-    Ping,
+    Ping(Option<SDS>),
     DbSize,
     // Auth/ACL commands
     /// AUTH [username] password
@@ -204,6 +207,40 @@ pub enum Command {
     AclGenPass {
         bits: Option<u32>,
     },
+    // CONFIG commands
+    ConfigGet(String),
+    ConfigSet(String, String),
+    ConfigResetStat,
+    // SELECT command
+    Select(u64),
+    // ECHO command
+    Echo(SDS),
+    // COMMAND command (for Tcl test harness compatibility)
+    CommandCommand,   // COMMAND / COMMAND COUNT / COMMAND DOCS etc. - stub
+    CommandCount,
+    // FUNCTION FLUSH (for Tcl test harness compatibility)
+    FunctionFlush,
+    // CLIENT command stubs (for Tcl test harness compatibility)
+    ClientSetName(String),
+    ClientGetName,
+    ClientId,
+    ClientInfo,
+    // OBJECT command stubs
+    ObjectHelp,
+    ObjectEncoding(String),
+    ObjectRefCount(String),
+    ObjectIdleTime(String),
+    ObjectFreq(String),
+    // DEBUG command stubs
+    DebugSleep(f64),
+    DebugSet(String, String),
+    DebugObject(String),
+    // RANDOMKEY
+    RandomKey,
+    // RENAME
+    Rename(String, String),
+    RenameNx(String, String),
+    // OBJECT
     Unknown(String),
 }
 
@@ -238,17 +275,9 @@ impl Command {
         }
     }
 
-    /// Helper constructor for SETNX (SET with NX option)
+    /// Helper constructor for SETNX (legacy command returning Integer)
     pub fn setnx(key: String, value: SDS) -> Self {
-        Command::Set {
-            key,
-            value,
-            ex: None,
-            px: None,
-            nx: true,
-            xx: false,
-            get: false,
-        }
+        Command::SetNx(key, value)
     }
 
     /// Helper constructor for single-key DEL
@@ -284,7 +313,7 @@ impl Command {
                 | Command::HVals(_)
                 | Command::HLen(_)
                 | Command::HExists(_, _)
-                | Command::ZRange(_, _, _)
+                | Command::ZRange(_, _, _, _)
                 | Command::ZRevRange(_, _, _, _)
                 | Command::ZScore(_, _)
                 | Command::ZRank(_, _)
@@ -295,7 +324,20 @@ impl Command {
                 | Command::HScan { .. }
                 | Command::ZScan { .. }
                 | Command::Info
-                | Command::Ping
+                | Command::Ping(_)
+                | Command::ConfigGet(_)
+                | Command::Echo(_)
+                | Command::CommandCommand
+                | Command::CommandCount
+                | Command::ClientGetName
+                | Command::ClientId
+                | Command::ClientInfo
+                | Command::ObjectHelp
+                | Command::ObjectEncoding(_)
+                | Command::ObjectRefCount(_)
+                | Command::ObjectIdleTime(_)
+                | Command::ObjectFreq(_)
+                | Command::RandomKey
         )
     }
 
@@ -304,6 +346,7 @@ impl Command {
         match self {
             Command::Get(k)
             | Command::Set { key: k, .. }
+            | Command::SetNx(k, _)
             | Command::TypeOf(k)
             | Command::Expire(k, _)
             | Command::ExpireAt(k, _)
@@ -346,7 +389,7 @@ impl Command {
             | Command::HIncrBy(k, _, _)
             | Command::ZAdd { key: k, .. }
             | Command::ZRem(k, _)
-            | Command::ZRange(k, _, _)
+            | Command::ZRange(k, _, _, _)
             | Command::ZRevRange(k, _, _, _)
             | Command::ZScore(k, _)
             | Command::ZRank(k, _)
@@ -376,7 +419,7 @@ impl Command {
             | Command::ScriptExists(_)
             | Command::ScriptFlush
             | Command::Info
-            | Command::Ping
+            | Command::Ping(_)
             | Command::DbSize
             | Command::Auth { .. }
             | Command::AclWhoami
@@ -387,7 +430,31 @@ impl Command {
             | Command::AclDelUser { .. }
             | Command::AclCat { .. }
             | Command::AclGenPass { .. }
+            | Command::ConfigGet(_)
+            | Command::ConfigSet(_, _)
+            | Command::ConfigResetStat
+            | Command::Select(_)
+            | Command::Echo(_)
+            | Command::CommandCommand
+            | Command::CommandCount
+            | Command::FunctionFlush
+            | Command::ClientSetName(_)
+            | Command::ClientGetName
+            | Command::ClientId
+            | Command::ClientInfo
+            | Command::ObjectHelp
+            | Command::DebugSleep(_)
+            | Command::DebugSet(_, _)
+            | Command::RandomKey
             | Command::Unknown(_) => None,
+
+            Command::ObjectEncoding(k)
+            | Command::ObjectRefCount(k)
+            | Command::ObjectIdleTime(k)
+            | Command::ObjectFreq(k)
+            | Command::DebugObject(k) => Some(k.as_str()),
+
+            Command::Rename(k, _) | Command::RenameNx(k, _) => Some(k.as_str()),
         }
     }
 
@@ -396,6 +463,7 @@ impl Command {
         match self {
             Command::Get(k)
             | Command::Set { key: k, .. }
+            | Command::SetNx(k, _)
             | Command::TypeOf(k)
             | Command::Expire(k, _)
             | Command::ExpireAt(k, _)
@@ -436,7 +504,7 @@ impl Command {
             | Command::HIncrBy(k, _, _)
             | Command::ZAdd { key: k, .. }
             | Command::ZRem(k, _)
-            | Command::ZRange(k, _, _)
+            | Command::ZRange(k, _, _, _)
             | Command::ZRevRange(k, _, _, _)
             | Command::ZScore(k, _)
             | Command::ZRank(k, _)
@@ -471,7 +539,7 @@ impl Command {
             | Command::ScriptExists(_)
             | Command::ScriptFlush
             | Command::Info
-            | Command::Ping
+            | Command::Ping(_)
             | Command::DbSize
             | Command::Auth { .. }
             | Command::AclWhoami
@@ -482,7 +550,33 @@ impl Command {
             | Command::AclDelUser { .. }
             | Command::AclCat { .. }
             | Command::AclGenPass { .. }
+            | Command::ConfigGet(_)
+            | Command::ConfigSet(_, _)
+            | Command::ConfigResetStat
+            | Command::Select(_)
+            | Command::Echo(_)
+            | Command::CommandCommand
+            | Command::CommandCount
+            | Command::FunctionFlush
+            | Command::ClientSetName(_)
+            | Command::ClientGetName
+            | Command::ClientId
+            | Command::ClientInfo
+            | Command::ObjectHelp
+            | Command::DebugSleep(_)
+            | Command::DebugSet(_, _)
+            | Command::RandomKey
             | Command::Unknown(_) => vec![],
+
+            Command::ObjectEncoding(k)
+            | Command::ObjectRefCount(k)
+            | Command::ObjectIdleTime(k)
+            | Command::ObjectFreq(k)
+            | Command::DebugObject(k) => vec![k.clone()],
+
+            Command::Rename(src, dst) | Command::RenameNx(src, dst) => {
+                vec![src.clone(), dst.clone()]
+            }
         }
     }
 
@@ -543,7 +637,8 @@ impl Command {
             Command::HIncrBy(_, _, _) => "HINCRBY",
             Command::ZAdd { .. } => "ZADD",
             Command::ZRem(_, _) => "ZREM",
-            Command::ZRange(_, _, _) => "ZRANGE",
+            Command::SetNx(_, _) => "SETNX",
+            Command::ZRange(_, _, _, _) => "ZRANGE",
             Command::ZRevRange(_, _, _, _) => "ZREVRANGE",
             Command::ZScore(_, _) => "ZSCORE",
             Command::ZRank(_, _) => "ZRANK",
@@ -564,7 +659,7 @@ impl Command {
             Command::ScriptExists(_) => "SCRIPT",
             Command::ScriptFlush => "SCRIPT",
             Command::Info => "INFO",
-            Command::Ping => "PING",
+            Command::Ping(_) => "PING",
             Command::DbSize => "DBSIZE",
             Command::Auth { .. } => "AUTH",
             Command::AclWhoami => "ACL",
@@ -575,6 +670,29 @@ impl Command {
             Command::AclDelUser { .. } => "ACL",
             Command::AclCat { .. } => "ACL",
             Command::AclGenPass { .. } => "ACL",
+            Command::ConfigGet(_) => "CONFIG",
+            Command::ConfigSet(_, _) => "CONFIG",
+            Command::ConfigResetStat => "CONFIG",
+            Command::Select(_) => "SELECT",
+            Command::Echo(_) => "ECHO",
+            Command::CommandCommand => "COMMAND",
+            Command::CommandCount => "COMMAND",
+            Command::FunctionFlush => "FUNCTION",
+            Command::ClientSetName(_) => "CLIENT",
+            Command::ClientGetName => "CLIENT",
+            Command::ClientId => "CLIENT",
+            Command::ClientInfo => "CLIENT",
+            Command::ObjectHelp => "OBJECT",
+            Command::ObjectEncoding(_) => "OBJECT",
+            Command::ObjectRefCount(_) => "OBJECT",
+            Command::ObjectIdleTime(_) => "OBJECT",
+            Command::ObjectFreq(_) => "OBJECT",
+            Command::DebugSleep(_) => "DEBUG",
+            Command::DebugSet(_, _) => "DEBUG",
+            Command::DebugObject(_) => "DEBUG",
+            Command::RandomKey => "RANDOMKEY",
+            Command::Rename(_, _) => "RENAME",
+            Command::RenameNx(_, _) => "RENAMENX",
             Command::Unknown(_) => "UNKNOWN",
         }
     }

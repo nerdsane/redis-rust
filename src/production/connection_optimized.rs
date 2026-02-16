@@ -45,7 +45,7 @@ pub struct ConnectionConfig {
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
-            max_buffer_size: 1024 * 1024, // 1MB
+            max_buffer_size: 512 * 1024 * 1024, // 512MB (matches Redis proto-max-bulk-len)
             read_buffer_size: 8192,
             min_pipeline_buffer: 60,
             batch_threshold: 2,

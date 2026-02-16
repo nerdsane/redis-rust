@@ -35,9 +35,58 @@ impl Command {
                 };
 
                 match cmd_name.as_str() {
-                    "PING" => Ok(Command::Ping),
+                    "PING" => {
+                        let msg = if elements.len() > 1 {
+                            Some(Self::extract_sds(&elements[1])?)
+                        } else {
+                            None
+                        };
+                        Ok(Command::Ping(msg))
+                    }
                     "INFO" => Ok(Command::Info),
                     "DBSIZE" => Ok(Command::DbSize),
+                    "CONFIG" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'config' command".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "GET" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'config|get' command".to_string());
+                                }
+                                let pattern = Self::extract_string(&elements[2])?;
+                                Ok(Command::ConfigGet(pattern))
+                            }
+                            "SET" => {
+                                if elements.len() != 4 {
+                                    return Err("ERR wrong number of arguments for 'config|set' command".to_string());
+                                }
+                                let param = Self::extract_string(&elements[2])?;
+                                let value = Self::extract_string(&elements[3])?;
+                                Ok(Command::ConfigSet(param, value))
+                            }
+                            "RESETSTAT" => Ok(Command::ConfigResetStat),
+                            _ => Err(format!("ERR unknown subcommand or wrong number of arguments for 'config|{}' command", subcommand.to_lowercase())),
+                        }
+                    }
+                    "SELECT" => {
+                        if elements.len() != 2 {
+                            return Err("ERR wrong number of arguments for 'select' command".to_string());
+                        }
+                        let db = Self::extract_u64(&elements[1])?;
+                        if db > 15 {
+                            return Err("ERR DB index is out of range".to_string());
+                        }
+                        Ok(Command::Select(db))
+                    }
+                    "ECHO" => {
+                        if elements.len() != 2 {
+                            return Err("ERR wrong number of arguments for 'echo' command".to_string());
+                        }
+                        let msg = Self::extract_sds(&elements[1])?;
+                        Ok(Command::Echo(msg))
+                    }
                     "AUTH" => {
                         match elements.len() {
                             2 => {
@@ -307,15 +356,7 @@ impl Command {
                         }
                         let key = Self::extract_string(&elements[1])?;
                         let value = Self::extract_sds(&elements[2])?;
-                        Ok(Command::Set {
-                            key,
-                            value,
-                            ex: None,
-                            px: None,
-                            nx: true,
-                            xx: false,
-                            get: false,
-                        })
+                        Ok(Command::SetNx(key, value))
                     }
                     "DEL" => {
                         if elements.len() < 2 {
@@ -783,13 +824,19 @@ impl Command {
                         })
                     }
                     "ZRANGE" => {
-                        if elements.len() != 4 {
-                            return Err("ZRANGE requires 3 arguments".to_string());
+                        if elements.len() < 4 || elements.len() > 5 {
+                            return Err("ZRANGE requires 3 or 4 arguments".to_string());
                         }
                         let key = Self::extract_string(&elements[1])?;
                         let start = Self::extract_integer(&elements[2])?;
                         let stop = Self::extract_integer(&elements[3])?;
-                        Ok(Command::ZRange(key, start, stop))
+                        let with_scores = if elements.len() == 5 {
+                            let opt = Self::extract_string(&elements[4])?.to_uppercase();
+                            opt == "WITHSCORES"
+                        } else {
+                            false
+                        };
+                        Ok(Command::ZRange(key, start, stop, with_scores))
                     }
                     "ZREVRANGE" => {
                         if elements.len() < 4 || elements.len() > 5 {
@@ -974,6 +1021,135 @@ impl Command {
                             pattern,
                             count,
                         })
+                    }
+                    "FUNCTION" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'function' command".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "FLUSH" => Ok(Command::FunctionFlush),
+                            _ => Ok(Command::Unknown(format!("FUNCTION {}", subcommand))),
+                        }
+                    }
+                    "COMMAND" => {
+                        if elements.len() >= 2 {
+                            let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                            match subcommand.as_str() {
+                                "COUNT" => Ok(Command::CommandCount),
+                                _ => Ok(Command::CommandCommand),
+                            }
+                        } else {
+                            Ok(Command::CommandCommand)
+                        }
+                    }
+                    "CLIENT" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'client' command".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "SETNAME" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'client|setname' command".to_string());
+                                }
+                                let name = Self::extract_string(&elements[2])?;
+                                Ok(Command::ClientSetName(name))
+                            }
+                            "GETNAME" => Ok(Command::ClientGetName),
+                            "ID" => Ok(Command::ClientId),
+                            "INFO" => Ok(Command::ClientInfo),
+                            _ => Ok(Command::Unknown(format!("CLIENT {}", subcommand))),
+                        }
+                    }
+                    "OBJECT" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'object' command".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "HELP" => Ok(Command::ObjectHelp),
+                            "ENCODING" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'object|encoding' command".to_string());
+                                }
+                                Ok(Command::ObjectEncoding(Self::extract_string(&elements[2])?))
+                            }
+                            "REFCOUNT" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'object|refcount' command".to_string());
+                                }
+                                Ok(Command::ObjectRefCount(Self::extract_string(&elements[2])?))
+                            }
+                            "IDLETIME" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'object|idletime' command".to_string());
+                                }
+                                Ok(Command::ObjectIdleTime(Self::extract_string(&elements[2])?))
+                            }
+                            "FREQ" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'object|freq' command".to_string());
+                                }
+                                Ok(Command::ObjectFreq(Self::extract_string(&elements[2])?))
+                            }
+                            _ => Ok(Command::Unknown(format!("OBJECT {}", subcommand))),
+                        }
+                    }
+                    "DEBUG" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'debug' command".to_string());
+                        }
+                        let subcommand = Self::extract_string(&elements[1])?.to_uppercase();
+                        match subcommand.as_str() {
+                            "SLEEP" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'debug|sleep' command".to_string());
+                                }
+                                let seconds = Self::extract_float(&elements[2])?;
+                                Ok(Command::DebugSleep(seconds))
+                            }
+                            "SET-ACTIVE-EXPIRE" | "JMAP" | "RELOAD" | "LOADAOF" | "QUICKLIST-PACKED-THRESHOLD" => {
+                                if elements.len() >= 3 {
+                                    let val = Self::extract_string(&elements[2])?;
+                                    Ok(Command::DebugSet(subcommand, val))
+                                } else {
+                                    Ok(Command::DebugSet(subcommand, String::new()))
+                                }
+                            }
+                            "OBJECT" => {
+                                if elements.len() != 3 {
+                                    return Err("ERR wrong number of arguments for 'debug|object' command".to_string());
+                                }
+                                Ok(Command::DebugObject(Self::extract_string(&elements[2])?))
+                            }
+                            _ => {
+                                // Accept any debug subcommand as a set
+                                if elements.len() >= 3 {
+                                    let val = Self::extract_string(&elements[2])?;
+                                    Ok(Command::DebugSet(subcommand, val))
+                                } else {
+                                    Ok(Command::DebugSet(subcommand, String::new()))
+                                }
+                            }
+                        }
+                    }
+                    "RANDOMKEY" => Ok(Command::RandomKey),
+                    "RENAME" => {
+                        if elements.len() != 3 {
+                            return Err("ERR wrong number of arguments for 'rename' command".to_string());
+                        }
+                        let src = Self::extract_string(&elements[1])?;
+                        let dst = Self::extract_string(&elements[2])?;
+                        Ok(Command::Rename(src, dst))
+                    }
+                    "RENAMENX" => {
+                        if elements.len() != 3 {
+                            return Err("ERR wrong number of arguments for 'renamenx' command".to_string());
+                        }
+                        let src = Self::extract_string(&elements[1])?;
+                        let dst = Self::extract_string(&elements[2])?;
+                        Ok(Command::RenameNx(src, dst))
                     }
                     _ => Ok(Command::Unknown(cmd_name)),
                 }
