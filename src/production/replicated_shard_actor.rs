@@ -524,7 +524,7 @@ impl ReplicatedShardActor {
         }
     }
 
-    /// Verify invariants (VOPR pattern)
+    /// Verify invariants (TigerStyle design-by-contract)
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         // Invariant: Keys in executor data should be consistent with replica state

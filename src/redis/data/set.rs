@@ -15,7 +15,7 @@ impl RedisSet {
         }
     }
 
-    /// VOPR: Verify all invariants hold for this set
+    /// Verify all invariants hold for this set
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         // Invariant 1: len() must match actual HashSet size

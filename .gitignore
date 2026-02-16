@@ -24,5 +24,7 @@ profile.json
 # DST verification marker (local-only)
 .dst-verified
 
-# Claude Code local state
-.claude/
+# Claude Code local state (settings, hooks, sessions — personal)
+# Ignore everything in .claude/ except agents/ (shared skills)
+.claude/*
+!.claude/agents/

@@ -1,6 +1,6 @@
 //! Deterministic Simulation Testing for Sets
 //!
-//! VOPR-style testing harness for RedisSet that enables:
+//! Shadow-state testing harness for RedisSet that enables:
 //! - Deterministic random operation generation
 //! - Invariant checking after each operation
 //! - Seed-based reproducibility for debugging

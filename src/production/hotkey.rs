@@ -79,7 +79,7 @@ pub struct HotKeyDetector {
 }
 
 impl HotKeyDetector {
-    /// VOPR: Verify all invariants hold for this detector
+    /// Verify all invariants hold for this detector
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: access_counts.len() <= max_tracked_keys

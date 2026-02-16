@@ -96,7 +96,7 @@ pub struct ShardLoadBalancer {
 }
 
 impl ShardLoadBalancer {
-    /// VOPR: Verify all invariants hold for this load balancer
+    /// Verify all invariants hold for this load balancer
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: min_shards <= num_shards <= max_shards

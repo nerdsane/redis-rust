@@ -82,7 +82,7 @@ impl ProductionClock {
         use std::time::{SystemTime, UNIX_EPOCH};
         let start_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX_EPOCH")
             .as_millis() as u64;
         ProductionClock {
             start: Instant::now(),

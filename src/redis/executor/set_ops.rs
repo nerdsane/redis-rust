@@ -25,6 +25,8 @@ impl CommandExecutor {
                         added += 1;
                     }
                 }
+                #[cfg(debug_assertions)]
+                debug_assert!(self.data.contains_key(key), "Postcondition: SADD key must exist after adding members");
                 RespValue::Integer(added)
             }
             _ => {
@@ -165,6 +167,10 @@ impl CommandExecutor {
             self.data.remove(key);
             self.expirations.remove(key);
             self.access_times.remove(key);
+        }
+        #[cfg(debug_assertions)]
+        if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
+            panic!("Invariant violated: empty set should have been deleted after SPOP");
         }
         result
     }

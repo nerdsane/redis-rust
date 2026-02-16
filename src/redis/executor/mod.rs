@@ -177,6 +177,12 @@ impl CommandExecutor {
             self.access_times.insert(key.to_string(), self.current_time);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.data.contains_key(key), "Postcondition: set_direct must store key");
+            debug_assert!(!self.expirations.contains_key(key), "Postcondition: set_direct must clear expiration");
+        }
+
         RespValue::ok()
     }
 
@@ -315,7 +321,7 @@ impl CommandExecutor {
             use crate::buggify::faults;
             // process::SLOW - simulate processing delay (counted, not actually delayed)
             if crate::buggify::should_buggify(
-                &mut crate::io::production::ProductionRng::new(),
+                &mut crate::io::simulation::SimulatedRng::new(self.current_time.as_millis()),
                 faults::process::SLOW,
             ) {
                 self.commands_processed += 0; // no-op marker for stats
@@ -323,7 +329,7 @@ impl CommandExecutor {
 
             // timer::JUMP_FORWARD - advance time for expiry-dependent ops
             if crate::buggify::should_buggify(
-                &mut crate::io::production::ProductionRng::new(),
+                &mut crate::io::simulation::SimulatedRng::new(self.current_time.as_millis()),
                 faults::timer::JUMP_FORWARD,
             ) {
                 let jump_ms = 5000; // 5 second jump
@@ -704,7 +710,7 @@ impl CommandExecutor {
                 if self.is_expired(src) || !self.data.contains_key(src) {
                     return RespValue::err("ERR no such key");
                 }
-                let val = self.data.remove(src).unwrap();
+                let val = self.data.remove(src).expect("checked key exists above");
                 let exp = self.expirations.remove(src);
                 self.data.insert(dst.clone(), val);
                 if let Some(exp_time) = exp {
@@ -714,6 +720,11 @@ impl CommandExecutor {
                 }
                 self.access_times.remove(src);
                 self.access_times.insert(dst.clone(), self.current_time);
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAME dst must exist");
+                    debug_assert!(!self.data.contains_key(src.as_str()), "Postcondition: RENAME src must not exist");
+                }
                 RespValue::ok()
             }
             Command::RenameNx(src, dst) => {
@@ -723,7 +734,7 @@ impl CommandExecutor {
                 if !self.is_expired(dst) && self.data.contains_key(dst) {
                     return RespValue::Integer(0);
                 }
-                let val = self.data.remove(src).unwrap();
+                let val = self.data.remove(src).expect("checked key exists above");
                 let exp = self.expirations.remove(src);
                 self.data.insert(dst.clone(), val);
                 if let Some(exp_time) = exp {
@@ -733,6 +744,11 @@ impl CommandExecutor {
                 }
                 self.access_times.remove(src);
                 self.access_times.insert(dst.clone(), self.current_time);
+                #[cfg(debug_assertions)]
+                {
+                    debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAMENX dst must exist");
+                    debug_assert!(!self.data.contains_key(src.as_str()), "Postcondition: RENAMENX src must not exist");
+                }
                 RespValue::Integer(1)
             }
 

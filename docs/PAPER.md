@@ -1,8 +1,8 @@
 # redis-rust: A Case Study in AI-Assisted Systems Programming with Deterministic Verification
 
-**Authors:** Sesh Nalla and Claude (Anthropic)
+**Authors:** Sesh Nalla and Claude Code (Anthropic, Opus 4.5 → Opus 4.6)
 
-**Abstract:** We describe redis-rust, an experimental Redis-compatible cache server written in Rust and co-authored by a human systems engineer and Claude, an AI assistant by Anthropic. The project began as a deliberate test: after a step-change in AI code generation capability in late 2025, could human-AI collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements 75+ Redis commands across strings, lists, sets, hashes, sorted sets, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. Correctness is established through a 4-layer verification harness: 507 deterministic unit and simulation tests (including fault-injected CRDT convergence under network partitions), the official Redis Tcl test suite (28/28 incr, all expire tests passing), 5-node Maelstrom/Jepsen linearizability checking, and Docker-based performance benchmarking. On equivalent hardware, throughput reaches 80--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
+**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: after a step-change in AI code generation capability in late 2025, could human-AI collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements 75+ Redis commands across strings, lists, sets, hashes, sorted sets, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. Correctness is established through a 4-layer verification harness: 507 deterministic unit and simulation tests (including fault-injected CRDT convergence under network partitions), the official Redis Tcl test suite (28/28 incr, all expire tests passing), 5-node Maelstrom/Jepsen linearizability checking, and Docker-based performance benchmarking. On equivalent hardware, throughput reaches 80--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
 
 ---
 
@@ -209,7 +209,7 @@ This principle is the foundation of the project's engineering discipline. When a
 
 ### 3.2 Layer 1: Deterministic Simulation Testing
 
-The first layer draws directly from FoundationDB's simulation testing philosophy and TigerBeetle's VOPR approach: replace all sources of nondeterminism with controlled abstractions, then run thousands of randomized scenarios from fixed seeds.
+The first layer draws directly from FoundationDB's simulation testing philosophy (also adopted by TigerBeetle and Antithesis): replace all sources of nondeterminism with controlled abstractions, then run thousands of randomized scenarios from fixed seeds.
 
 **Controlled time and randomness.** `VirtualTime` replaces wall-clock time throughout the simulation path -- a monotonic u64 of milliseconds, advanced explicitly by the harness. `SimulatedRng` provides a deterministic PRNG seeded from a u64. Given seed 42, the ten-thousandth random number is always the same, across platforms, across runs. A failing test prints its seed; re-running with that seed reproduces the exact same execution.
 
@@ -310,7 +310,7 @@ At pipeline depth 1, SET throughput is within noise of Redis 7.4. GET lags at 77
 
 The high CAS failure rate at 3 and 5 nodes is expected -- the system uses eventual consistency via CRDT gossip, so compare-and-swap frequently reads stale values. Knossos found valid linearizable orderings at all scales, meaning gossip propagated fast enough under Maelstrom's simulated network that no consistency violations were observable.
 
-We want to be precise about what this does and does not prove. Maelstrom uses a simulated network with reliable, near-instant message delivery. Under these conditions, the gossip protocol converges quickly enough to produce linearizable histories. This does **not** mean the system guarantees linearizability. Under real network partitions, high latency, or heavier load, violations are expected by design.
+We want to be precise about what this does and does not prove. Maelstrom uses a simulated network with reliable, near-instant message delivery. Under low load, the gossip protocol converges quickly enough to produce linearizable histories. Under higher load or slower execution environments, Knossos finds linearizability violations where reads arrive before gossip propagates writes. **These violations are correct behavior** — the system provides eventual consistency, not linearizability. The CI pipeline tolerates linearizability violations but fails on exceptions, crashes, or protocol errors, ensuring the gossip implementation is functionally correct even when convergence timing produces non-linearizable histories.
 
 ---
 
@@ -360,4 +360,4 @@ We do not yet have an answer, and we are skeptical of anyone who claims to.
 
 **Source code:** https://github.com/nerdsane/redis-rust
 
-**Verification harness:** See `HARNESS.md` in the repository for runnable commands and expected outputs.
+**Verification harness:** See `docs/HARNESS.md` in the repository for runnable commands and expected outputs.

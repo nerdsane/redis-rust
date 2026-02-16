@@ -15,7 +15,7 @@ impl RedisList {
         }
     }
 
-    /// VOPR: Verify all invariants hold for this list
+    /// Verify all invariants hold for this list
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         // Invariant 1: len() must match actual VecDeque size

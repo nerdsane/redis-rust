@@ -1,5 +1,30 @@
 # Claude Code Guidelines for redis-rust
 
+## ⚠️ MANDATORY: Read These First
+
+Before writing any code, read these three documents — they are the source of truth:
+
+1. **[docs/HARNESS.md](docs/HARNESS.md)** — 4-layer verification loop, expected outputs, Tcl harness pitfalls, command addition checklist
+2. **[docs/RUST_STYLE.md](docs/RUST_STYLE.md)** — Rust coding standards: error handling, file size limits, clone avoidance, iterator patterns, assertion requirements, checked arithmetic
+3. **[docs/DST_GUIDE.md](docs/DST_GUIDE.md)** — Deterministic simulation testing methodology: SimulatedRng, VirtualTime, buggify fault injection, shadow state comparison
+
+Violations of RUST_STYLE.md or DST_GUIDE.md will be caught by code review and CI. Do not skip them.
+
+### On-Demand Skills
+
+Invoke these skills to inject domain expertise before working on specific areas:
+
+| Skill | When to use |
+|-------|-------------|
+| `/distributed-systems` | Before working on replication, gossip, CRDTs, or multi-node code |
+| `/actor-model` | Before working on sharded_actor, connection handler, or message passing |
+| `/dst` | Before writing or modifying DST tests, fault injection, or shadow state |
+| `/tigerstyle` | Before modifying executor or data structure code (assertions, checked arithmetic) |
+| `/rust-dev` | Before writing any Rust code in this project (style, conventions, patterns) |
+| `/formal-verification` | Before working on TLA+ specs, Stateright models, Kani proofs, or Maelstrom |
+
+Skills are defined in `.claude/agents/` and are invocable via `/skill-name` in Claude Code.
+
 ## ⚠️ MANDATORY: Default Development Workflow
 
 **For EVERY code change, follow this order:**
@@ -37,7 +62,7 @@ Every new component must be:
 - Add `verify_invariants()` methods to stateful structs
 - Run invariant checks in debug builds after every mutation
 
-Note: VOPR (Viewstamped Operation Replicator) is TigerBeetle's name for DST (Deterministic Simulation Testing) - see Phase 3 in the plan. The `verify_invariants()` pattern is a separate TigerStyle concept.
+Note: VOPR (Viewstamped Operation Replicator) is TigerBeetle's specific DST tool for testing their Viewstamped Replication consensus protocol — it is NOT a synonym for DST in general. Our DST methodology follows the FoundationDB approach (seed-based determinism, simulated I/O, fault injection). The `verify_invariants()` pattern comes from TigerStyle / Design-by-Contract, not VOPR.
 
 ---
 
@@ -173,7 +198,7 @@ Systems must remain stable under partial failures:
 
 ## Testing Strategy
 
-> **Read [HARNESS.md](HARNESS.md) first.** It documents the full 4-layer verification loop, expected outputs, Tcl harness pitfalls, and the command addition checklist. Everything below is supplementary.
+> **Read [docs/HARNESS.md](docs/HARNESS.md) first.** It documents the full 4-layer verification loop, expected outputs, Tcl harness pitfalls, and the command addition checklist. Everything below is supplementary.
 
 **Priority Order (most to least important):**
 

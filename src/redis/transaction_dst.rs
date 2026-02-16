@@ -1,6 +1,6 @@
 //! Deterministic Simulation Testing for Transactions (MULTI/EXEC/WATCH)
 //!
-//! VOPR-style testing harness for Redis transaction semantics, specifically:
+//! Shadow-state testing harness for Redis transaction semantics, specifically:
 //! - MULTI/EXEC atomicity (all-or-nothing execution)
 //! - WATCH/UNWATCH optimistic locking (conflict detection)
 //! - DISCARD behavior

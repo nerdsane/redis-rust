@@ -38,6 +38,8 @@ impl CommandExecutor {
                             added += 1;
                         }
                     }
+                    #[cfg(debug_assertions)]
+                    debug_assert!(self.data.contains_key(key), "Postcondition: ZADD key must exist after adding members");
                     return RespValue::Integer(added);
                 }
 
@@ -81,6 +83,8 @@ impl CommandExecutor {
                         changed += 1;
                     }
                 }
+                #[cfg(debug_assertions)]
+                debug_assert!(self.data.contains_key(key), "Postcondition: ZADD key must exist after adding members");
                 // CH: return number changed, not just added
                 if ch {
                     RespValue::Integer(changed)

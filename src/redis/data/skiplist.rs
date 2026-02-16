@@ -137,9 +137,9 @@ impl SkipList {
             rank[i] = if i == self.level - 1 { 0 } else { rank[i + 1] };
 
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
-                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
                     if Self::compare(fwd_node.score, &fwd_node.member, score, &member)
                         == Ordering::Less
                     {
@@ -154,9 +154,9 @@ impl SkipList {
         }
 
         // Check if element already exists (would be right after x at level 0)
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         if let Some(fwd) = node.levels[0].forward {
-            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
             if fwd_node.member == member {
                 // Update score - need to reposition if score changed
                 if (fwd_node.score - score).abs() > f64::EPSILON {
@@ -188,7 +188,7 @@ impl SkipList {
             for i in self.level..level {
                 rank[i] = 0;
                 update[i] = 0; // Header
-                let header = self.nodes[0].as_mut().unwrap();
+                let header = self.nodes[0].as_mut().expect("node must exist at valid index");
                 header.levels[i].span = self.length;
             }
             self.level = level;
@@ -197,23 +197,23 @@ impl SkipList {
         // Update forward pointers and spans
         for i in 0..level {
             // Read values first to avoid borrow conflicts
-            let old_forward = self.nodes[update[i]].as_ref().unwrap().levels[i].forward;
-            let old_span = self.nodes[update[i]].as_ref().unwrap().levels[i].span;
+            let old_forward = self.nodes[update[i]].as_ref().expect("node must exist at valid index").levels[i].forward;
+            let old_span = self.nodes[update[i]].as_ref().expect("node must exist at valid index").levels[i].span;
 
             // Update new node
-            let new_node = self.nodes[new_idx].as_mut().unwrap();
+            let new_node = self.nodes[new_idx].as_mut().expect("node must exist at valid index");
             new_node.levels[i].forward = old_forward;
             new_node.levels[i].span = old_span - (rank[0] - rank[i]);
 
             // Update the predecessor node
-            let update_node = self.nodes[update[i]].as_mut().unwrap();
+            let update_node = self.nodes[update[i]].as_mut().expect("node must exist at valid index");
             update_node.levels[i].forward = Some(new_idx);
             update_node.levels[i].span = (rank[0] - rank[i]) + 1;
         }
 
         // Increment span for levels above the new node's level
         for i in level..self.level {
-            let update_node = self.nodes[update[i]].as_mut().unwrap();
+            let update_node = self.nodes[update[i]].as_mut().expect("node must exist at valid index");
             update_node.levels[i].span += 1;
         }
 
@@ -223,12 +223,12 @@ impl SkipList {
         } else {
             Some(update[0])
         };
-        self.nodes[new_idx].as_mut().unwrap().backward = backward;
+        self.nodes[new_idx].as_mut().expect("node must exist at valid index").backward = backward;
 
         // Update backward of next node or tail
-        let new_fwd = self.nodes[new_idx].as_ref().unwrap().levels[0].forward;
+        let new_fwd = self.nodes[new_idx].as_ref().expect("node must exist at valid index").levels[0].forward;
         if let Some(fwd) = new_fwd {
-            self.nodes[fwd].as_mut().unwrap().backward = Some(new_idx);
+            self.nodes[fwd].as_mut().expect("node must exist at valid index").backward = Some(new_idx);
         } else {
             self.tail = Some(new_idx);
         }
@@ -240,34 +240,34 @@ impl SkipList {
     fn delete_node(&mut self, idx: usize, update: &[usize; SKIPLIST_MAXLEVEL]) {
         // Update forward pointers and spans
         for i in 0..self.level {
-            let update_fwd = self.nodes[update[i]].as_ref().unwrap().levels[i].forward;
+            let update_fwd = self.nodes[update[i]].as_ref().expect("node must exist at valid index").levels[i].forward;
             if update_fwd == Some(idx) {
                 // Read idx_node values first
-                let idx_span = self.nodes[idx].as_ref().unwrap().levels[i].span;
-                let idx_fwd = self.nodes[idx].as_ref().unwrap().levels[i].forward;
+                let idx_span = self.nodes[idx].as_ref().expect("node must exist at valid index").levels[i].span;
+                let idx_fwd = self.nodes[idx].as_ref().expect("node must exist at valid index").levels[i].forward;
 
-                let update_node = self.nodes[update[i]].as_mut().unwrap();
+                let update_node = self.nodes[update[i]].as_mut().expect("node must exist at valid index");
                 // Reorder arithmetic to avoid overflow: (span + idx_span) - 1 instead of span + (idx_span - 1)
                 update_node.levels[i].span = update_node.levels[i].span + idx_span - 1;
                 update_node.levels[i].forward = idx_fwd;
             } else {
-                let update_node = self.nodes[update[i]].as_mut().unwrap();
+                let update_node = self.nodes[update[i]].as_mut().expect("node must exist at valid index");
                 update_node.levels[i].span -= 1;
             }
         }
 
         // Update backward pointer of next node
-        let fwd = self.nodes[idx].as_ref().unwrap().levels[0].forward;
+        let fwd = self.nodes[idx].as_ref().expect("node must exist at valid index").levels[0].forward;
         if let Some(fwd_idx) = fwd {
-            self.nodes[fwd_idx].as_mut().unwrap().backward =
-                self.nodes[idx].as_ref().unwrap().backward;
+            self.nodes[fwd_idx].as_mut().expect("node must exist at valid index").backward =
+                self.nodes[idx].as_ref().expect("node must exist at valid index").backward;
         } else {
-            self.tail = self.nodes[idx].as_ref().unwrap().backward;
+            self.tail = self.nodes[idx].as_ref().expect("node must exist at valid index").backward;
         }
 
         // Update level if needed
         while self.level > 1 {
-            let header = self.nodes[0].as_ref().unwrap();
+            let header = self.nodes[0].as_ref().expect("node must exist at valid index");
             if header.levels[self.level - 1].forward.is_some() {
                 break;
             }
@@ -286,9 +286,9 @@ impl SkipList {
         let mut x = 0;
         for i in (0..self.level).rev() {
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
-                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
                     // Need to find by member, so we need score first
                     if fwd_node.member.as_str() < member
                         || (fwd_node.member == member
@@ -309,9 +309,9 @@ impl SkipList {
         }
 
         // Check if we found the node
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         if let Some(fwd) = node.levels[0].forward {
-            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
             if fwd_node.member == member {
                 let score = fwd_node.score;
                 self.delete_node(fwd, &update);
@@ -331,9 +331,9 @@ impl SkipList {
         let mut x = 0;
         for i in (0..self.level).rev() {
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
-                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
                     if Self::compare(fwd_node.score, &fwd_node.member, score, member)
                         == Ordering::Less
                     {
@@ -347,9 +347,9 @@ impl SkipList {
         }
 
         // Check if we found the exact element
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         if let Some(fwd) = node.levels[0].forward {
-            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
             if fwd_node.member == member && (fwd_node.score - score).abs() < f64::EPSILON {
                 self.delete_node(fwd, &update);
                 return true;
@@ -366,9 +366,9 @@ impl SkipList {
 
         for i in (0..self.level).rev() {
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
-                    let fwd_node = self.nodes[fwd].as_ref().unwrap();
+                    let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
                     let cmp = Self::compare(fwd_node.score, &fwd_node.member, score, member);
                     if cmp == Ordering::Less
                         || (cmp == Ordering::Equal && fwd_node.member.as_str() < member)
@@ -383,9 +383,9 @@ impl SkipList {
         }
 
         // Check if element exists
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         if let Some(fwd) = node.levels[0].forward {
-            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
             if fwd_node.member == member && (fwd_node.score - score).abs() < f64::EPSILON {
                 return Some(rank);
             }
@@ -405,7 +405,7 @@ impl SkipList {
 
         for i in (0..self.level).rev() {
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
                     if traversed + node.levels[i].span <= rank {
                         traversed += node.levels[i].span;
@@ -418,9 +418,9 @@ impl SkipList {
         }
 
         // Move one more step to get the element at rank
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         if let Some(fwd) = node.levels[0].forward {
-            let fwd_node = self.nodes[fwd].as_ref().unwrap();
+            let fwd_node = self.nodes[fwd].as_ref().expect("node must exist at valid index");
             return Some((&fwd_node.member, fwd_node.score));
         }
 
@@ -442,7 +442,7 @@ impl SkipList {
 
         for i in (0..self.level).rev() {
             loop {
-                let node = self.nodes[x].as_ref().unwrap();
+                let node = self.nodes[x].as_ref().expect("node must exist at valid index");
                 if let Some(fwd) = node.levels[i].forward {
                     if traversed + node.levels[i].span <= start {
                         traversed += node.levels[i].span;
@@ -455,12 +455,12 @@ impl SkipList {
         }
 
         // Collect elements
-        let node = self.nodes[x].as_ref().unwrap();
+        let node = self.nodes[x].as_ref().expect("node must exist at valid index");
         let mut current = node.levels[0].forward;
 
         for _ in start..=end {
             if let Some(idx) = current {
-                let n = self.nodes[idx].as_ref().unwrap();
+                let n = self.nodes[idx].as_ref().expect("node must exist at valid index");
                 result.push((n.member.as_str(), n.score));
                 current = n.levels[0].forward;
             } else {
@@ -497,7 +497,7 @@ impl SkipList {
 
     /// Iterate over all elements in order
     pub fn iter(&self) -> SkipListIter<'_> {
-        let header = self.nodes[0].as_ref().unwrap();
+        let header = self.nodes[0].as_ref().expect("node must exist at valid index");
         SkipListIter {
             skiplist: self,
             current: header.levels[0].forward,
@@ -515,7 +515,7 @@ impl<'a> Iterator for SkipListIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(idx) = self.current {
-            let node = self.skiplist.nodes[idx].as_ref().unwrap();
+            let node = self.skiplist.nodes[idx].as_ref().expect("node must exist at valid index");
             self.current = node.levels[0].forward;
             Some((&node.member, node.score))
         } else {

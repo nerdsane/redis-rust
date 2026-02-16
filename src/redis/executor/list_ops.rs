@@ -105,6 +105,10 @@ impl CommandExecutor {
             self.expirations.remove(key);
             self.access_times.remove(key);
         }
+        #[cfg(debug_assertions)]
+        if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
+            panic!("Invariant violated: empty list should have been deleted");
+        }
         result
     }
 
@@ -124,6 +128,10 @@ impl CommandExecutor {
             self.data.remove(key);
             self.expirations.remove(key);
             self.access_times.remove(key);
+        }
+        #[cfg(debug_assertions)]
+        if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
+            panic!("Invariant violated: empty list should have been deleted");
         }
         result
     }
@@ -209,7 +217,9 @@ impl CommandExecutor {
             Some(Value::List(list)) => match list.set(index, value.clone()) {
                 Ok(()) => {
                     self.access_times.insert(key.to_string(), self.current_time);
-                    RespValue::simple("OK")
+                    let resp = RespValue::simple("OK");
+                    debug_assert!(matches!(&resp, RespValue::SimpleString(s) if s == "OK"), "Postcondition: LSET success must return OK");
+                    resp
                 }
                 Err(e) => RespValue::err(e),
             },
@@ -234,6 +244,10 @@ impl CommandExecutor {
                     self.data.remove(key);
                     self.access_times.remove(key);
                     self.expirations.remove(key);
+                }
+                #[cfg(debug_assertions)]
+                if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
+                    panic!("Invariant violated: empty list should have been deleted after LTRIM");
                 }
                 RespValue::simple("OK")
             }
@@ -285,6 +299,8 @@ impl CommandExecutor {
                         list.lpush(value.clone());
                         self.access_times
                             .insert(dest.to_string(), self.current_time);
+                        #[cfg(debug_assertions)]
+                        debug_assert!(self.data.contains_key(dest), "Postcondition: RPOPLPUSH dest must exist after push");
                         RespValue::BulkString(Some(value.as_bytes().to_vec()))
                     }
                     _ => RespValue::err(
@@ -353,6 +369,8 @@ impl CommandExecutor {
                         }
                         self.access_times
                             .insert(dest.to_string(), self.current_time);
+                        #[cfg(debug_assertions)]
+                        debug_assert!(self.data.contains_key(dest), "Postcondition: LMOVE dest must exist after push");
                         RespValue::BulkString(Some(value.as_bytes().to_vec()))
                     }
                     _ => RespValue::err(

@@ -405,7 +405,7 @@ impl AdaptiveActor {
         info
     }
 
-    /// Verify invariants (VOPR pattern)
+    /// Verify invariants (TigerStyle design-by-contract)
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         // Invariant: If adaptive_manager exists, it should have valid state

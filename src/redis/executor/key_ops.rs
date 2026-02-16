@@ -133,7 +133,7 @@ impl CommandExecutor {
         // Also check if seconds*1000 + basetime_ms overflows
         let expire_ms = seconds.saturating_mul(1000);
         if expire_ms > 0 {
-            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            let basetime_ms = self.simulation_start_epoch_ms.saturating_add(self.current_time.as_millis() as i64);
             if expire_ms > i64::MAX - basetime_ms {
                 return RespValue::err("ERR invalid expire time in 'expire' command");
             }
@@ -187,6 +187,7 @@ impl CommandExecutor {
         }
 
         self.expirations.insert(key.to_string(), new_expiration);
+        debug_assert!(self.expirations.contains_key(key), "Postcondition: EXPIRE must set expiration when returning 1");
         RespValue::Integer(1)
     }
 
@@ -201,7 +202,7 @@ impl CommandExecutor {
     ) -> RespValue {
         // Reject values that would overflow when adding basetime
         if milliseconds > 0 {
-            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            let basetime_ms = self.simulation_start_epoch_ms.saturating_add(self.current_time.as_millis() as i64);
             if milliseconds > i64::MAX - basetime_ms {
                 return RespValue::err("ERR invalid expire time in 'pexpire' command");
             }
@@ -247,6 +248,7 @@ impl CommandExecutor {
         }
 
         self.expirations.insert(key.to_string(), new_expiration);
+        debug_assert!(self.expirations.contains_key(key), "Postcondition: PEXPIRE must set expiration when returning 1");
         RespValue::Integer(1)
     }
 
@@ -302,6 +304,7 @@ impl CommandExecutor {
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_ms as u64);
                 self.expirations.insert(key.to_string(), expiration);
+                debug_assert!(self.expirations.contains_key(key) || !self.data.contains_key(key), "Postcondition: EXPIREAT key must have expiration or be deleted");
                 RespValue::Integer(1)
             }
         }
@@ -326,6 +329,7 @@ impl CommandExecutor {
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_millis as u64);
                 self.expirations.insert(key.to_string(), expiration);
+                debug_assert!(self.expirations.contains_key(key) || !self.data.contains_key(key), "Postcondition: PEXPIREAT key must have expiration or be deleted");
                 RespValue::Integer(1)
             }
         }

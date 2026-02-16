@@ -1,6 +1,6 @@
 //! Sorted Set Deterministic Simulation Tests
 //!
-//! VOPR-style tests for RedisSortedSet with multiple seeds.
+//! DST tests for RedisSortedSet with multiple seeds.
 //! These tests verify that sorted set operations maintain invariants
 //! under various random operation sequences.
 

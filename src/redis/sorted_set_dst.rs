@@ -1,6 +1,6 @@
 //! Deterministic Simulation Testing for Sorted Sets
 //!
-//! VOPR-style testing harness for RedisSortedSet that enables:
+//! Shadow-state testing harness for RedisSortedSet that enables:
 //! - Deterministic random operation generation
 //! - Invariant checking after each operation
 //! - Seed-based reproducibility for debugging

@@ -6,11 +6,11 @@
 
 # redis-rust
 
-An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming. Read the [full paper](PAPER.md) for architecture, verification methodology, and lessons learned.
+An experimental Redis-compatible in-memory data store in Rust with CRDT-based multi-node replication. Co-authored with [Claude Code](https://claude.ai/claude-code) (Opus 4.5 → Opus 4.6) as an exercise in [AI-Driven Research for Systems](https://adrs-ucb.notion.site/datadog) (ADRS). See also: [BitsEvolve](https://www.datadoghq.com/blog/engineering/self-optimizing-system/) for production-aware self-optimizing systems. Read the [full paper](docs/PAPER.md) for architecture, verification methodology, and lessons learned.
 
 > **This is not production software.** It is a research project exploring deterministic simulation testing, actor architectures, and human-AI collaboration on distributed systems code. Do not use this as a Redis replacement.
 
-> **What it actually is:** An in-memory cache that speaks RESP2, with CRDT-based multi-node replication (Anna KVS-style). Passes the official Redis Tcl test suite for implemented commands. Runs within 80-100% of Redis 7.4 throughput on equivalent hardware.
+> **What it actually is:** A Redis-compatible server that speaks RESP2, with actor-per-shard concurrency, CRDT replication (Anna KVS-style gossip + anti-entropy), Lua scripting, transactions, TLS, and ACL auth. Passes the official Redis Tcl test suite for implemented commands. Runs within 80-100% of Redis 7.4 throughput on equivalent hardware.
 
 ## What works
 
@@ -59,7 +59,7 @@ Default port is 6379 (standard Redis port). Override with `REDIS_PORT=3000`.
 
 ## Testing
 
-See [HARNESS.md](HARNESS.md) for the full verification guide — what each layer tests, expected outputs, pitfalls, and how to add new commands without breaking things.
+See [docs/HARNESS.md](docs/HARNESS.md) for the full verification guide — what each layer tests, expected outputs, pitfalls, and how to add new commands without breaking things.
 
 ```bash
 # Unit tests (507 tests including 87 replication tests)
@@ -118,7 +118,7 @@ Components: `src/replication/` (CRDTs, gossip, anti-entropy, hash ring), `src/pr
 | 3 | 190 | 98/98 ok | 29/29 ok | 13/63 ok | **valid** | 0 |
 | 5 | 1,301 | 670/677 ok | 201/201 ok | 80/423 ok | **valid** | 0 |
 
-CAS failure rate is expected — eventual consistency means CAS often sees stale values. The linearizability checker found valid orderings at all scales, meaning gossip propagates fast enough under these workloads that no violations were observed. This does **not** mean the system guarantees linearizability — under network partitions or higher load, violations are expected by design.
+CAS failure rate is expected — eventual consistency means CAS often sees stale values. Under low load, Knossos finds valid linearizable orderings because gossip converges fast. Under high load or slow CI runners, Knossos may find linearizability violations where a read arrives before gossip propagates a write. **These violations are correct behavior for an eventually consistent system, not bugs.** CI tolerates linearizability violations but fails on exceptions, crashes, or protocol errors.
 
 **Test coverage:** 87 replication tests, 10 CRDT DST suites (100 seeds each), 6 multi-node simulation tests (partitions, packet loss, convergence), Stateright model checking for merge associativity/commutativity/idempotence, 4 TLA+ specs (gossip, anti-entropy, replication convergence, streaming persistence).
 

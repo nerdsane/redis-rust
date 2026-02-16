@@ -1,6 +1,6 @@
 //! CRDT Deterministic Simulation Tests
 //!
-//! VOPR-style tests for CRDT convergence with 100+ seeds.
+//! DST tests for CRDT convergence with 100+ seeds.
 //! These tests verify that all CRDT implementations correctly converge
 //! after network partitions and message drops.
 

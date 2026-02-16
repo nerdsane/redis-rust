@@ -1,6 +1,6 @@
 //! Transaction Deterministic Simulation Tests
 //!
-//! VOPR-style tests for MULTI/EXEC/WATCH/DISCARD semantics.
+//! DST tests for MULTI/EXEC/WATCH/DISCARD semantics.
 //! These tests verify transaction invariants under interleaved
 //! client operations with multiple seeds.
 

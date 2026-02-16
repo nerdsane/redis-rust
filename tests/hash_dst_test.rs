@@ -1,6 +1,6 @@
 //! Hash Deterministic Simulation Tests
 //!
-//! VOPR-style tests for RedisHash with multiple seeds.
+//! DST tests for RedisHash with multiple seeds.
 
 use redis_sim::redis::{run_hash_batch, summarize_hash_batch, HashDSTConfig, HashDSTHarness};
 

@@ -20,7 +20,7 @@ impl RedisSortedSet {
         }
     }
 
-    /// VOPR: Verify all invariants hold for this sorted set
+    /// Verify all invariants hold for this sorted set
     #[cfg(debug_assertions)]
     fn verify_invariants(&self) {
         // Invariant 1: members and skiplist must have same length

@@ -148,7 +148,7 @@ pub struct GossipState {
 }
 
 impl GossipState {
-    /// VOPR: Verify all invariants hold for this gossip state
+    /// Verify all invariants hold for this gossip state
     #[cfg(debug_assertions)]
     pub fn verify_invariants(&self) {
         // Invariant 1: replica_id must match config
