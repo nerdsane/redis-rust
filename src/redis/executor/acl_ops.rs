@@ -1,13 +1,16 @@
 //! ACL command implementations for CommandExecutor.
 //!
-//! Handles: AUTH, ACL WHOAMI, ACL LIST, ACL USERS, ACL GETUSER, ACL SETUSER,
-//! ACL DELUSER, ACL CAT, ACL GENPASS
+//! Most ACL commands (AUTH, WHOAMI, LIST, USERS, GETUSER, SETUSER, DELUSER)
+//! are handled at the connection level in `connection_optimized.rs` because
+//! they require per-connection state (authenticated user, ACL manager).
+//!
+//! If these commands reach the executor, it means something is misconfigured.
+//! We return clear errors and fire debug_assert in debug builds.
+//!
+//! ACL CAT and ACL GENPASS are stateless and can be handled here.
 //!
 //! # TigerStyle Invariants
 //!
-//! - ACL WHOAMI always returns a valid username (at least "default")
-//! - ACL LIST always returns at least the default user entry
-//! - ACL USERS always returns at least "default"
 //! - ACL GENPASS output length matches requested bits/4 (hex encoding)
 
 use super::CommandExecutor;
@@ -15,79 +18,68 @@ use crate::redis::resp::RespValue;
 
 impl CommandExecutor {
     pub(super) fn execute_auth(&self) -> RespValue {
-        // AUTH is handled at the connection level
-        // If we get here, it means the server doesn't have ACL enabled
-        // TigerStyle: Postcondition - always succeeds without ACL feature
-        RespValue::simple("OK")
+        // AUTH must be handled at the connection level (connection_optimized.rs).
+        // If we get here, the command was routed incorrectly.
+        debug_assert!(
+            false,
+            "AUTH reached executor — must be handled at connection level"
+        );
+        RespValue::err("ERR AUTH is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_whoami(&self) -> RespValue {
-        // Without ACL feature, default user is always authenticated
-        let username = b"default".to_vec();
-
-        // TigerStyle: Postcondition - username must not be empty
+        // ACL WHOAMI must be handled at the connection level — it needs the
+        // per-connection authenticated_user.
         debug_assert!(
-            !username.is_empty(),
-            "Postcondition violated: ACL WHOAMI must return non-empty username"
+            false,
+            "ACL WHOAMI reached executor — must be handled at connection level"
         );
-
-        RespValue::BulkString(Some(username))
+        RespValue::err("ERR ACL WHOAMI is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_list(&self) -> RespValue {
-        // Return default user rule
-        let rule = "user default on nopass ~* +@all".to_string();
-        let rules = vec![RespValue::BulkString(Some(rule.into_bytes()))];
-
-        // TigerStyle: Postcondition - must have at least one rule
+        // ACL LIST must be handled at the connection level — it needs the AclManager.
         debug_assert!(
-            !rules.is_empty(),
-            "Postcondition violated: ACL LIST must return at least default user"
+            false,
+            "ACL LIST reached executor — must be handled at connection level"
         );
-
-        RespValue::Array(Some(rules))
+        RespValue::err("ERR ACL LIST is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_users(&self) -> RespValue {
-        let users = vec![RespValue::BulkString(Some(b"default".to_vec()))];
-
-        // TigerStyle: Postcondition - must have at least default user
+        // ACL USERS must be handled at the connection level — it needs the AclManager.
         debug_assert!(
-            !users.is_empty(),
-            "Postcondition violated: ACL USERS must return at least 'default'"
+            false,
+            "ACL USERS reached executor — must be handled at connection level"
         );
-
-        RespValue::Array(Some(users))
+        RespValue::err("ERR ACL USERS is handled at connection level, not executor")
     }
 
-    pub(super) fn execute_acl_getuser(&self, username: &str) -> RespValue {
-        if username == "default" {
-            // Return info about default user
-            RespValue::Array(Some(vec![
-                RespValue::BulkString(Some(b"flags".to_vec())),
-                RespValue::Array(Some(vec![
-                    RespValue::BulkString(Some(b"on".to_vec())),
-                    RespValue::BulkString(Some(b"nopass".to_vec())),
-                ])),
-                RespValue::BulkString(Some(b"passwords".to_vec())),
-                RespValue::Array(Some(vec![])),
-                RespValue::BulkString(Some(b"commands".to_vec())),
-                RespValue::BulkString(Some(b"+@all".to_vec())),
-                RespValue::BulkString(Some(b"keys".to_vec())),
-                RespValue::BulkString(Some(b"~*".to_vec())),
-            ]))
-        } else {
-            RespValue::BulkString(None) // User not found
-        }
+    pub(super) fn execute_acl_getuser(&self, _username: &str) -> RespValue {
+        // ACL GETUSER must be handled at the connection level — it needs the AclManager.
+        debug_assert!(
+            false,
+            "ACL GETUSER reached executor — must be handled at connection level"
+        );
+        RespValue::err("ERR ACL GETUSER is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_setuser(&self) -> RespValue {
-        // ACL management requires the ACL feature
-        RespValue::err("ERR ACL feature not enabled")
+        // ACL SETUSER must be handled at the connection level — it needs the AclManager.
+        debug_assert!(
+            false,
+            "ACL SETUSER reached executor — must be handled at connection level"
+        );
+        RespValue::err("ERR ACL SETUSER is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_deluser(&self) -> RespValue {
-        RespValue::err("ERR ACL feature not enabled")
+        // ACL DELUSER must be handled at the connection level — it needs the AclManager.
+        debug_assert!(
+            false,
+            "ACL DELUSER reached executor — must be handled at connection level"
+        );
+        RespValue::err("ERR ACL DELUSER is handled at connection level, not executor")
     }
 
     pub(super) fn execute_acl_cat(&self, category: Option<&str>) -> RespValue {

@@ -8,6 +8,9 @@
 #[cfg(feature = "acl")]
 pub mod acl;
 
+#[cfg(feature = "acl")]
+pub mod acl_dst;
+
 #[cfg(feature = "tls")]
 pub mod tls;
 
@@ -48,6 +51,11 @@ pub mod acl_noop {
                 name: "default".to_string(),
                 enabled: true,
             }
+        }
+
+        /// No-op: always returns true (no key restrictions without ACL feature)
+        pub fn has_unrestricted_keys(&self) -> bool {
+            true
         }
     }
 

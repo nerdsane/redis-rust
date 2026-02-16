@@ -189,6 +189,12 @@ Key methods:
 | `src/redis/sorted_set_dst.rs` | `tests/sorted_set_dst_test.rs` | Sorted set commands (ZADD, ZRANGE, etc.) |
 | `src/redis/transaction_dst.rs` | `tests/transaction_dst_test.rs` | MULTI/EXEC/DISCARD/WATCH |
 
+### Security DST
+
+| Harness file | Test file | What it tests |
+|-------------|-----------|---------------|
+| `src/security/acl_dst.rs` | `tests/acl_dst_test.rs` | ACL user management, auth, command/key permissions (`--features acl`) |
+
 ### Replication / Streaming DST
 
 | Harness file | Test file | What it tests |
@@ -306,6 +312,10 @@ cargo test crdt_dst -- --nocapture
 
 # Streaming DST
 cargo test streaming_dst -- --nocapture
+
+# ACL DST (requires --features acl)
+cargo test --lib --features acl acl_dst -- --nocapture
+cargo test --test acl_dst_test --features acl -- --nocapture
 
 # With specific seed (when reproducing a failure)
 # Seeds are typically passed as test parameters, check each harness
