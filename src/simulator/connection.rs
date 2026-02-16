@@ -98,8 +98,17 @@ impl SimulatedReadBuffer {
     /// Encode a command to RESP format
     fn encode_command(&mut self, cmd: &Command) {
         match cmd {
-            Command::Ping => {
+            Command::Ping(None) => {
                 self.pending_data.extend_from_slice(b"*1\r\n$4\r\nPING\r\n");
+            }
+            Command::Ping(Some(msg)) => {
+                let msg_bytes = msg.as_bytes();
+                self.pending_data.extend_from_slice(b"*2\r\n$4\r\nPING\r\n$");
+                self.pending_data
+                    .extend_from_slice(msg_bytes.len().to_string().as_bytes());
+                self.pending_data.extend_from_slice(b"\r\n");
+                self.pending_data.extend_from_slice(msg_bytes);
+                self.pending_data.extend_from_slice(b"\r\n");
             }
             Command::Set { key, value, .. } => {
                 let key_bytes = key.as_bytes();
@@ -300,6 +309,19 @@ impl SimulatedConnection {
 
     /// Queue a single command
     pub fn send_command(&mut self, cmd: Command) {
+        // BUGGIFY: packet drop - silently drop the command
+        #[cfg(feature = "simulation")]
+        {
+            use crate::buggify::faults;
+            let mut rng = crate::io::production::ProductionRng::new();
+            if crate::buggify::should_buggify(&mut rng, faults::network::PACKET_DROP) {
+                return; // Drop the command
+            }
+            // BUGGIFY: duplicate - send the command twice
+            if crate::buggify::should_buggify(&mut rng, faults::network::DUPLICATE) {
+                self.read_buffer.queue_command(cmd.clone());
+            }
+        }
         self.read_buffer.queue_command(cmd);
     }
 
@@ -313,6 +335,20 @@ impl SimulatedConnection {
     /// This mirrors `OptimizedConnectionHandler::run()` but deterministically
     pub fn process(&mut self) -> Vec<RespValue> {
         let mut responses = Vec::new();
+
+        // BUGGIFY: network delay - add jitter to processing
+        #[cfg(feature = "simulation")]
+        {
+            use crate::buggify::faults;
+            let mut rng = crate::io::production::ProductionRng::new();
+            if crate::buggify::should_buggify(&mut rng, faults::network::DELAY) {
+                // Advance virtual time to simulate network delay
+                let delay_ms = 50; // 50ms delay
+                self.current_time = VirtualTime::from_millis(
+                    self.current_time.as_millis() + delay_ms,
+                );
+            }
+        }
 
         // Flush queued commands to simulate TCP arrival
         self.read_buffer.flush_to_buffer();
@@ -597,12 +633,12 @@ mod tests {
     #[test]
     fn test_single_command() {
         let mut conn = SimulatedConnection::new(42);
-        conn.send_command(Command::Ping);
+        conn.send_command(Command::Ping(None));
 
         let responses = conn.process();
 
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], RespValue::SimpleString("PONG".to_string()));
+        assert_eq!(responses[0], RespValue::simple("PONG"));
         assert_eq!(conn.flush_count(), 1);
     }
 
@@ -652,7 +688,7 @@ mod tests {
         let responses = conn.process();
 
         assert_eq!(responses.len(), 5);
-        assert_eq!(responses[0], RespValue::SimpleString("OK".to_string()));
+        assert_eq!(responses[0], RespValue::simple("OK"));
         assert_eq!(responses[1], RespValue::Integer(1));
         assert_eq!(responses[2], RespValue::Integer(2));
         assert_eq!(responses[3], RespValue::Integer(3));
@@ -704,7 +740,7 @@ mod tests {
 
         // Should still get correct responses despite partial reads
         assert_eq!(responses.len(), 2);
-        assert_eq!(responses[0], RespValue::SimpleString("OK".to_string()));
+        assert_eq!(responses[0], RespValue::simple("OK"));
         assert_eq!(responses[1], RespValue::BulkString(Some(b"v1".to_vec())));
     }
 

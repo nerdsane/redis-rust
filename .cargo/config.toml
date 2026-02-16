@@ -1,0 +1,45 @@
+# .cargo/config.toml
+# Build optimizations for redis-rust
+#
+# Tools to install for full benefit:
+#   brew install sccache mold  (macOS)
+#   apt install mold && cargo install sccache  (Linux)
+
+# === Compilation Caching ===
+# sccache provides 50-80% faster clean rebuilds
+# Gracefully ignored if not installed
+[build]
+rustc-wrapper = "sccache"
+
+# === Linker Optimizations ===
+# Linux: Use mold linker (~10x faster linking)
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# macOS: Use split debuginfo for faster linking
+[target.x86_64-apple-darwin]
+rustflags = ["-Csplit-debuginfo=unpacked"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-Csplit-debuginfo=unpacked"]
+
+# === Cargo Aliases ===
+# Quick commands for common operations
+[alias]
+fb = "build --profile release-fast"           # Fast build (no LTO)
+tr = "test --release"                         # Test with release optimizations
+ca = "check --all-targets"                    # Check all targets
+cl = "clippy --all-targets -- -D warnings"   # Clippy with strict warnings
+lci = "!./scripts/local-ci.sh"               # Run local CI checks
+
+# === Environment ===
+[env]
+RUST_BACKTRACE = "1"
+
+[net]
+git-fetch-with-cli = true

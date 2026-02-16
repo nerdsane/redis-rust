@@ -73,14 +73,10 @@ impl ReplicatedShardHandle {
             .send(ReplicatedShardMessage::Execute { cmd, response: tx })
             .is_err()
         {
-            return (RespValue::Error("ERR shard unavailable".to_string()), None);
+            return (RespValue::err("ERR shard unavailable"), None);
         }
-        rx.await.unwrap_or_else(|_| {
-            (
-                RespValue::Error("ERR shard response failed".to_string()),
-                None,
-            )
-        })
+        rx.await
+            .unwrap_or_else(|_| (RespValue::err("ERR shard response failed"), None))
     }
 
     /// Execute a read-only command
@@ -92,10 +88,10 @@ impl ReplicatedShardHandle {
             .send(ReplicatedShardMessage::ExecuteReadonly { cmd, response: tx })
             .is_err()
         {
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
         rx.await
-            .unwrap_or_else(|_| RespValue::Error("ERR shard response failed".to_string()))
+            .unwrap_or_else(|_| RespValue::err("ERR shard response failed"))
     }
 
     /// Apply a remote delta (fire-and-forget)

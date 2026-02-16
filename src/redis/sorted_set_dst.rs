@@ -166,7 +166,9 @@ impl SortedSetDSTHarness {
 
     /// Generate a random score
     fn random_score(&mut self) -> f64 {
-        let raw = self.rng.gen_range(0, (self.config.max_score * 100.0) as u64);
+        let raw = self
+            .rng
+            .gen_range(0, (self.config.max_score * 100.0) as u64);
         raw as f64 / 100.0
     }
 
@@ -205,9 +207,7 @@ impl SortedSetDSTHarness {
         if let Err(violation) = self.check_invariants() {
             self.result.invariant_violations.push(format!(
                 "Op #{}: {:?} - {}",
-                self.result.total_operations,
-                self.result.last_op,
-                violation
+                self.result.total_operations, self.result.last_op, violation
             ));
         }
     }

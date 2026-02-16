@@ -120,10 +120,17 @@ impl Manifest {
 
     /// Add a segment to the manifest
     pub fn add_segment(&mut self, info: SegmentInfo) {
+        // Keep next_segment_id ahead of all segment ids
+        if info.id >= self.next_segment_id {
+            self.next_segment_id = info.id + 1;
+        }
         // Maintain sorted order by id
         let pos = self.segments.partition_point(|s| s.id < info.id);
         self.segments.insert(pos, info);
         self.version += 1;
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
     }
 
     /// Remove segments that are covered by a checkpoint
@@ -132,6 +139,9 @@ impl Manifest {
         self.segments.retain(|s| s.id > checkpoint.last_segment_id);
         self.checkpoint = Some(checkpoint);
         self.version += 1;
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
     }
 
     /// Get segments after a given timestamp (for recovery)
@@ -146,7 +156,53 @@ impl Manifest {
     pub fn allocate_segment_id(&mut self) -> u64 {
         let id = self.next_segment_id;
         self.next_segment_id += 1;
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
+
         id
+    }
+
+    /// TigerStyle: Verify all invariants hold
+    ///
+    /// # Invariants
+    /// - Segments are sorted by id
+    /// - next_segment_id > all segment ids
+    /// - If checkpoint exists, no segments have id <= checkpoint.last_segment_id
+    #[cfg(debug_assertions)]
+    pub fn verify_invariants(&self) {
+        // Segments must be sorted by id
+        debug_assert!(
+            self.segments.windows(2).all(|w| w[0].id < w[1].id),
+            "Invariant violated: segments must be sorted by id"
+        );
+
+        // next_segment_id must be greater than all existing segment ids
+        if let Some(last) = self.segments.last() {
+            debug_assert!(
+                self.next_segment_id > last.id,
+                "Invariant violated: next_segment_id ({}) must be > max segment id ({})",
+                self.next_segment_id,
+                last.id
+            );
+        }
+
+        // If checkpoint exists, no segments should have id <= checkpoint.last_segment_id
+        if let Some(cp) = &self.checkpoint {
+            debug_assert!(
+                self.segments.iter().all(|s| s.id > cp.last_segment_id),
+                "Invariant violated: no segments should have id <= checkpoint.last_segment_id"
+            );
+        }
+
+        // Segment min_timestamp <= max_timestamp
+        for seg in &self.segments {
+            debug_assert!(
+                seg.min_timestamp <= seg.max_timestamp,
+                "Invariant violated: segment {} has min_timestamp > max_timestamp",
+                seg.id
+            );
+        }
     }
 
     /// Total size of all segments in bytes

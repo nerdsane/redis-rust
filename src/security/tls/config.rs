@@ -17,11 +17,20 @@ use tokio_rustls::TlsAcceptor;
 #[derive(Debug)]
 pub enum TlsError {
     /// Failed to read certificate file
-    CertificateReadError { path: PathBuf, source: std::io::Error },
+    CertificateReadError {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Failed to read private key file
-    PrivateKeyReadError { path: PathBuf, source: std::io::Error },
+    PrivateKeyReadError {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Failed to read CA certificate file
-    CaReadError { path: PathBuf, source: std::io::Error },
+    CaReadError {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// No certificates found in file
     NoCertificates { path: PathBuf },
     /// No private key found in file
@@ -42,7 +51,11 @@ impl std::fmt::Display for TlsError {
                 write!(f, "Failed to read private key from {:?}: {}", path, source)
             }
             TlsError::CaReadError { path, source } => {
-                write!(f, "Failed to read CA certificate from {:?}: {}", path, source)
+                write!(
+                    f,
+                    "Failed to read CA certificate from {:?}: {}",
+                    path, source
+                )
             }
             TlsError::NoCertificates { path } => {
                 write!(f, "No certificates found in {:?}", path)
@@ -170,9 +183,11 @@ impl TlsConfig {
 
         let mut root_store = RootCertStore::empty();
         for cert in certs {
-            root_store.add(cert).map_err(|e| TlsError::InvalidCertificate {
-                reason: e.to_string(),
-            })?;
+            root_store
+                .add(cert)
+                .map_err(|e| TlsError::InvalidCertificate {
+                    reason: e.to_string(),
+                })?;
         }
 
         Ok(Some(root_store))

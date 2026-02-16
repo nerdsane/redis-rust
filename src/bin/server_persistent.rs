@@ -18,6 +18,17 @@
 //! | AWS_SECRET_ACCESS_KEY | - | S3 credentials |
 //! | AWS_REGION | us-east-1 | S3 region |
 //!
+//! ## Kubernetes Clustering
+//!
+//! | Variable | Default | Description |
+//! |----------|---------|-------------|
+//! | POD_NAME | - | StatefulSet pod name (e.g., redis-rust-0) |
+//! | POD_NAMESPACE | default | Kubernetes namespace |
+//! | REPLICATION_ENABLED | false | Enable gossip-based replication |
+//! | GOSSIP_PORT | 7000 | Port for gossip protocol |
+//! | CLUSTER_SIZE | 3 | Number of replicas in StatefulSet |
+//! | SERVICE_NAME | redis-rust-headless | Headless service name |
+//!
 //! ## Datadog (when built with --features datadog)
 //!
 //! | Variable | Default | Description |
@@ -35,10 +46,11 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 use bytes::{BufMut, BytesMut};
+use parking_lot::RwLock;
 use redis_sim::observability::{init_tracing, shutdown, DatadogConfig};
-use redis_sim::production::ReplicatedShardedState;
+use redis_sim::production::{GossipManager, ReplicatedShardedState};
 use redis_sim::redis::{Command, RespCodec, RespValue};
-use redis_sim::replication::{ConsistencyLevel, ReplicationConfig};
+use redis_sim::replication::{ConsistencyLevel, GossipState, ReplicationConfig};
 use redis_sim::streaming::{
     create_integration, ObjectStoreType, StreamingConfig, StreamingIntegrationTrait, WorkerHandles,
 };
@@ -47,14 +59,305 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // Redis-compatible defaults for drop-in replacement
 const DEFAULT_PORT: u16 = 6379;
 const DEFAULT_REPLICA_ID: u64 = 1;
 const DEFAULT_DATA_PATH: &str = "/data";
 const DEFAULT_S3_PREFIX: &str = "redis-stream";
+#[cfg(feature = "s3")]
 const DEFAULT_S3_REGION: &str = "us-east-1";
+const DEFAULT_GOSSIP_PORT: u16 = 7000;
+const DEFAULT_CLUSTER_SIZE: usize = 3;
+const DEFAULT_SERVICE_NAME: &str = "redis-rust-headless";
+
+// TigerStyle: Explicit limits with _MAX suffix
+const CLUSTER_SIZE_MAX: usize = 100;
+const REPLICA_ID_MAX: u64 = 99;
+const GOSSIP_INTERVAL_MS_MIN: u64 = 10;
+const GOSSIP_INTERVAL_MS_MAX: u64 = 10_000;
+
+/// Kubernetes cluster configuration
+///
+/// TigerStyle Invariants:
+/// - replica_id < cluster_size (replica must be valid member)
+/// - peers.len() == cluster_size - 1 (all peers except self)
+/// - cluster_size <= CLUSTER_SIZE_MAX
+/// - gossip_interval_ms in [GOSSIP_INTERVAL_MS_MIN, GOSSIP_INTERVAL_MS_MAX]
+struct ClusterConfig {
+    /// Whether replication is enabled
+    enabled: bool,
+    /// Replica ID (0-indexed, derived from StatefulSet ordinal)
+    replica_id: u64,
+    /// Gossip port for inter-pod communication
+    gossip_port: u16,
+    /// Number of replicas in the cluster
+    cluster_size: usize,
+    /// Peer addresses for gossip (built from headless service DNS)
+    peers: Vec<String>,
+    /// Gossip interval in milliseconds
+    gossip_interval_ms: u64,
+}
+
+impl ClusterConfig {
+    /// Build cluster configuration from environment variables
+    ///
+    /// TigerStyle: Explicit validation with debug_assert for invariants
+    fn from_env() -> Self {
+        let enabled = std::env::var("REPLICATION_ENABLED")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let gossip_port = std::env::var("GOSSIP_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_GOSSIP_PORT);
+
+        let cluster_size = std::env::var("CLUSTER_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_CLUSTER_SIZE)
+            .min(CLUSTER_SIZE_MAX); // TigerStyle: Enforce limit
+
+        let gossip_interval_ms = std::env::var("GOSSIP_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100)
+            .clamp(GOSSIP_INTERVAL_MS_MIN, GOSSIP_INTERVAL_MS_MAX); // TigerStyle: Clamp to valid range
+
+        // Parse replica ID from POD_NAME (e.g., "redis-rust-0" -> 0)
+        let replica_id = Self::parse_replica_id_from_env().min(REPLICA_ID_MAX);
+
+        // Build peer list from Kubernetes DNS
+        let peers = if enabled {
+            Self::build_peer_list(replica_id, cluster_size, gossip_port)
+        } else {
+            vec![]
+        };
+
+        let config = ClusterConfig {
+            enabled,
+            replica_id,
+            gossip_port,
+            cluster_size,
+            peers,
+            gossip_interval_ms,
+        };
+
+        // TigerStyle: Verify invariants in debug builds
+        config.verify_invariants();
+        config
+    }
+
+    /// TigerStyle: Verify all struct invariants hold
+    #[inline]
+    fn verify_invariants(&self) {
+        debug_assert!(
+            self.cluster_size <= CLUSTER_SIZE_MAX,
+            "Invariant: cluster_size {} exceeds max {}",
+            self.cluster_size,
+            CLUSTER_SIZE_MAX
+        );
+        debug_assert!(
+            self.replica_id <= REPLICA_ID_MAX,
+            "Invariant: replica_id {} exceeds max {}",
+            self.replica_id,
+            REPLICA_ID_MAX
+        );
+        debug_assert!(
+            (self.replica_id as usize) < self.cluster_size || !self.enabled,
+            "Invariant: replica_id {} must be < cluster_size {} when enabled",
+            self.replica_id,
+            self.cluster_size
+        );
+        debug_assert!(
+            self.gossip_interval_ms >= GOSSIP_INTERVAL_MS_MIN,
+            "Invariant: gossip_interval_ms {} below min {}",
+            self.gossip_interval_ms,
+            GOSSIP_INTERVAL_MS_MIN
+        );
+        debug_assert!(
+            self.gossip_interval_ms <= GOSSIP_INTERVAL_MS_MAX,
+            "Invariant: gossip_interval_ms {} exceeds max {}",
+            self.gossip_interval_ms,
+            GOSSIP_INTERVAL_MS_MAX
+        );
+        if self.enabled {
+            debug_assert!(
+                self.peers.len() == self.cluster_size - 1,
+                "Invariant: peers.len() {} must equal cluster_size - 1 ({})",
+                self.peers.len(),
+                self.cluster_size - 1
+            );
+        }
+    }
+
+    /// Parse replica ID from POD_NAME environment variable
+    /// Example: "redis-rust-0" -> 0, "redis-rust-2" -> 2
+    fn parse_replica_id_from_env() -> u64 {
+        if let Ok(pod_name) = std::env::var("POD_NAME") {
+            // StatefulSet pods are named: <statefulset-name>-<ordinal>
+            // Extract the ordinal from the end
+            if let Some(ordinal_str) = pod_name.rsplit('-').next() {
+                if let Ok(ordinal) = ordinal_str.parse::<u64>() {
+                    return ordinal;
+                }
+            }
+        }
+        // Fall back to REPLICA_ID env var or default
+        std::env::var("REPLICA_ID")
+            .ok()
+            .and_then(|s| {
+                // Handle StatefulSet pod name format in REPLICA_ID too
+                if let Some(ordinal_str) = s.rsplit('-').next() {
+                    ordinal_str.parse::<u64>().ok()
+                } else {
+                    s.parse::<u64>().ok()
+                }
+            })
+            .unwrap_or(DEFAULT_REPLICA_ID)
+    }
+
+    /// Build peer list from Kubernetes headless service DNS
+    /// DNS format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+    fn build_peer_list(my_replica_id: u64, cluster_size: usize, gossip_port: u16) -> Vec<String> {
+        let service_name =
+            std::env::var("SERVICE_NAME").unwrap_or_else(|_| DEFAULT_SERVICE_NAME.to_string());
+        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+        let statefulset_name = std::env::var("POD_NAME")
+            .map(|pod| {
+                // Extract StatefulSet name by removing the ordinal suffix
+                // "redis-rust-0" -> "redis-rust"
+                let parts: Vec<&str> = pod.rsplitn(2, '-').collect();
+                if parts.len() == 2 {
+                    parts[1].to_string()
+                } else {
+                    "redis-rust".to_string()
+                }
+            })
+            .unwrap_or_else(|_| "redis-rust".to_string());
+
+        let mut peers = Vec::with_capacity(cluster_size - 1);
+        for i in 0..cluster_size {
+            let peer_id = i as u64;
+            if peer_id != my_replica_id {
+                // Kubernetes DNS: <pod-name>.<headless-svc>.<namespace>.svc.cluster.local
+                let peer_addr = format!(
+                    "{}-{}.{}.{}.svc.cluster.local:{}",
+                    statefulset_name, i, service_name, namespace, gossip_port
+                );
+                peers.push(peer_addr);
+            }
+        }
+        peers
+    }
+
+    /// Convert to ReplicationConfig
+    fn to_replication_config(&self) -> ReplicationConfig {
+        ReplicationConfig {
+            enabled: self.enabled,
+            replica_id: self.replica_id,
+            consistency_level: ConsistencyLevel::Eventual,
+            gossip_interval_ms: self.gossip_interval_ms,
+            peers: self.peers.clone(),
+            replication_factor: self.cluster_size,
+            partitioned_mode: false,
+            selective_gossip: false,
+            virtual_nodes_per_physical: 150,
+        }
+    }
+}
+
+/// Gossip listener for receiving deltas from peers
+///
+/// TigerStyle: This is the receiving half of the gossip protocol.
+/// - Binds to configured gossip port (not the hardcoded GossipManager port)
+/// - Handles framed messages (4-byte length prefix + JSON payload)
+/// - Applies received deltas via CRDT merge (idempotent)
+///
+/// Message framing: [4 bytes big-endian length][JSON payload]
+async fn start_gossip_listener(
+    port: u16,
+    state: Arc<ReplicatedShardedState>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::AsyncReadExt;
+
+    // TigerStyle: Explicit limit
+    const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
+
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr).await?;
+    info!("Gossip listener started on {}", addr);
+
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        info!("Gossip connection from {}", peer_addr);
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_gossip_connection(stream, state_clone, MAX_MESSAGE_SIZE).await {
+                warn!("Gossip connection error from {}: {}", peer_addr, e);
+            }
+        });
+    }
+}
+
+/// Handle a single gossip connection from a peer
+///
+/// TigerStyle: Explicit error handling, bounded message sizes
+async fn handle_gossip_connection(
+    mut stream: TcpStream,
+    state: Arc<ReplicatedShardedState>,
+    max_message_size: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use redis_sim::replication::gossip::GossipMessage;
+    use tokio::io::AsyncReadExt;
+
+    loop {
+        // Read 4-byte length prefix
+        let mut len_buf = [0u8; 4];
+        if stream.read_exact(&mut len_buf).await.is_err() {
+            // Connection closed
+            break;
+        }
+        let msg_len = u32::from_be_bytes(len_buf) as usize;
+
+        // TigerStyle: Explicit bounds check
+        if msg_len > max_message_size {
+            warn!(
+                "Gossip message too large: {} bytes (max {})",
+                msg_len, max_message_size
+            );
+            break;
+        }
+
+        // Read message payload
+        let mut msg_buf = vec![0u8; msg_len];
+        if stream.read_exact(&mut msg_buf).await.is_err() {
+            break;
+        }
+
+        // Deserialize and process
+        match GossipMessage::deserialize(&msg_buf) {
+            Ok(msg) => {
+                let source = msg.source_replica();
+                if let Some(deltas) = msg.into_deltas() {
+                    if !deltas.is_empty() {
+                        debug!("Received {} deltas from replica {}", deltas.len(), source.0);
+                        // Apply via CRDT merge (idempotent operation)
+                        state.apply_remote_deltas(deltas);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to deserialize gossip message: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
 
 /// Server configuration from environment variables
 struct Config {
@@ -176,23 +479,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     #[cfg(feature = "datadog")]
     println!("  Datadog observability enabled");
+
+    // Load cluster configuration from Kubernetes environment
+    let cluster_config = ClusterConfig::from_env();
+    let repl_config = cluster_config.to_replication_config();
+
+    println!();
+    println!("Cluster Configuration:");
+    println!(
+        "  Replication: {}",
+        if cluster_config.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!("  Replica ID: {}", cluster_config.replica_id);
+    if cluster_config.enabled {
+        println!("  Gossip Port: {}", cluster_config.gossip_port);
+        println!("  Cluster Size: {}", cluster_config.cluster_size);
+        println!("  Peers: {:?}", cluster_config.peers);
+    }
     println!();
 
-    // Create replication config
-    let repl_config = ReplicationConfig {
-        enabled: true,
-        replica_id: DEFAULT_REPLICA_ID,
-        consistency_level: ConsistencyLevel::Eventual,
-        gossip_interval_ms: 100,
-        peers: vec![],
-        replication_factor: 1,
-        partitioned_mode: false,
-        selective_gossip: false,
-        virtual_nodes_per_physical: 150,
-    };
-
-    // Create state
-    let mut state = ReplicatedShardedState::new(repl_config);
+    // Create state with replication config
+    let mut state = ReplicatedShardedState::new(repl_config.clone());
 
     // Ensure persistence directory exists for localfs
     if config.store_type == "localfs" {
@@ -221,6 +532,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     state.set_delta_sink(sender);
 
     let state = Arc::new(state);
+
+    // Start gossip server and loop if replication is enabled
+    if cluster_config.enabled {
+        info!(
+            "Starting gossip server on port {} with {} peers",
+            cluster_config.gossip_port,
+            cluster_config.peers.len()
+        );
+
+        // Get the gossip state from ReplicatedShardedState (this is where deltas are queued)
+        let gossip_state = state
+            .get_gossip_state()
+            .expect("ReplicatedShardedState should have gossip state when replication is enabled");
+
+        // Start custom gossip server on configured port (not the hardcoded GossipManager port)
+        let gossip_port = cluster_config.gossip_port;
+        let state_for_gossip = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = start_gossip_listener(gossip_port, state_for_gossip).await {
+                error!("Gossip server error: {}", e);
+            }
+        });
+
+        // Start gossip loop (sends deltas to peers)
+        // The loop drains outbound messages from the shared gossip state
+        let loop_config = repl_config.clone();
+        let loop_state = gossip_state.clone();
+        tokio::spawn(async move {
+            GossipManager::start_gossip_loop(loop_config, loop_state, move || {
+                // Deltas are already queued in gossip_state by state.execute()
+                // The gossip loop drains them via drain_outbound()
+                // Return empty here since queue_deltas is called elsewhere
+                vec![]
+            })
+            .await;
+        });
+
+        info!("Gossip replication started");
+    }
 
     println!("Starting server...");
     println!();
@@ -408,4 +758,156 @@ fn encode_error_into(msg: &str, buf: &mut BytesMut) {
     buf.extend_from_slice(b"ERR ");
     buf.extend_from_slice(msg.as_bytes());
     buf.extend_from_slice(b"\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Mutex to serialize tests that modify environment variables
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Test parsing replica ID from StatefulSet pod names
+    /// Invariant: Replica ID must be correctly extracted from pod name
+    #[test]
+    fn test_parse_replica_id_from_pod_name() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Clean up any leftover env vars
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("REPLICA_ID");
+
+        // Test: redis-rust-0 -> 0
+        std::env::set_var("POD_NAME", "redis-rust-0");
+        assert_eq!(ClusterConfig::parse_replica_id_from_env(), 0);
+
+        // Test: redis-rust-2 -> 2
+        std::env::set_var("POD_NAME", "redis-rust-2");
+        assert_eq!(ClusterConfig::parse_replica_id_from_env(), 2);
+
+        // Test: my-cache-42 -> 42
+        std::env::set_var("POD_NAME", "my-cache-42");
+        assert_eq!(ClusterConfig::parse_replica_id_from_env(), 42);
+
+        // Clean up
+        std::env::remove_var("POD_NAME");
+    }
+
+    /// Test parsing replica ID from REPLICA_ID env var (fallback)
+    #[test]
+    fn test_parse_replica_id_from_replica_id_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Clean up any leftover env vars
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("REPLICA_ID");
+
+        // Test direct numeric value
+        std::env::set_var("REPLICA_ID", "5");
+        assert_eq!(ClusterConfig::parse_replica_id_from_env(), 5);
+
+        // Test StatefulSet format in REPLICA_ID
+        std::env::set_var("REPLICA_ID", "redis-rust-3");
+        assert_eq!(ClusterConfig::parse_replica_id_from_env(), 3);
+
+        // Clean up
+        std::env::remove_var("REPLICA_ID");
+    }
+
+    /// Test building peer list from Kubernetes DNS
+    /// Invariant: Peer list must exclude self and include all other replicas
+    #[test]
+    fn test_build_peer_list() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Set up environment for pod 1 in a 3-replica cluster
+        std::env::set_var("POD_NAME", "redis-rust-1");
+        std::env::set_var("POD_NAMESPACE", "rapid-sims");
+        std::env::set_var("SERVICE_NAME", "redis-rust-headless");
+
+        let peers = ClusterConfig::build_peer_list(1, 3, 7000);
+
+        // Should have 2 peers (excluding self)
+        assert_eq!(peers.len(), 2, "Should exclude self from peer list");
+
+        // Should contain peer 0 and peer 2
+        assert!(
+            peers.iter().any(|p| p.contains("redis-rust-0")),
+            "Should include replica 0"
+        );
+        assert!(
+            peers.iter().any(|p| p.contains("redis-rust-2")),
+            "Should include replica 2"
+        );
+
+        // Should NOT contain self (replica 1)
+        assert!(
+            !peers.iter().any(|p| p.contains("redis-rust-1.")),
+            "Should NOT include self"
+        );
+
+        // Verify DNS format
+        for peer in &peers {
+            assert!(
+                peer.contains(".redis-rust-headless.rapid-sims.svc.cluster.local:7000"),
+                "Peer should use Kubernetes DNS format: {}",
+                peer
+            );
+        }
+
+        // Clean up
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("POD_NAMESPACE");
+        std::env::remove_var("SERVICE_NAME");
+    }
+
+    /// Test peer list for first replica (edge case)
+    #[test]
+    fn test_build_peer_list_first_replica() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("POD_NAME", "redis-rust-0");
+        std::env::set_var("POD_NAMESPACE", "default");
+        std::env::set_var("SERVICE_NAME", "redis-rust-headless");
+
+        let peers = ClusterConfig::build_peer_list(0, 3, 7000);
+
+        assert_eq!(peers.len(), 2);
+        assert!(peers.iter().any(|p| p.contains("redis-rust-1")));
+        assert!(peers.iter().any(|p| p.contains("redis-rust-2")));
+
+        // Clean up
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("POD_NAMESPACE");
+        std::env::remove_var("SERVICE_NAME");
+    }
+
+    /// Test cluster config to replication config conversion
+    /// Invariant: ReplicationConfig must preserve all cluster settings
+    #[test]
+    fn test_cluster_config_to_replication_config() {
+        let cluster = ClusterConfig {
+            enabled: true,
+            replica_id: 2,
+            gossip_port: 7000,
+            cluster_size: 3,
+            peers: vec![
+                "redis-rust-0.svc:7000".to_string(),
+                "redis-rust-1.svc:7000".to_string(),
+            ],
+            gossip_interval_ms: 100,
+        };
+
+        let repl = cluster.to_replication_config();
+
+        assert!(repl.enabled, "Replication should be enabled");
+        assert_eq!(repl.replica_id, 2, "Replica ID should match");
+        assert_eq!(repl.peers.len(), 2, "Peers should match");
+        assert_eq!(
+            repl.replication_factor, 3,
+            "Replication factor should match cluster size"
+        );
+        assert_eq!(repl.gossip_interval_ms, 100, "Gossip interval should match");
+    }
 }

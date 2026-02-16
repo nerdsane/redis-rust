@@ -96,7 +96,9 @@ impl ServerConfig {
 impl TlsServerConfig {
     /// Build a TLS acceptor from this configuration
     #[cfg(feature = "tls")]
-    pub fn build_acceptor(&self) -> Result<crate::security::tls::TlsAcceptor, crate::security::tls::TlsError> {
+    pub fn build_acceptor(
+        &self,
+    ) -> Result<crate::security::tls::TlsAcceptor, crate::security::tls::TlsError> {
         use crate::security::tls::TlsConfig;
 
         let mut config = TlsConfig::new(&self.cert_path, &self.key_path);

@@ -19,7 +19,10 @@ fn test_sorted_set_dst_100_seeds_standard() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(passed, 100, "All 100 seeds should pass with standard config");
+    assert_eq!(
+        passed, 100,
+        "All 100 seeds should pass with standard config"
+    );
 }
 
 #[test]
@@ -30,10 +33,7 @@ fn test_sorted_set_dst_100_seeds_small_keyspace() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(
-        passed, 100,
-        "All 100 seeds should pass with small keyspace"
-    );
+    assert_eq!(passed, 100, "All 100 seeds should pass with small keyspace");
 }
 
 #[test]
@@ -44,10 +44,7 @@ fn test_sorted_set_dst_100_seeds_large_keyspace() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(
-        passed, 100,
-        "All 100 seeds should pass with large keyspace"
-    );
+    assert_eq!(passed, 100, "All 100 seeds should pass with large keyspace");
 }
 
 // =============================================================================

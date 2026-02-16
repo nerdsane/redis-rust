@@ -179,7 +179,8 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
 
     async fn execute_global(&self, cmd: Command) -> RespValue {
         match &cmd {
-            Command::Ping => RespValue::SimpleString("PONG".to_string()),
+            Command::Ping(None) => RespValue::simple("PONG"),
+            Command::Ping(Some(msg)) => RespValue::BulkString(Some(msg.as_bytes().to_vec())),
             Command::FlushDb | Command::FlushAll => {
                 // Execute on all shards concurrently
                 let futures: Vec<_> = self
@@ -188,7 +189,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                     .map(|shard| shard.execute(cmd.clone()))
                     .collect();
                 futures::future::join_all(futures).await;
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
             Command::MSet(pairs) => {
                 // Execute all SETs concurrently
@@ -201,7 +202,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                     })
                     .collect();
                 futures::future::join_all(futures).await;
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
             Command::MGet(keys) => {
                 // Execute all GETs concurrently
@@ -265,7 +266,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                 );
                 RespValue::BulkString(Some(info.into_bytes()))
             }
-            _ => RespValue::Error("ERR unknown command".to_string()),
+            _ => RespValue::err("ERR unknown command"),
         }
     }
 

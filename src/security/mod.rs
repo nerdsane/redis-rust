@@ -71,7 +71,11 @@ pub mod acl_noop {
         }
 
         /// Always returns the default user (no authentication required)
-        pub fn authenticate(&self, _username: &str, _password: &str) -> Result<Arc<AclUser>, AclError> {
+        pub fn authenticate(
+            &self,
+            _username: &str,
+            _password: &str,
+        ) -> Result<Arc<AclUser>, AclError> {
             Ok(Arc::new(AclUser::default_user()))
         }
 

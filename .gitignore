@@ -1,6 +1,5 @@
 # Rust
 target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -21,3 +20,9 @@ maelstrom/maelstrom/store/
 
 # Profiling
 profile.json
+
+# DST verification marker (local-only)
+.dst-verified
+
+# Claude Code local state
+.claude/

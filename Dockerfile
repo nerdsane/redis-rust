@@ -5,13 +5,26 @@ RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 
-RUN cargo build --release --bin redis-server-optimized
+# Build the server-persistent binary with performance optimizations
+RUN cargo build --release --bin server-persistent --features "opt-all"
 
 FROM debian:bookworm-slim
 
-COPY --from=builder /app/target/release/redis-server-optimized /usr/local/bin/
+# Create non-root user for security
+RUN useradd -r -u 1000 -g root redis && \
+    mkdir -p /data && \
+    chown redis:root /data
 
-EXPOSE 3000
+COPY --from=builder /app/target/release/server-persistent /usr/local/bin/redis-server
 
-CMD ["redis-server-optimized"]
+# Run as non-root
+USER 1000
+
+EXPOSE 3000 3001 7000 9090
+
+# Health check via Kubernetes probes (no curl needed in image)
+# See k8s/base/statefulset.yaml for livenessProbe/readinessProbe
+
+CMD ["redis-server"]

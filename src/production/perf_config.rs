@@ -77,8 +77,8 @@ fn default_read_buffer() -> usize {
     8192
 }
 fn default_max_buffer() -> usize {
-    1024 * 1024
-} // 1MB
+    512 * 1024 * 1024
+} // 512MB (matches Redis proto-max-bulk-len default)
 fn default_min_pipeline_buffer() -> usize {
     60
 }

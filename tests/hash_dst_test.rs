@@ -2,9 +2,7 @@
 //!
 //! VOPR-style tests for RedisHash with multiple seeds.
 
-use redis_sim::redis::{
-    run_hash_batch, summarize_hash_batch, HashDSTConfig, HashDSTHarness,
-};
+use redis_sim::redis::{run_hash_batch, summarize_hash_batch, HashDSTConfig, HashDSTHarness};
 
 // =============================================================================
 // Standard Configuration Tests - 100+ Seeds
@@ -17,7 +15,10 @@ fn test_hash_dst_100_seeds_standard() {
     println!("{}", summary);
 
     let passed = results.iter().filter(|r| r.is_success()).count();
-    assert_eq!(passed, 100, "All 100 seeds should pass with standard config");
+    assert_eq!(
+        passed, 100,
+        "All 100 seeds should pass with standard config"
+    );
 }
 
 #[test]
@@ -74,9 +75,15 @@ fn test_hash_dst_stress_small_fields_2000_ops() {
         result.updates,
         result.deletes
     );
-    assert!(result.is_success(), "Small fields stress should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Small fields stress should maintain invariants"
+    );
     // Verify we exercised updates
-    assert!(result.updates > 100, "Should have many updates with small field space");
+    assert!(
+        result.updates > 100,
+        "Should have many updates with small field space"
+    );
 }
 
 // =============================================================================
@@ -98,7 +105,10 @@ fn test_hash_dst_high_delete_rate() {
     harness.run(1000);
     let result = harness.result();
     println!("High delete rate: {}", result.summary());
-    assert!(result.is_success(), "High delete rate should maintain invariants");
+    assert!(
+        result.is_success(),
+        "High delete rate should maintain invariants"
+    );
 }
 
 #[test]
@@ -116,7 +126,10 @@ fn test_hash_dst_tiny_field_space() {
     harness.run(500);
     let result = harness.result();
     println!("Tiny field space (3 fields): {}", result.summary());
-    assert!(result.is_success(), "Tiny field space should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Tiny field space should maintain invariants"
+    );
 }
 
 #[test]
@@ -133,8 +146,15 @@ fn test_hash_dst_mostly_updates() {
     let mut harness = HashDSTHarness::new(config);
     harness.run(500);
     let result = harness.result();
-    println!("Mostly updates: {} (updates:{})", result.summary(), result.updates);
-    assert!(result.is_success(), "Mostly updates should maintain invariants");
+    println!(
+        "Mostly updates: {} (updates:{})",
+        result.summary(),
+        result.updates
+    );
+    assert!(
+        result.is_success(),
+        "Mostly updates should maintain invariants"
+    );
 }
 
 #[test]
@@ -152,7 +172,10 @@ fn test_hash_dst_large_field_space() {
     harness.run(500);
     let result = harness.result();
     println!("Large field space: {}", result.summary());
-    assert!(result.is_success(), "Large field space should maintain invariants");
+    assert!(
+        result.is_success(),
+        "Large field space should maintain invariants"
+    );
 }
 
 // =============================================================================

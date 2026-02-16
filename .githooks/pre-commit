@@ -1,0 +1,60 @@
+#!/bin/bash
+# Pre-commit hook for redis-rust
+# Catches formatting and lint issues before CI
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting
+echo "Checking formatting..."
+if ! cargo fmt --all --check 2>/dev/null; then
+    echo ""
+    echo "ERROR: Formatting check failed!"
+    echo "Run 'cargo fmt --all' to fix formatting issues."
+    echo ""
+    exit 1
+fi
+echo "Formatting OK"
+
+# Run clippy (optional, can be slow - uncomment if desired)
+# echo "Running clippy..."
+# if ! cargo clippy --all-targets --all-features -- -D warnings 2>/dev/null; then
+#     echo ""
+#     echo "ERROR: Clippy found warnings!"
+#     echo "Fix the warnings before committing."
+#     echo ""
+#     exit 1
+# fi
+# echo "Clippy OK"
+
+# DST coverage gate: executor changes require DST tests
+EXECUTOR_FILES=$(git diff --cached --name-only | grep -E 'src/redis/executor/' || true)
+if [ -n "$EXECUTOR_FILES" ]; then
+    echo "Executor files modified - running DST verification..."
+    if ! cargo test --lib executor_dst -- --test-threads=1 2>/dev/null; then
+        echo ""
+        echo "ERROR: Executor DST tests failed!"
+        echo "Executor changes require passing DST tests."
+        echo "Modified files: $EXECUTOR_FILES"
+        echo ""
+        exit 1
+    fi
+    echo "Executor DST OK"
+fi
+
+# DST coverage gate: streaming changes require streaming DST
+STREAMING_FILES=$(git diff --cached --name-only | grep -E 'src/streaming/' || true)
+if [ -n "$STREAMING_FILES" ]; then
+    echo "Streaming files modified - running streaming DST..."
+    if ! cargo test --lib streaming::dst -- --test-threads=1 2>/dev/null; then
+        echo ""
+        echo "ERROR: Streaming DST tests failed!"
+        echo "Streaming changes require passing DST tests."
+        echo ""
+        exit 1
+    fi
+    echo "Streaming DST OK"
+fi
+
+echo "Pre-commit checks passed!"

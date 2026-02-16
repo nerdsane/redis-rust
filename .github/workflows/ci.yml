@@ -6,97 +6,51 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
 jobs:
-  fmt:
-    name: Format
+  build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all --check
+          submodules: recursive
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Override cargo config (sccache/mold not on runner)
+        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y tcl libssl-dev gnuplot
+
+      - uses: actions/setup-java@v4
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+          distribution: temurin
+          java-version: 17
 
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build (default features)
-        run: cargo build --release
-      - name: Build (all features)
-        run: cargo build --release --all-features
+      - name: Build
+        run: cargo build --release --bin redis-server-optimized --bin maelstrom-kv-replicated
 
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --release --all-features
+      - name: Unit tests
+        run: cargo test --lib
 
-  # DST (Deterministic Simulation Testing) - runs extended tests
-  dst:
-    name: DST Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run DST tests
-        run: cargo test --release dst --all-features
-        env:
-          RUST_LOG: info
+      - name: Tcl compat - incr
+        run: ./scripts/run-redis-compat.sh unit/type/incr
 
-  # Feature matrix - ensure each feature compiles independently
-  features:
-    name: Feature Check
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        feature: [lua, compression, s3, datadog, simulation]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Check feature ${{ matrix.feature }}
-        run: cargo check --no-default-features --features ${{ matrix.feature }}
+      - name: Tcl compat - expire
+        run: ./scripts/run-redis-compat.sh unit/expire
 
-  # Ensure it builds with no default features
-  minimal:
-    name: Minimal Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build with no default features
-        run: cargo build --release --no-default-features
+      - name: Maelstrom 1-node
+        run: |
+          java -Djava.awt.headless=true \
+            -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
+            --bin ./target/release/maelstrom-kv-replicated \
+            --node-count 1 --time-limit 10 --concurrency 4
+
+      - name: Maelstrom 5-node
+        run: |
+          java -Djava.awt.headless=true \
+            -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
+            --bin ./target/release/maelstrom-kv-replicated \
+            --node-count 5 --time-limit 30 --concurrency 10 --rate 50

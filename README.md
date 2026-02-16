@@ -1,385 +1,176 @@
-# Redis Cache - Deterministic Simulator + Experimental Server
+# redis-rust
 
-An experimental, actor-based Redis-compatible cache server in Rust with distributed replication capabilities. Features both a deterministic simulator (FoundationDB/TigerBeetle-style testing) and an experimental server using Tiger Style principles with actor-based sharded architecture.
+An experimental Redis-compatible cache server in Rust. Co-authored with [Claude](https://claude.ai) as an exercise in AI-assisted systems programming.
 
-> **Status**: Research project with production-oriented architecture and correctness tooling. Not yet a production Redis replacement. See [Redis Compatibility](#redis-compatibility) for semantic differences.
+> **This is not production software.** It is a research project exploring deterministic simulation testing, actor architectures, and human-AI collaboration on distributed systems code. Do not use this as a Redis replacement.
 
-> **Research Note**: This project is co-authored with [Claude](https://claude.ai) (Anthropic) as an experiment in AI-assisted systems programming. The sole purpose is to explore human-AI collaboration on complex distributed systems code.
+> **What it actually is:** An in-memory cache that speaks RESP2, with CRDT-based multi-node replication (Anna KVS-style). Passes the official Redis Tcl test suite for implemented commands. Runs within 80-100% of Redis 7.4 throughput on equivalent hardware.
 
-> **Security Note**: TLS encryption and Redis 6.0+ ACL authentication are available via feature flags. See [Security Configuration](#security-configuration) for setup. Without security features enabled, bind to localhost or use network-level access control.
+## What works
 
-## Features
+**75+ Redis commands** across strings, lists, sets, hashes, sorted sets, transactions, expiration, Lua scripting, and server introspection. RESP2 wire protocol compatible with all standard Redis clients.
 
-- **Redis-Compatible Server**: Compatible with `redis-cli` and all Redis clients (RESP2 protocol)
-- **Tiger Style Engineering**: Explicit over implicit, assertion-heavy, deterministic behavior
-- **60+ Redis Commands**: Full caching feature set (strings, lists, sets, hashes, sorted sets)
-- **Lua Scripting**: EVAL/EVALSHA with full Redis command access from Lua
-- **Dynamic Shard Architecture**: Runtime-configurable shards with lock-free message passing
-- **Anna KVS-Style Replication**: Configurable consistency (eventual, causal), coordination-free
-- **Hot Key Detection**: Adaptive replication for high-traffic keys
-- **Deterministic Simulation**: FoundationDB/TigerBeetle-style testing harness
-- **Redis Equivalence Testing**: Differential testing against real Redis (30+ commands verified)
-- **Zipfian Workload Simulation**: Realistic hot/cold key access patterns
-- **Maelstrom/Jepsen Integration**: Formal linearizability testing (single-node verified)
-- **Datadog Observability**: Optional metrics, tracing, and logging via feature flag
-- **TLS Encryption**: Optional TLS via rustls (mutual TLS supported)
-- **ACL Authentication**: Redis 6.0+ compatible ACL system with user permissions
+**Tcl compatibility test results** (official Redis test suite):
 
-## Quick Start
+| Suite | Result |
+|-------|--------|
+| `unit/type/incr` | **28/28 pass** |
+| `unit/expire` | **all pass** |
+| `unit/type/string` | 35/39 pass (stops at SETBIT - bitmaps not implemented) |
+| `unit/multi` | 20/56 pass (stops at SWAPDB - database swapping not implemented) |
+
+**Performance** (Docker, 2 CPUs, 1GB RAM, 50 clients, `redis-benchmark`):
+
+| | Redis 7.4 | redis-rust | |
+|---|-----------|------------|---|
+| SET P=1 | 148K rps | 147K rps | 99% |
+| GET P=1 | 154K rps | 119K rps | 77% |
+| SET P=16 | 1.02M rps | 813K rps | 80% |
+| GET P=16 | 840K rps | 709K rps | 84% |
+
+Optimal shard count depends on available cores. With 2 CPUs, 2-4 shards peak at ~1M SET/s pipelined.
+
+## What doesn't work
+
+- **No bitmaps, streams, pub/sub, HyperLogLog, or geo commands.**
+- **No blocking operations** (BLPOP, BRPOP, etc.).
+- **No RESP3.** RESP2 only.
+- **No persistence guarantees.** In-memory only. Streaming persistence to S3 exists but is experimental.
+- **Multi-node replication is eventual consistency only.** CRDT-based (LWW registers, vector clocks, gossip). Verified via Maelstrom and 87 deterministic simulation tests with partition/loss injection. Not linearizable across nodes by design.
+- **MULTI/EXEC works but has limitations.** Transaction state is tracked at the connection level. WATCH uses value-snapshot comparison, not Redis's internal dirty-key tracking.
+
+## Quick start
 
 ```bash
-# Run the optimized production server
+# Build and run
 cargo run --bin redis-server-optimized --release
 
-# Connect with redis-cli
-redis-cli -p 3000
-
-# Run all tests (500+ tests)
-cargo test --all
-
-# Run benchmarks
-cargo run --bin benchmark --release
+# Connect with any Redis client
+redis-cli -p 6379
 ```
 
-## Performance vs Redis 8.0
+Default port is 6379 (standard Redis port). Override with `REDIS_PORT=3000`.
 
-Docker-based benchmark (2 CPUs, 1GB RAM per container, 50 clients, 100K requests):
+## Testing
 
-| Operation | Redis 8.0 | Rust | Relative |
-|-----------|-----------|------|----------|
-| SET (P=1) | 196,464 req/s | 173,010 req/s | **88%** |
-| GET (P=1) | 190,476 req/s | 180,180 req/s | **95%** |
-| SET (P=16) | 1,282,051 req/s | 1,098,901 req/s | **86%** |
-| GET (P=16) | 1,315,790 req/s | 1,123,596 req/s | **85%** |
+See [HARNESS.md](HARNESS.md) for the full verification guide — what each layer tests, expected outputs, pitfalls, and how to add new commands without breaking things.
 
-Achieves **85-95% of Redis 8.0** out of the box. With [RedisEvolve](evolve/README.md) optimization: **99.1%**.
+```bash
+# Unit tests (507 tests including 87 replication tests)
+cargo test --lib
 
-See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for full details, methodology, and Redis 7.4 comparisons.
+# CRDT convergence tests (100 seeds, partitions, packet loss)
+cargo test crdt_dst --lib
+cargo test multi_node --lib
+
+# Tcl compatibility (requires git submodule)
+git submodule update --init
+./scripts/run-redis-compat.sh
+
+# Maelstrom linearizability (requires Java 11+)
+cargo build --release --bin maelstrom-kv-replicated
+/opt/homebrew/opt/openjdk@17/bin/java -Djava.awt.headless=true \
+  -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
+  --bin ./target/release/maelstrom-kv-replicated \
+  --node-count 5 --time-limit 30 --concurrency 10 --rate 50
+
+# Docker benchmarks
+cd docker-benchmark && ./run-benchmarks.sh
+```
 
 ## Architecture
 
-### Production Server (Tiger Style)
+Actor-per-shard design. Each shard is an independent tokio task owning its `CommandExecutor`. No locks - all communication via `mpsc` channels. Connection handler parses RESP, routes to the correct shard by key hash, awaits response.
 
 ```
-Client Connections
-        |
-   [Tokio Runtime]
-        |
-   [Dynamic Shard Actors] <-- Runtime configurable count
-        |
-   [ShardMessage enum: Command | EvictExpired]
-        |
-   [CommandExecutor per shard]
+Connections ──> [RESP Parser] ──> hash(key) ──> [Shard Actor 0..N] ──> [CommandExecutor]
 ```
 
-- **Actor-per-Shard**: Each shard runs as independent actor with message passing
-- **Lock-Free**: No RwLock, uses tokio channels for all shard communication
-- **Dynamic Sharding**: Runtime-configurable shard count (default: num_cpus)
-- **TTL Manager Actor**: Background actor sends eviction messages every 100ms
-- **Tiger Style**: `debug_assert!` invariants, explicit error handling, no silent failures
+Shard count is configurable via `perf_config.toml`. Transaction state (MULTI/EXEC/WATCH) lives at the connection level, not per-shard, so transactions work correctly across shards.
 
-### Performance Optimizations
+## Replication
 
-- **jemalloc Allocator**: ~10% reduced memory fragmentation
-- **Actor-per-Shard**: ~30% improvement from lock-free design
-- **Buffer Pooling**: ~20% improvement from `crossbeam::ArrayQueue` reuse
-- **Zero-copy RESP Parser**: ~15% improvement with `bytes::Bytes` + `memchr`
-- **Connection Pooling**: ~10% improvement from semaphore-limited connections
-
-### Anna KVS-Style Replication
+Anna KVS-style CRDT replication with gossip protocol. Each node maintains LWW registers with Lamport clocks. Convergence is guaranteed by CRDT merge properties (commutative, associative, idempotent) - verified by Stateright exhaustive model checking and 100-seed deterministic simulation with network partitions and message loss.
 
 ```
 Node 1                    Node 2                    Node 3
   |                         |                         |
 [LWW Register]  <--Gossip-->  [LWW Register]  <--Gossip-->  [LWW Register]
   |                         |                         |
-[Lamport Clock]           [Lamport Clock]           [Lamport Clock]
-  |                         |                         |
 [Vector Clock]            [Vector Clock]            [Vector Clock]
 ```
 
-- **Configurable Consistency**: `Eventual` (LWW) or `Causal` (vector clocks)
-- **CRDT-Based**: Last-Writer-Wins registers with Lamport clocks for total ordering
-- **Vector Clocks**: Causal consistency mode tracks happens-before relationships
-- **Gossip Protocol**: Periodic state synchronization between nodes
-- **Hot Key Detection**: Automatic increased replication for high-traffic keys
-- **Anti-Entropy**: Merkle tree-based consistency verification and repair
+Components: `src/replication/` (CRDTs, gossip, anti-entropy, hash ring), `src/production/replicated_shard_actor.rs` (actor-based replication), `src/bin/maelstrom_kv_replicated.rs` (multi-node proof-of-concept).
 
-### Consistency Guarantees
+**Consistency model:** Eventual (LWW) or Causal (vector clocks). Not linearizable across nodes. Single-node operations are linearizable.
 
-| Mode | Single-Node | Multi-Node |
-|------|-------------|------------|
-| Linearizable | Yes (verified via Maelstrom) | No |
-| Eventual | Yes | Yes (CRDT convergence verified) |
-| Causal | Yes | Yes (vector clock verified) |
+**Maelstrom/Jepsen results** (Knossos linearizability checker):
 
-**Important**: Multi-node mode provides **eventual consistency**, not linearizability. This is by design, following Anna KVS architecture for coordination-free scalability.
+| Nodes | Operations | Reads | Writes | CAS | Linearizable | Anomalies |
+|-------|-----------|-------|--------|-----|-------------|-----------|
+| 1 | ~150 | all ok | all ok | all ok | **valid** | 0 |
+| 3 | 190 | 98/98 ok | 29/29 ok | 13/63 ok | **valid** | 0 |
+| 5 | 1,301 | 670/677 ok | 201/201 ok | 80/423 ok | **valid** | 0 |
 
-## Testing
+CAS failure rate is expected — eventual consistency means CAS often sees stale values. The linearizability checker found valid orderings at all scales, meaning gossip propagates fast enough under these workloads that no violations were observed. This does **not** mean the system guarantees linearizability — under network partitions or higher load, violations are expected by design.
 
-### Test Suite (500+ tests total)
+**Test coverage:** 87 replication tests, 10 CRDT DST suites (100 seeds each), 6 multi-node simulation tests (partitions, packet loss, convergence), Stateright model checking for merge associativity/commutativity/idempotence, 4 TLA+ specs (gossip, anti-entropy, replication convergence, streaming persistence).
+
+## Configuration
+
+`perf_config.toml` in the working directory (or `PERF_CONFIG_PATH` env var):
+
+```toml
+num_shards = 4                    # power of 2, tune to your CPU count
+
+[response_pool]
+capacity = 576
+prewarm = 96
+
+[buffers]
+read_size = 8192
+max_size = 536870912              # 512MB max request size
+
+[batching]
+min_pipeline_buffer = 70
+batch_threshold = 6
+```
+
+The root `perf_config.toml` uses `num_shards = 1` for Tcl test compatibility (Lua scripts need all keys on one shard). The `docker-benchmark/perf_config.toml` uses `num_shards = 16` for throughput testing. **If you change one, the other won't change.** The Docker build copies from `docker-benchmark/perf_config.toml`.
+
+## Security
+
+Optional, via feature flags:
 
 ```bash
-# Unit tests
-cargo test --lib
-
-# All tests including integration
-cargo test --all
-
-# Redis equivalence testing (requires real Redis running on 6379)
-cargo test redis_equivalence --release -- --ignored
+cargo build --release --features tls     # TLS encryption (rustls)
+cargo build --release --features acl     # Redis 6.0+ ACL auth
+cargo build --release --features security  # both
 ```
 
-**Test Categories:** Unit tests, Lua scripting, Redis equivalence (30+ commands), CRDT convergence, DST/simulation with fault injection, streaming persistence, and Maelstrom linearizability.
-
-### Redis Equivalence Testing
-
-Differential testing compares our implementation against real Redis to ensure identical behavior:
-
-```bash
-# Start real Redis on default port
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Start rust implementation
-REDIS_PORT=3000 cargo run --bin redis-server-optimized --release &
-
-# Run equivalence tests
-cargo test redis_equivalence --release -- --ignored
-```
-
-**30+ core commands verified identical** including:
-- String operations (GET, SET with NX/XX/EX/PX/GET, APPEND, STRLEN, GETRANGE)
-- Numeric operations (INCR, DECR, INCRBY, DECRBY)
-- Hash operations (HSET, HGET, HDEL, HGETALL, HINCRBY, HSCAN)
-- List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, LSET, LTRIM, RPOPLPUSH, LMOVE)
-- Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
-- Sorted set operations (ZADD, ZSCORE, ZRANK, ZRANGE, ZCARD, ZCOUNT, ZRANGEBYSCORE, ZSCAN)
-- Key operations (DEL, EXISTS, TYPE, EXPIRE, TTL, SCAN)
-
-### Zipfian Workload Simulation
-
-DST tests use Zipfian distribution for realistic hot/cold key access patterns:
-
-```rust
-// Top 10 keys receive ~40% of accesses (skew=1.0)
-KeyDistribution::Zipfian { num_keys: 100, skew: 1.0 }
-```
-
-This simulates real-world workloads where a small subset of keys receive disproportionate traffic.
-
-### Maelstrom/Jepsen Tests
-
-```bash
-# Single-node linearizability (PASSES)
-./maelstrom/maelstrom/maelstrom test -w lin-kv --bin ./target/release/maelstrom-kv-replicated \
-    --time-limit 30 --concurrency 10
-
-# Multi-node eventual consistency
-./maelstrom/maelstrom/maelstrom test -w lin-kv --bin ./target/release/maelstrom-kv-replicated \
-    --node-count 3 --time-limit 30 --concurrency 10
-```
-
-**Note**: Multi-node linearizability test will FAIL because we use eventual consistency. This is expected behavior.
-
-## Supported Commands
-
-### Strings
-`GET`, `SET`, `SETEX`, `SETNX`, `MGET`, `MSET`, `APPEND`, `GETSET`, `STRLEN`
-
-### Counters
-`INCR`, `DECR`, `INCRBY`, `DECRBY`
-
-### Expiration
-`EXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`
-
-### Keys
-`DEL`, `EXISTS`, `TYPE`, `KEYS`, `FLUSHDB`, `FLUSHALL`, `SCAN`
-
-### Lists
-`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `LINDEX`, `LSET`, `LTRIM`, `RPOPLPUSH`, `LMOVE`
-
-### Sets
-`SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`
-
-### Hashes
-`HSET`, `HGET`, `HDEL`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HINCRBY`, `HSCAN`
-
-### Sorted Sets
-`ZADD`, `ZREM`, `ZSCORE`, `ZRANK`, `ZRANGE`, `ZREVRANGE`, `ZCARD`, `ZCOUNT`, `ZRANGEBYSCORE`, `ZSCAN`
-
-### Server
-`PING`, `INFO`
-
-### Scripting
-`EVAL`, `EVALSHA`
-
-## Redis Compatibility
-
-### Wire Protocol
-| Protocol | Status |
-|----------|--------|
-| **RESP2** | Full support (compatible with all Redis clients) |
-| **RESP3** | Not supported |
-
-### Semantic Differences from Redis
-
-This implementation intentionally differs from Redis in several ways:
-
-| Behavior | Redis | This Implementation | Rationale |
-|----------|-------|---------------------|-----------|
-| **Multi-node Consistency** | Single-leader strong | Eventual/Causal (CRDT) | Coordination-free scalability |
-| **Transactions** | MULTI/EXEC atomic | Not supported | Conflicts with CRDT model |
-| **Keyspace Notifications** | Supported | Not supported | Not implemented |
-| **Eviction Policies** | LRU/LFU/Random/TTL | TTL-only | Simpler model |
-| **Memory Limits** | maxmemory + eviction | No memory limits | Not implemented |
-| **Persistence Model** | RDB snapshots / AOF log | Streaming to object store (S3) | Cloud-native design |
-| **Cluster Protocol** | Redis Cluster (hash slots) | Anna-style CRDT gossip | Different architecture |
-| **Blocking Operations** | BLPOP, BRPOP, etc. | Not supported | Not implemented |
-
-### Not Implemented (No Plans)
-These features conflict with the CRDT/eventual consistency architecture:
-- **Transactions**: MULTI, EXEC, WATCH, DISCARD
-- **Blocking operations**: BLPOP, BRPOP, BLMOVE, etc.
-- **Cluster commands**: CLUSTER *, READONLY, READWRITE
-
-### Not Implemented (Roadmap)
-These could be added without architectural changes:
-- **Pub/Sub**: PUBLISH, SUBSCRIBE, PSUBSCRIBE
-- **Streams**: XADD, XREAD, XRANGE, XGROUP
-
-## Security Configuration
-
-Optional security features are available via Cargo feature flags:
-
-```bash
-# Build with TLS only
-cargo build --release --features tls
-
-# Build with ACL only
-cargo build --release --features acl
-
-# Build with both TLS and ACL
-cargo build --release --features security
-```
-
-### TLS Encryption
-
-Enable TLS with environment variables:
-
-```bash
-# Required: Server certificate and key
-TLS_CERT_PATH=certs/server.crt \
-TLS_KEY_PATH=certs/server.key \
-cargo run --release --features tls --bin redis-server-optimized
-
-# Optional: Client certificate verification (mutual TLS)
-TLS_CA_PATH=certs/ca.crt \
-TLS_REQUIRE_CLIENT_CERT=true \
-TLS_CERT_PATH=certs/server.crt \
-TLS_KEY_PATH=certs/server.key \
-cargo run --release --features security --bin redis-server-optimized
-```
-
-Connect with TLS:
-```bash
-redis-cli -p 6379 --tls --cacert certs/ca.crt
-```
-
-### ACL Authentication
-
-Redis 6.0+ compatible ACL system with password and certificate-based authentication.
-
-**Password Authentication:**
-```bash
-# Simple password for default user
-REDIS_REQUIRE_PASS=secretpassword \
-cargo run --release --features acl --bin redis-server-optimized
-
-# Connect and authenticate
-redis-cli -p 6379
-> AUTH secretpassword
-OK
-```
-
-**ACL File Configuration:**
-```bash
-# Load users from ACL file
-ACL_FILE=acl.conf \
-cargo run --release --features acl --bin redis-server-optimized
-```
-
-ACL file format (one user per line):
-```
-# user <username> [on|off] [nopass|>password] [+@category] [~pattern]
-user default on >password ~* +@all
-user readonly on >readonlypass ~cache:* +@read +@connection
-user alice on nopass ~user:* +@read +@write +@connection
-```
-
-**Client Certificate Authentication:**
-
-When TLS client certificates are enabled, users can authenticate automatically based on the certificate's Common Name (CN):
-
-1. Create an ACL user matching the certificate CN
-2. Configure TLS with client cert verification
-3. Connect with a client certificate
-
-```bash
-# ACL file with cert-based user
-echo "user alice on nopass ~* +@all" > acl.conf
-
-# Start server with client cert verification
-ACL_FILE=acl.conf \
-TLS_CA_PATH=certs/ca.crt \
-TLS_CERT_PATH=certs/server.crt \
-TLS_KEY_PATH=certs/server.key \
-cargo run --release --features security --bin redis-server-optimized
-
-# Connect with alice's certificate (auto-authenticates as 'alice')
-redis-cli --tls --cacert certs/ca.crt --cert certs/alice.crt --key certs/alice.key
-```
-
-### ACL Commands
-
-Supported ACL commands:
-- `AUTH [username] password` - Authenticate
-- `ACL WHOAMI` - Current user
-- `ACL LIST` - List all users
-- `ACL USERS` - List usernames
-- `ACL GETUSER username` - Get user details
-- `ACL SETUSER username [rules...]` - Create/modify user
-- `ACL DELUSER username...` - Delete users
-- `ACL CAT [category]` - List command categories
-- `ACL GENPASS [bits]` - Generate random password
-
-See [ADR-009](docs/adr/009-security-tls-acl.md) for implementation details.
-
-## Docker Benchmarking
-
-Run fair comparison against official Redis:
-
-```bash
-cd docker-benchmark
-
-# In-memory comparison (Redis vs Rust optimized)
-./run-benchmarks.sh
-
-# Redis 8.0 comparison (three-way: Redis 7.4 vs Redis 8.0 vs Rust)
-./run-redis8-comparison.sh
-
-# Persistent comparison (Redis AOF vs Rust S3/MinIO)
-./run-persistent-benchmarks.sh
-```
-
-## RedisEvolve - Automatic Performance Tuning
-
-Evolutionary optimization harness that discovers optimal configuration parameters. Achieved **99.1% of Redis 8.0 performance**. See [evolve/README.md](evolve/README.md) for details.
-
-## Observability
-
-Optional Datadog integration (metrics, tracing, logging) via `--features datadog`. See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) for setup.
+TLS: set `TLS_CERT_PATH`, `TLS_KEY_PATH`, optionally `TLS_CA_PATH` + `TLS_REQUIRE_CLIENT_CERT`.
+ACL: set `REDIS_REQUIRE_PASS` for simple auth, or `ACL_FILE` for full user management.
+
+## Project structure
+
+| Path | What |
+|------|------|
+| `src/redis/command.rs` | Command enum (all 75+ commands) |
+| `src/redis/parser.rs`, `commands.rs` | RESP parsing (standard + zero-copy) |
+| `src/redis/executor/` | Command execution (`*_ops.rs` files) |
+| `src/production/sharded_actor.rs` | Shard routing and aggregation |
+| `src/production/connection_optimized.rs` | Connection handler, MULTI/EXEC state |
+| `src/replication/` | CRDTs, gossip protocol, anti-entropy, hash ring |
+| `src/production/replicated_shard_actor.rs` | Actor-based multi-node replication |
+| `src/bin/maelstrom_kv_replicated.rs` | Multi-node Maelstrom proof-of-concept |
+| `src/simulator/` | Deterministic simulation testing harness |
+| `src/buggify/` | Fault injection (FoundationDB-style) |
+| `specs/tla/` | TLA+ specifications (gossip, anti-entropy, convergence) |
+| `tests/redis-tests/` | Official Redis Tcl test suite (git submodule) |
+| `scripts/run-redis-compat.sh` | Tcl test runner |
+| `docker-benchmark/` | Docker-based benchmarking |
+| `perf_config.toml` | Server tuning (root = 1 shard, docker-benchmark/ = 16 shards) |
 
 ## License
 
 MIT
-

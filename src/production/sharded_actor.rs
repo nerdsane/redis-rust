@@ -132,6 +132,7 @@ impl ShardActor {
     fn new(
         rx: mpsc::UnboundedReceiver<ShardMessage>,
         simulation_start_epoch: i64,
+        start_millis: u64,
         shard_id: usize,
         num_shards: usize,
     ) -> Self {
@@ -143,6 +144,7 @@ impl ShardActor {
         );
         let mut executor = CommandExecutor::new();
         executor.set_simulation_start_epoch(simulation_start_epoch);
+        executor.set_simulation_start_epoch_ms(start_millis as i64);
         ShardActor {
             executor,
             rx,
@@ -157,6 +159,7 @@ impl ShardActor {
     fn new_with_shared_scripts(
         rx: mpsc::UnboundedReceiver<ShardMessage>,
         simulation_start_epoch: i64,
+        start_millis: u64,
         shard_id: usize,
         num_shards: usize,
         shared_script_cache: crate::redis::lua::SharedScriptCache,
@@ -169,6 +172,7 @@ impl ShardActor {
         );
         let mut executor = CommandExecutor::with_shared_script_cache(shared_script_cache);
         executor.set_simulation_start_epoch(simulation_start_epoch);
+        executor.set_simulation_start_epoch_ms(start_millis as i64);
         ShardActor {
             executor,
             rx,
@@ -276,12 +280,12 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             debug_assert!(false, "Shard {} channel closed unexpectedly", self.shard_id);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx.await.unwrap_or_else(|_| {
             debug_assert!(false, "Shard {} response channel dropped", self.shard_id);
-            RespValue::Error("ERR shard response failed".to_string())
+            RespValue::err("ERR shard response failed")
         })
     }
 
@@ -300,12 +304,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastGet { key, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| RespValue::Error("ERR shard response failed".to_string()))
+            .unwrap_or_else(|_| RespValue::err("ERR shard response failed"))
     }
 
     /// Fast path SET - avoids Command enum allocation
@@ -319,12 +323,12 @@ impl ShardHandle {
         };
 
         if self.tx.send(msg).is_err() {
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| RespValue::Error("ERR shard response failed".to_string()))
+            .unwrap_or_else(|_| RespValue::err("ERR shard response failed"))
     }
 
     /// Pooled fast GET - uses response pool to avoid channel allocation
@@ -338,7 +342,7 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             self.response_pool.release(response_slot);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         let result = response_future(response_slot.clone()).await;
@@ -358,7 +362,7 @@ impl ShardHandle {
 
         if self.tx.send(msg).is_err() {
             self.response_pool.release(response_slot);
-            return RespValue::Error("ERR shard unavailable".to_string());
+            return RespValue::err("ERR shard unavailable");
         }
 
         let result = response_future(response_slot.clone()).await;
@@ -376,12 +380,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastBatchGet { keys, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return vec![RespValue::Error("ERR shard unavailable".to_string())];
+            return vec![RespValue::err("ERR shard unavailable")];
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| vec![RespValue::Error("ERR shard response failed".to_string())])
+            .unwrap_or_else(|_| vec![RespValue::err("ERR shard response failed")])
     }
 
     /// Fast batch SET - multiple key-value pairs in single actor message
@@ -394,12 +398,12 @@ impl ShardHandle {
         let msg = ShardMessage::FastBatchSet { pairs, response_tx };
 
         if self.tx.send(msg).is_err() {
-            return vec![RespValue::Error("ERR shard unavailable".to_string())];
+            return vec![RespValue::err("ERR shard unavailable")];
         }
 
         response_rx
             .await
-            .unwrap_or_else(|_| vec![RespValue::Error("ERR shard response failed".to_string())])
+            .unwrap_or_else(|_| vec![RespValue::err("ERR shard response failed")])
     }
 
     #[inline]
@@ -543,6 +547,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 let actor = ShardActor::new_with_shared_scripts(
                     rx,
                     epoch,
+                    start_millis,
                     shard_id,
                     num_shards,
                     shared_script_cache.clone(),
@@ -619,6 +624,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 let actor = ShardActor::new_with_shared_scripts(
                     rx,
                     epoch,
+                    start_millis,
                     shard_id,
                     num_shards,
                     shared_script_cache.clone(),
@@ -909,7 +915,7 @@ impl<T: TimeSource> ShardedActorState<T> {
         }
 
         // Prepare results vector (default to OK for SETs)
-        let mut results = vec![RespValue::SimpleString("OK".to_string()); pairs.len()];
+        let mut results = vec![RespValue::simple("OK"); pairs.len()];
 
         // Send batch requests to all non-empty shards concurrently
         let mut futures = Vec::new();
@@ -945,7 +951,8 @@ impl<T: TimeSource> ShardedActorState<T> {
         let virtual_time = self.get_current_virtual_time();
 
         match cmd {
-            Command::Ping => RespValue::SimpleString("PONG".to_string()),
+            Command::Ping(None) => RespValue::simple("PONG"),
+            Command::Ping(Some(msg)) => RespValue::BulkString(Some(msg.as_bytes().to_vec())),
 
             Command::Info => {
                 let adaptive_info = self.get_adaptive_info().await;
@@ -975,7 +982,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 for future in futures {
                     let _ = future.await;
                 }
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
             }
 
             Command::Keys(pattern) => {
@@ -1051,7 +1058,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 }
 
                 if shard_batches.is_empty() {
-                    return RespValue::SimpleString("OK".to_string());
+                    return RespValue::simple("OK");
                 }
 
                 // For single-shard MSET (common case), execute directly
@@ -1078,7 +1085,106 @@ impl<T: TimeSource> ShardedActorState<T> {
                     futures::future::join_all(futures).await;
                 }
 
-                RespValue::SimpleString("OK".to_string())
+                RespValue::simple("OK")
+            }
+
+            Command::Time => {
+                // Return real wall-clock time
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default();
+                let secs = now.as_secs() as i64;
+                let usecs = now.subsec_micros() as i64;
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(secs.to_string().into_bytes())),
+                    RespValue::BulkString(Some(usecs.to_string().into_bytes())),
+                ]))
+            }
+
+            Command::DbSize => {
+                let mut futures = Vec::with_capacity(self.num_shards);
+                for shard in self.shards.iter() {
+                    futures.push(shard.execute(Command::DbSize, virtual_time));
+                }
+                let results = futures::future::join_all(futures).await;
+                let total: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                RespValue::Integer(total)
+            }
+
+            Command::Scan {
+                cursor: _,
+                ref pattern,
+                ref count,
+            } => {
+                // Fan out to all shards with cursor 0, merge results
+                let mut futures = Vec::with_capacity(self.num_shards);
+                for shard in self.shards.iter() {
+                    futures.push(shard.execute(
+                        Command::Scan {
+                            cursor: 0,
+                            pattern: pattern.clone(),
+                            count: *count,
+                        },
+                        virtual_time,
+                    ));
+                }
+                let results = futures::future::join_all(futures).await;
+                let mut all_keys: Vec<RespValue> = Vec::new();
+                for result in results {
+                    if let RespValue::Array(Some(parts)) = result {
+                        // SCAN returns [cursor, [keys...]]
+                        if parts.len() == 2 {
+                            if let RespValue::Array(Some(keys)) = &parts[1] {
+                                all_keys.extend(keys.iter().cloned());
+                            }
+                        }
+                    }
+                }
+                // Return cursor 0 (done) with merged keys
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(b"0".to_vec())),
+                    RespValue::Array(Some(all_keys)),
+                ]))
+            }
+
+            Command::Del(keys) if keys.len() > 1 => {
+                // Fan out multi-key DEL to correct shards
+                let num_shards = self.num_shards;
+                let mut shard_batches: std::collections::HashMap<usize, Vec<String>> =
+                    std::collections::HashMap::new();
+                for key in keys {
+                    let shard_idx = hash_key(key, num_shards);
+                    shard_batches.entry(shard_idx).or_default().push(key.clone());
+                }
+                let futures: Vec<_> = shard_batches
+                    .into_iter()
+                    .map(|(shard_idx, batch_keys)| {
+                        self.shards[shard_idx]
+                            .execute(Command::Del(batch_keys), virtual_time)
+                    })
+                    .collect();
+                let results = futures::future::join_all(futures).await;
+                let count: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                RespValue::Integer(count)
             }
 
             Command::Exists(keys) => {

@@ -45,7 +45,7 @@ pub struct ConnectionConfig {
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
-            max_buffer_size: 1024 * 1024, // 1MB
+            max_buffer_size: 512 * 1024 * 1024, // 512MB (matches Redis proto-max-bulk-len)
             read_buffer_size: 8192,
             min_pipeline_buffer: 60,
             batch_threshold: 2,
@@ -78,6 +78,12 @@ pub struct OptimizedConnectionHandler<S> {
     acl_manager: Arc<RwLock<AclManager>>,
     /// Currently authenticated user (None = not authenticated yet)
     authenticated_user: Option<Arc<AclUser>>,
+    /// Connection-level transaction state (MULTI/EXEC)
+    in_transaction: bool,
+    transaction_queue: Vec<Command>,
+    transaction_errors: bool,
+    /// Watched keys with their values at WATCH time (for optimistic locking)
+    watched_keys: Vec<(String, RespValue)>,
 }
 
 impl<S> OptimizedConnectionHandler<S>
@@ -158,6 +164,10 @@ where
             config,
             acl_manager,
             authenticated_user,
+            in_transaction: false,
+            transaction_queue: Vec::new(),
+            transaction_errors: false,
+            watched_keys: Vec::new(),
         }
     }
 
@@ -204,7 +214,7 @@ where
                         let min_pipeline_buffer = self.config.min_pipeline_buffer;
                         let batch_threshold = self.config.batch_threshold;
 
-                        if self.buffer.len() >= min_pipeline_buffer {
+                        if self.buffer.len() >= min_pipeline_buffer && !self.in_transaction {
                             // Try GET batching first
                             let (get_keys, get_count) = self.collect_get_keys();
 
@@ -314,7 +324,8 @@ where
     async fn try_execute_command(&mut self) -> CommandResult {
         // Try fast path first for GET/SET commands (80%+ of traffic)
         // Fast path skips ACL checks for performance - only use when auth not required
-        if self.authenticated_user.is_some() {
+        // MUST NOT use fast path during MULTI — commands must be queued
+        if self.authenticated_user.is_some() && !self.in_transaction {
             match self.try_fast_path().await {
                 FastPathResult::Handled => return CommandResult::Executed,
                 FastPathResult::NeedMoreData => return CommandResult::NeedMoreData,
@@ -328,27 +339,132 @@ where
                     let cmd_name = cmd.name();
                     let start = Instant::now();
 
-                    // Handle AUTH and ACL commands specially
-                    let response = match &cmd {
-                        Command::Auth { username, password } => {
-                            self.handle_auth(username.as_deref(), password)
+                    // Handle connection-level transaction state
+                    let response = if self.in_transaction {
+                        match &cmd {
+                            Command::Exec => {
+                                self.in_transaction = false;
+                                if self.transaction_errors {
+                                    // Abort: previous errors during queueing
+                                    self.transaction_queue.clear();
+                                    self.transaction_errors = false;
+                                    self.watched_keys.clear();
+                                    RespValue::err("EXECABORT Transaction discarded because of previous errors.")
+                                } else {
+                                    // Check watched keys for modifications
+                                    // NOTE: This is a value-based comparison, not a dirty-flag check like Redis.
+                                    // If a key changes and reverts to the same value, EXEC will succeed here
+                                    // but would abort in Redis. This is an intentional simplification for the
+                                    // sharded architecture -- we can't track per-key modification flags across shards.
+                                    let watched = std::mem::take(&mut self.watched_keys);
+                                    let mut watch_failed = false;
+                                    for (key, old_value) in &watched {
+                                        let current = self
+                                            .state
+                                            .execute(&Command::Get(key.clone()))
+                                            .await;
+                                        if !resp_values_equal(&current, old_value) {
+                                            watch_failed = true;
+                                            break;
+                                        }
+                                    }
+                                    if watch_failed {
+                                        self.transaction_queue.clear();
+                                        RespValue::Array(None) // Null array = WATCH failed
+                                    } else {
+                                        let queued = std::mem::take(&mut self.transaction_queue);
+                                        let mut results = Vec::with_capacity(queued.len());
+                                        for queued_cmd in &queued {
+                                            let r = self.state.execute(queued_cmd).await;
+                                            results.push(r);
+                                        }
+                                        RespValue::Array(Some(results))
+                                    }
+                                }
+                            }
+                            Command::Discard => {
+                                self.in_transaction = false;
+                                self.transaction_queue.clear();
+                                self.transaction_errors = false;
+                                self.watched_keys.clear();
+                                RespValue::simple("OK")
+                            }
+                            Command::Multi => {
+                                RespValue::err("ERR MULTI calls can not be nested")
+                            }
+                            Command::Watch(_) => {
+                                RespValue::err("ERR WATCH inside MULTI is not allowed")
+                            }
+                            Command::Unknown(name) => {
+                                // Unknown command during MULTI: return error, mark transaction
+                                self.transaction_errors = true;
+                                RespValue::err(format!(
+                                    "ERR unknown command '{}', with args beginning with: ",
+                                    name.to_lowercase()
+                                ))
+                            }
+                            _ => {
+                                // Queue the command
+                                self.transaction_queue.push(cmd.clone());
+                                RespValue::simple("QUEUED")
+                            }
                         }
-                        Command::AclWhoami => self.handle_acl_whoami(),
-                        Command::AclList => self.handle_acl_list(),
-                        Command::AclUsers => self.handle_acl_users(),
-                        Command::AclGetUser { username } => self.handle_acl_getuser(username),
-                        Command::AclSetUser { username, rules } => {
-                            self.handle_acl_setuser(username, rules)
-                        }
-                        Command::AclDelUser { usernames } => self.handle_acl_deluser(usernames),
-                        Command::AclCat { category } => self.handle_acl_cat(category.as_deref()),
-                        Command::AclGenPass { bits } => self.handle_acl_genpass(*bits),
-                        _ => {
-                            // Check ACL permissions for regular commands
-                            if let Err(acl_err) = self.check_acl_permission(&cmd) {
-                                RespValue::Error(acl_err)
-                            } else {
-                                self.state.execute(&cmd).await
+                    } else {
+                        match &cmd {
+                            Command::Multi => {
+                                self.in_transaction = true;
+                                self.transaction_queue.clear();
+                                self.transaction_errors = false;
+                                RespValue::simple("OK")
+                            }
+                            Command::Exec => {
+                                RespValue::err("ERR EXEC without MULTI")
+                            }
+                            Command::Discard => {
+                                RespValue::err("ERR DISCARD without MULTI")
+                            }
+                            Command::Watch(keys) => {
+                                // Snapshot watched key values for optimistic locking
+                                for key in keys {
+                                    let snapshot = self
+                                        .state
+                                        .execute(&Command::Get(key.clone()))
+                                        .await;
+                                    self.watched_keys.push((key.clone(), snapshot));
+                                }
+                                RespValue::simple("OK")
+                            }
+                            Command::Unwatch => {
+                                self.watched_keys.clear();
+                                RespValue::simple("OK")
+                            }
+                            // Handle AUTH and ACL commands specially
+                            Command::Auth { username, password } => {
+                                self.handle_auth(username.as_deref(), password)
+                            }
+                            Command::AclWhoami => self.handle_acl_whoami(),
+                            Command::AclList => self.handle_acl_list(),
+                            Command::AclUsers => self.handle_acl_users(),
+                            Command::AclGetUser { username } => {
+                                self.handle_acl_getuser(username)
+                            }
+                            Command::AclSetUser { username, rules } => {
+                                self.handle_acl_setuser(username, rules)
+                            }
+                            Command::AclDelUser { usernames } => {
+                                self.handle_acl_deluser(usernames)
+                            }
+                            Command::AclCat { category } => {
+                                self.handle_acl_cat(category.as_deref())
+                            }
+                            Command::AclGenPass { bits } => self.handle_acl_genpass(*bits),
+                            _ => {
+                                // Check ACL permissions for regular commands
+                                if let Err(acl_err) = self.check_acl_permission(&cmd) {
+                                    RespValue::err(acl_err)
+                                } else {
+                                    self.state.execute(&cmd).await
+                                }
                             }
                         }
                     };
@@ -362,6 +478,10 @@ where
                 }
                 Err(e) => {
                     self.metrics.record_command("PARSE_ERROR", 0.0, false);
+                    // If in a transaction, mark it as having errors
+                    if self.in_transaction {
+                        self.transaction_errors = true;
+                    }
                     Self::encode_error_into(&e, &mut self.write_buffer);
                     CommandResult::Executed
                 }
@@ -402,15 +522,18 @@ where
             Ok(user) => {
                 drop(manager); // Release read lock before mutating self
                 self.authenticated_user = Some(user);
-                info!("Client {} authenticated as '{}'", self.client_addr, username);
-                RespValue::SimpleString("OK".to_string())
+                info!(
+                    "Client {} authenticated as '{}'",
+                    self.client_addr, username
+                );
+                RespValue::simple("OK")
             }
             Err(e) => {
                 warn!(
                     "Auth failed for client {} (user '{}'): {}",
                     self.client_addr, username, e
                 );
-                RespValue::Error(e.to_string())
+                RespValue::err(e.to_string())
             }
         }
     }
@@ -507,14 +630,14 @@ where
             let mut manager = self.acl_manager.write();
             let rule_refs: Vec<&str> = rules.iter().map(|s| s.as_str()).collect();
             match AclCommandHandler::handle_setuser(&mut manager, username, &rule_refs) {
-                Ok(()) => RespValue::SimpleString("OK".to_string()),
-                Err(e) => RespValue::Error(e.to_string()),
+                Ok(()) => RespValue::simple("OK"),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]
         {
             let _ = (username, rules);
-            RespValue::Error("ERR ACL feature not enabled".to_string())
+            RespValue::err("ERR ACL feature not enabled")
         }
     }
 
@@ -527,13 +650,13 @@ where
             let username_refs: Vec<&str> = usernames.iter().map(|s| s.as_str()).collect();
             match AclCommandHandler::handle_deluser(&mut manager, &username_refs) {
                 Ok(count) => RespValue::Integer(count as i64),
-                Err(e) => RespValue::Error(e.to_string()),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]
         {
             let _ = usernames;
-            RespValue::Error("ERR ACL feature not enabled".to_string())
+            RespValue::err("ERR ACL feature not enabled")
         }
     }
 
@@ -549,7 +672,7 @@ where
                         .map(|s| RespValue::BulkString(Some(s.into_bytes())))
                         .collect(),
                 )),
-                Err(e) => RespValue::Error(e.to_string()),
+                Err(e) => RespValue::err(e.to_string()),
             }
         }
         #[cfg(not(feature = "acl"))]
@@ -557,8 +680,18 @@ where
             let _ = category;
             // Return basic categories even without ACL feature
             let categories = vec![
-                "read", "write", "admin", "dangerous", "keyspace", "string", "list", "set", "hash",
-                "sortedset", "connection", "server",
+                "read",
+                "write",
+                "admin",
+                "dangerous",
+                "keyspace",
+                "string",
+                "list",
+                "set",
+                "hash",
+                "sortedset",
+                "connection",
+                "server",
             ];
             RespValue::Array(Some(
                 categories
@@ -985,7 +1118,14 @@ where
     #[inline]
     fn encode_error_into(msg: &str, buf: &mut BytesMut) {
         buf.put_u8(b'-');
-        buf.extend_from_slice(b"ERR ");
+        if !msg.starts_with("ERR ")
+            && !msg.starts_with("WRONGTYPE ")
+            && !msg.starts_with("EXECABORT ")
+            && !msg.starts_with("NOAUTH ")
+            && !msg.starts_with("NOPERM ")
+        {
+            buf.extend_from_slice(b"ERR ");
+        }
         buf.extend_from_slice(msg.as_bytes());
         buf.extend_from_slice(b"\r\n");
     }
@@ -1005,4 +1145,19 @@ enum FastPathResult {
     NeedMoreData,
     /// Not a fast-path command, fall back to regular parsing
     NotFastPath,
+}
+
+/// Compare two RespValues for equality (used by WATCH/EXEC)
+fn resp_values_equal(a: &RespValue, b: &RespValue) -> bool {
+    match (a, b) {
+        (RespValue::BulkString(a), RespValue::BulkString(b)) => a == b,
+        (RespValue::Integer(a), RespValue::Integer(b)) => a == b,
+        (RespValue::SimpleString(a), RespValue::SimpleString(b)) => a == b,
+        (RespValue::Error(a), RespValue::Error(b)) => a == b,
+        (RespValue::Array(None), RespValue::Array(None)) => true,
+        (RespValue::Array(Some(a)), RespValue::Array(Some(b))) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| resp_values_equal(x, y))
+        }
+        _ => false,
+    }
 }

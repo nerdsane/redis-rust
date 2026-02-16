@@ -2,6 +2,8 @@
 
 This directory contains Architecture Decision Records (ADRs) for redis-rust.
 
+> **See also:** [EVOLUTION.md](./EVOLUTION.md) - How we track architectural change through characteristics, gaps, and deviations.
+
 ## What is an ADR?
 
 An ADR is a **living decision log** that captures architectural decisions and how they evolve over time. Unlike static documentation, ADRs are actively maintained as we learn and make new decisions.
