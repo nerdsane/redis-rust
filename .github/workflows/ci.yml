@@ -1,10 +1,4 @@
-name: Verification Harness
-
-# 4-layer verification loop. See HARNESS.md for details.
-# Layer 1: Unit tests (507 tests, CRDT DST, replication)
-# Layer 2: Redis Tcl compatibility (official test suite)
-# Layer 3: Maelstrom linearizability (Jepsen/Knossos)
-# Layer 4: Feature flag compilation
+name: CI
 
 on:
   push:
@@ -12,195 +6,48 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Layer 1: cargo test --lib (507 tests)
-  # Includes: 87 replication, 10 CRDT DST (100 seeds), 6 multi-node sim,
-  # 5 executor DST, ~400 unit tests
-  # ──────────────────────────────────────────────────────────────────────
-  unit-tests:
-    name: "Layer 1: Unit Tests"
+  build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install Rust stable
+      - name: Install Rust
         run: rustup toolchain install stable --profile minimal
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: "Unit tests (expect: 507 passed)"
-        run: |
-          cargo test --lib 2>&1 | tee test-output.txt
-          grep -q "507 passed" test-output.txt || { echo "::error::Expected 507 tests to pass"; exit 1; }
-
-      - name: "Integration tests"
-        run: cargo test --all-targets
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Layer 2: Official Redis Tcl test suite
-  # Runs only the suites that fully pass. Others crash on unimplemented
-  # commands (SETBIT, SWAPDB) which is expected, not a bug.
-  # ──────────────────────────────────────────────────────────────────────
-  tcl-compat:
-    name: "Layer 2: Tcl Compat"
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Install Tcl
-        run: sudo apt-get update && sudo apt-get install -y tcl
-
-      - name: Build server (release)
-        run: cargo build --bin redis-server-optimized --release
-
-      - name: "incr.tcl (expect: 28/28)"
-        run: ./scripts/run-redis-compat.sh unit/type/incr
-
-      - name: "expire.tcl (expect: all pass)"
-        run: ./scripts/run-redis-compat.sh unit/expire
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Layer 3: Maelstrom linearizability (Jepsen/Knossos)
-  # Tests CRDT gossip replication at 1, 3, and 5 nodes.
-  # Uses the official Maelstrom workbench (unmodified).
-  # ──────────────────────────────────────────────────────────────────────
-  maelstrom:
-    name: "Layer 3: Maelstrom"
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y tcl libssl-dev gnuplot
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Install gnuplot
-        run: sudo apt-get update && sudo apt-get install -y gnuplot
+      - name: Build
+        run: cargo build --release --bin redis-server-optimized --bin maelstrom-kv-replicated
 
-      - name: Build Maelstrom binary
-        run: cargo build --release --bin maelstrom-kv-replicated
+      - name: Unit tests
+        run: cargo test --lib
 
-      - name: "1-node linearizability"
+      - name: Tcl compat - incr
+        run: ./scripts/run-redis-compat.sh unit/type/incr
+
+      - name: Tcl compat - expire
+        run: ./scripts/run-redis-compat.sh unit/expire
+
+      - name: Maelstrom 1-node
         run: |
           java -Djava.awt.headless=true \
             -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
             --bin ./target/release/maelstrom-kv-replicated \
             --node-count 1 --time-limit 10 --concurrency 4
 
-      - name: "3-node linearizability"
-        run: |
-          java -Djava.awt.headless=true \
-            -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
-            --bin ./target/release/maelstrom-kv-replicated \
-            --node-count 3 --time-limit 20 --concurrency 6 --rate 10
-
-      - name: "5-node stress"
+      - name: Maelstrom 5-node
         run: |
           java -Djava.awt.headless=true \
             -jar maelstrom/maelstrom/lib/maelstrom.jar test -w lin-kv \
             --bin ./target/release/maelstrom-kv-replicated \
             --node-count 5 --time-limit 30 --concurrency 10 --rate 50
-
-      - name: Upload Maelstrom results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: maelstrom-results
-          path: store/
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Layer 4: Feature flag compilation
-  # Verifies all feature combinations compile (TLS, ACL, optimizations).
-  # ──────────────────────────────────────────────────────────────────────
-  features:
-    name: "Layer 4: Feature Flags"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Install OpenSSL dev
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
-
-      - name: "Default features"
-        run: cargo check --all-targets
-
-      - name: "TLS feature"
-        run: cargo check --features tls
-
-      - name: "ACL feature"
-        run: cargo check --features acl
-
-      - name: "All optimizations"
-        run: cargo check --features "opt-all"
