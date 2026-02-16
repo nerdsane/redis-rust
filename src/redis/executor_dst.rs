@@ -1430,7 +1430,7 @@ impl ExecutorDSTHarness {
                 .executor
                 .execute(&Command::ZRange(key.clone(), 0, -1, with_scores));
 
-            // Invariant 8: ZRANGE returns ascending order
+            // Invariant 8: ZRANGE returns ascending order with correct count
             let expected_len = match self.shadow.get(&key) {
                 Some(RefValue::SortedSet(z)) => Some(z.len()),
                 _ => None,
@@ -1447,13 +1447,32 @@ impl ExecutorDSTHarness {
                             len
                         ));
                     }
-                } else if elements.len() != len {
-                    self.violation(&format!(
-                        "ZRANGE {} count mismatch: got {}, expected {}",
-                        key,
-                        elements.len(),
-                        len
-                    ));
+                    // Verify scores are in ascending order
+                    let mut prev_score: Option<f64> = None;
+                    for i in (1..elements.len()).step_by(2) {
+                        if let RespValue::BulkString(Some(score_bytes)) = &elements[i] {
+                            if let Ok(score) = String::from_utf8_lossy(score_bytes).parse::<f64>() {
+                                if let Some(prev) = prev_score {
+                                    if score < prev {
+                                        self.violation(&format!(
+                                            "ZRANGE {} WITHSCORES not ascending: {} after {}",
+                                            key, score, prev
+                                        ));
+                                    }
+                                }
+                                prev_score = Some(score);
+                            }
+                        }
+                    }
+                } else {
+                    if elements.len() != len {
+                        self.violation(&format!(
+                            "ZRANGE {} count mismatch: got {}, expected {}",
+                            key,
+                            elements.len(),
+                            len
+                        ));
+                    }
                 }
             }
         }
