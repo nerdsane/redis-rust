@@ -1,5 +1,15 @@
 # Claude Code Guidelines for redis-rust
 
+## ⚠️ MANDATORY: Read These First
+
+Before writing any code, read these three documents — they are the source of truth:
+
+1. **[HARNESS.md](HARNESS.md)** — 4-layer verification loop, expected outputs, Tcl harness pitfalls, command addition checklist
+2. **[docs/RUST_STYLE.md](docs/RUST_STYLE.md)** — Rust coding standards: error handling, file size limits, clone avoidance, iterator patterns, assertion requirements, checked arithmetic
+3. **[docs/DST_GUIDE.md](docs/DST_GUIDE.md)** — Deterministic simulation testing methodology: SimulatedRng, VirtualTime, buggify fault injection, shadow state comparison
+
+Violations of RUST_STYLE.md or DST_GUIDE.md will be caught by code review and CI. Do not skip them.
+
 ## ⚠️ MANDATORY: Default Development Workflow
 
 **For EVERY code change, follow this order:**

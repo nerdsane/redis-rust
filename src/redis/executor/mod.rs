@@ -315,7 +315,7 @@ impl CommandExecutor {
             use crate::buggify::faults;
             // process::SLOW - simulate processing delay (counted, not actually delayed)
             if crate::buggify::should_buggify(
-                &mut crate::io::production::ProductionRng::new(),
+                &mut crate::io::simulation::SimulatedRng::new(self.current_time.as_millis()),
                 faults::process::SLOW,
             ) {
                 self.commands_processed += 0; // no-op marker for stats
@@ -323,7 +323,7 @@ impl CommandExecutor {
 
             // timer::JUMP_FORWARD - advance time for expiry-dependent ops
             if crate::buggify::should_buggify(
-                &mut crate::io::production::ProductionRng::new(),
+                &mut crate::io::simulation::SimulatedRng::new(self.current_time.as_millis()),
                 faults::timer::JUMP_FORWARD,
             ) {
                 let jump_ms = 5000; // 5 second jump
@@ -704,7 +704,7 @@ impl CommandExecutor {
                 if self.is_expired(src) || !self.data.contains_key(src) {
                     return RespValue::err("ERR no such key");
                 }
-                let val = self.data.remove(src).unwrap();
+                let val = self.data.remove(src).expect("checked key exists above");
                 let exp = self.expirations.remove(src);
                 self.data.insert(dst.clone(), val);
                 if let Some(exp_time) = exp {
@@ -723,7 +723,7 @@ impl CommandExecutor {
                 if !self.is_expired(dst) && self.data.contains_key(dst) {
                     return RespValue::Integer(0);
                 }
-                let val = self.data.remove(src).unwrap();
+                let val = self.data.remove(src).expect("checked key exists above");
                 let exp = self.expirations.remove(src);
                 self.data.insert(dst.clone(), val);
                 if let Some(exp_time) = exp {

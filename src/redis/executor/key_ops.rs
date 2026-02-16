@@ -133,7 +133,7 @@ impl CommandExecutor {
         // Also check if seconds*1000 + basetime_ms overflows
         let expire_ms = seconds.saturating_mul(1000);
         if expire_ms > 0 {
-            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            let basetime_ms = self.simulation_start_epoch_ms.saturating_add(self.current_time.as_millis() as i64);
             if expire_ms > i64::MAX - basetime_ms {
                 return RespValue::err("ERR invalid expire time in 'expire' command");
             }
@@ -201,7 +201,7 @@ impl CommandExecutor {
     ) -> RespValue {
         // Reject values that would overflow when adding basetime
         if milliseconds > 0 {
-            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            let basetime_ms = self.simulation_start_epoch_ms.saturating_add(self.current_time.as_millis() as i64);
             if milliseconds > i64::MAX - basetime_ms {
                 return RespValue::err("ERR invalid expire time in 'pexpire' command");
             }
