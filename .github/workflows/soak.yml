@@ -1,0 +1,44 @@
+name: DST Soak
+
+# TigerBeetle/FoundationDB-style continuous fault injection.
+# Runs on every push and PR, using the full GitHub Actions time budget.
+# Every run explores new random seeds — no two runs test the same state space.
+# GitHub allows 6 hours per job on public repos. We use 5.5h to leave margin.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Soak duration in seconds'
+        default: '19800'
+        type: string
+
+jobs:
+  soak:
+    name: "DST Soak"
+    runs-on: ubuntu-latest
+    timeout-minutes: 345  # 5h 45m (leave 15m margin on 6h limit)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Override cargo config
+        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
+
+      - name: Run soak test
+        run: ./scripts/soak-dst.sh ${{ github.event.inputs.duration || '19800' }}
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-failures-${{ github.run_id }}
+          path: |
+            /tmp/soak-*.log
+          retention-days: 30
