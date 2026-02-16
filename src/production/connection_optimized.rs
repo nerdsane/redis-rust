@@ -563,6 +563,7 @@ where
         };
 
         // Check if the user has subcommand-level permission (e.g., +debug|object)
+        #[cfg(feature = "acl")]
         if let Some(ref sub) = subcmd_form {
             if let Some(ref u) = user {
                 if u.commands.allowed.contains(&sub.to_uppercase()) {
@@ -572,9 +573,10 @@ where
                     let keys: Vec<&str> = owned_keys.iter().map(|s| s.as_str()).collect();
                     for key in &keys {
                         if !u.keys.is_key_permitted(key) {
-                            return Err(format!(
+                            return Err(
                                 "NOPERM this user has no permissions to access one of the keys used as arguments"
-                            ));
+                                    .to_string(),
+                            );
                         }
                     }
                     return Ok(());
