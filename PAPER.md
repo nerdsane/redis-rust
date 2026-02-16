@@ -310,7 +310,7 @@ At pipeline depth 1, SET throughput is within noise of Redis 7.4. GET lags at 77
 
 The high CAS failure rate at 3 and 5 nodes is expected -- the system uses eventual consistency via CRDT gossip, so compare-and-swap frequently reads stale values. Knossos found valid linearizable orderings at all scales, meaning gossip propagated fast enough under Maelstrom's simulated network that no consistency violations were observable.
 
-We want to be precise about what this does and does not prove. Maelstrom uses a simulated network with reliable, near-instant message delivery. Under these conditions, the gossip protocol converges quickly enough to produce linearizable histories. This does **not** mean the system guarantees linearizability. Under real network partitions, high latency, or heavier load, violations are expected by design.
+We want to be precise about what this does and does not prove. Maelstrom uses a simulated network with reliable, near-instant message delivery. Under low load, the gossip protocol converges quickly enough to produce linearizable histories. Under higher load or slower execution environments, Knossos finds linearizability violations where reads arrive before gossip propagates writes. **These violations are correct behavior** — the system provides eventual consistency, not linearizability. The CI pipeline tolerates linearizability violations but fails on exceptions, crashes, or protocol errors, ensuring the gossip implementation is functionally correct even when convergence timing produces non-linearizable histories.
 
 ---
 

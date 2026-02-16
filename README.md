@@ -118,7 +118,7 @@ Components: `src/replication/` (CRDTs, gossip, anti-entropy, hash ring), `src/pr
 | 3 | 190 | 98/98 ok | 29/29 ok | 13/63 ok | **valid** | 0 |
 | 5 | 1,301 | 670/677 ok | 201/201 ok | 80/423 ok | **valid** | 0 |
 
-CAS failure rate is expected — eventual consistency means CAS often sees stale values. The linearizability checker found valid orderings at all scales, meaning gossip propagates fast enough under these workloads that no violations were observed. This does **not** mean the system guarantees linearizability — under network partitions or higher load, violations are expected by design.
+CAS failure rate is expected — eventual consistency means CAS often sees stale values. Under low load, Knossos finds valid linearizable orderings because gossip converges fast. Under high load or slow CI runners, Knossos may find linearizability violations where a read arrives before gossip propagates a write. **These violations are correct behavior for an eventually consistent system, not bugs.** CI tolerates linearizability violations but fails on exceptions, crashes, or protocol errors.
 
 **Test coverage:** 87 replication tests, 10 CRDT DST suites (100 seeds each), 6 multi-node simulation tests (partitions, packet loss, convergence), Stateright model checking for merge associativity/commutativity/idempotence, 4 TLA+ specs (gossip, anti-entropy, replication convergence, streaming persistence).
 
