@@ -18,6 +18,9 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
 
+      - name: Override cargo config (sccache/mold not on runner)
+        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
+
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y tcl libssl-dev gnuplot
 
