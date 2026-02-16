@@ -48,7 +48,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_hdel(&mut self, key: &str, fields: &[SDS]) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::Hash(h)) => {
                 // TigerStyle: Capture pre-state for postcondition
                 #[cfg(debug_assertions)]
@@ -85,7 +85,14 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::Integer(0),
+        };
+        // Redis auto-deletes empty hashes
+        if matches!(self.data.get(key), Some(Value::Hash(h)) if h.is_empty()) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 
     pub(super) fn execute_hgetall(&mut self, key: &str) -> RespValue {

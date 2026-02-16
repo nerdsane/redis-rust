@@ -29,30 +29,51 @@ use super::data::SDS;
 pub enum Command {
     // String commands
     Get(String),
-    /// SET key value [NX|XX] [EX seconds|PX milliseconds] [GET]
+    /// SET key value [NX|XX] [EX s|PX ms|EXAT t|PXAT t_ms|KEEPTTL] [GET]
     Set {
         key: String,
         value: SDS,
-        ex: Option<i64>, // EX seconds
-        px: Option<i64>, // PX milliseconds
-        nx: bool,        // Only set if NOT exists
-        xx: bool,        // Only set if exists
-        get: bool,       // Return old value
+        ex: Option<i64>,   // EX seconds
+        px: Option<i64>,   // PX milliseconds
+        exat: Option<i64>, // EXAT unix-time-seconds
+        pxat: Option<i64>, // PXAT unix-time-milliseconds
+        nx: bool,          // Only set if NOT exists
+        xx: bool,          // Only set if exists
+        get: bool,         // Return old value
+        keepttl: bool,     // Preserve existing TTL
     },
     Append(String, SDS),
     GetSet(String, SDS),
     StrLen(String),
     MGet(Vec<String>),
     MSet(Vec<(String, SDS)>),
+    MSetNx(Vec<(String, SDS)>),
     /// Internal command for batched SET within a single shard (not exposed via RESP)
     BatchSet(Vec<(String, SDS)>),
     /// Internal command for batched GET within a single shard (not exposed via RESP)
     BatchGet(Vec<String>),
+    /// GETRANGE key start end (also SUBSTR alias)
+    GetRange(String, isize, isize),
+    /// SETRANGE key offset value
+    SetRange(String, usize, SDS),
+    /// GETEX key [EX s|PX ms|EXAT t|PXAT t|PERSIST]
+    GetEx {
+        key: String,
+        ex: Option<i64>,
+        px: Option<i64>,
+        exat: Option<i64>,
+        pxat: Option<i64>,
+        persist: bool,
+    },
+    /// GETDEL key
+    GetDel(String),
     // Counter commands
     Incr(String),
     Decr(String),
     IncrBy(String, i64),
     DecrBy(String, i64),
+    /// INCRBYFLOAT key increment
+    IncrByFloat(String, f64),
     // Key commands
     Del(Vec<String>),
     Exists(Vec<String>),
@@ -61,12 +82,41 @@ pub enum Command {
     FlushDb,
     FlushAll,
     // Expiration commands
-    Expire(String, i64),
+    Expire {
+        key: String,
+        seconds: i64,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+    },
     ExpireAt(String, i64),
+    PExpire {
+        key: String,
+        milliseconds: i64,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+    },
     PExpireAt(String, i64),
     Ttl(String),
     Pttl(String),
+    /// EXPIRETIME key - returns Unix timestamp (seconds) when key will expire
+    ExpireTime(String),
+    /// PEXPIRETIME key - returns Unix timestamp (milliseconds) when key will expire
+    PExpireTime(String),
     Persist(String),
+    // Server commands (stubs)
+    /// WAIT numreplicas timeout
+    Wait(i64, i64),
+    /// TIME - returns [seconds, microseconds]
+    Time,
+    /// SORT key [STORE dest] ... - minimal stub
+    Sort {
+        key: String,
+        store: Option<String>,
+    },
     // List commands
     LPush(String, Vec<SDS>),
     RPush(String, Vec<SDS>),
@@ -256,9 +306,12 @@ impl Command {
             value,
             ex: None,
             px: None,
+            exat: None,
+            pxat: None,
             nx: false,
             xx: false,
             get: false,
+            keepttl: false,
         }
     }
 
@@ -269,15 +322,30 @@ impl Command {
             value,
             ex: Some(seconds),
             px: None,
+            exat: None,
+            pxat: None,
             nx: false,
             xx: false,
             get: false,
+            keepttl: false,
         }
     }
 
     /// Helper constructor for SETNX (legacy command returning Integer)
     pub fn setnx(key: String, value: SDS) -> Self {
         Command::SetNx(key, value)
+    }
+
+    /// Helper constructor for basic EXPIRE (no flags)
+    pub fn expire(key: String, seconds: i64) -> Self {
+        Command::Expire {
+            key,
+            seconds,
+            nx: false,
+            xx: false,
+            gt: false,
+            lt: false,
+        }
     }
 
     /// Helper constructor for single-key DEL
@@ -294,6 +362,7 @@ impl Command {
         matches!(
             self,
             Command::Get(_)
+                | Command::GetRange(_, _, _)
                 | Command::StrLen(_)
                 | Command::MGet(_)
                 | Command::Exists(_)
@@ -301,6 +370,8 @@ impl Command {
                 | Command::Keys(_)
                 | Command::Ttl(_)
                 | Command::Pttl(_)
+                | Command::ExpireTime(_)
+                | Command::PExpireTime(_)
                 | Command::LLen(_)
                 | Command::LIndex(_, _)
                 | Command::LRange(_, _, _)
@@ -338,6 +409,9 @@ impl Command {
                 | Command::ObjectIdleTime(_)
                 | Command::ObjectFreq(_)
                 | Command::RandomKey
+                | Command::DbSize
+                | Command::Wait(_, _)
+                | Command::Time
         )
     }
 
@@ -347,17 +421,25 @@ impl Command {
             Command::Get(k)
             | Command::Set { key: k, .. }
             | Command::SetNx(k, _)
+            | Command::GetRange(k, _, _)
+            | Command::SetRange(k, _, _)
+            | Command::GetEx { key: k, .. }
+            | Command::GetDel(k)
             | Command::TypeOf(k)
-            | Command::Expire(k, _)
+            | Command::Expire { key: k, .. }
             | Command::ExpireAt(k, _)
+            | Command::PExpire { key: k, .. }
             | Command::PExpireAt(k, _)
             | Command::Ttl(k)
             | Command::Pttl(k)
+            | Command::ExpireTime(k)
+            | Command::PExpireTime(k)
             | Command::Persist(k)
             | Command::Incr(k)
             | Command::Decr(k)
             | Command::IncrBy(k, _)
             | Command::DecrBy(k, _)
+            | Command::IncrByFloat(k, _)
             | Command::Append(k, _)
             | Command::GetSet(k, _)
             | Command::StrLen(k)
@@ -400,7 +482,9 @@ impl Command {
             | Command::ZScan { key: k, .. } => Some(k.as_str()),
             Command::Del(keys) | Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
-            Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
+            Command::MSet(pairs) | Command::MSetNx(pairs) => {
+                pairs.first().map(|(k, _)| k.as_str())
+            }
             Command::BatchSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::BatchGet(keys) => keys.first().map(|s| s.as_str()),
             Command::Watch(keys) => keys.first().map(|s| s.as_str()),
@@ -421,6 +505,8 @@ impl Command {
             | Command::Info
             | Command::Ping(_)
             | Command::DbSize
+            | Command::Wait(_, _)
+            | Command::Time
             | Command::Auth { .. }
             | Command::AclWhoami
             | Command::AclList
@@ -454,6 +540,7 @@ impl Command {
             | Command::ObjectFreq(k)
             | Command::DebugObject(k) => Some(k.as_str()),
 
+            Command::Sort { key: k, .. } => Some(k.as_str()),
             Command::Rename(k, _) | Command::RenameNx(k, _) => Some(k.as_str()),
         }
     }
@@ -464,17 +551,25 @@ impl Command {
             Command::Get(k)
             | Command::Set { key: k, .. }
             | Command::SetNx(k, _)
+            | Command::GetRange(k, _, _)
+            | Command::SetRange(k, _, _)
+            | Command::GetEx { key: k, .. }
+            | Command::GetDel(k)
             | Command::TypeOf(k)
-            | Command::Expire(k, _)
+            | Command::Expire { key: k, .. }
             | Command::ExpireAt(k, _)
+            | Command::PExpire { key: k, .. }
             | Command::PExpireAt(k, _)
             | Command::Ttl(k)
             | Command::Pttl(k)
+            | Command::ExpireTime(k)
+            | Command::PExpireTime(k)
             | Command::Persist(k)
             | Command::Incr(k)
             | Command::Decr(k)
             | Command::IncrBy(k, _)
             | Command::DecrBy(k, _)
+            | Command::IncrByFloat(k, _)
             | Command::Append(k, _)
             | Command::GetSet(k, _)
             | Command::StrLen(k)
@@ -521,7 +616,9 @@ impl Command {
 
             // Multi-key commands
             Command::Del(keys) | Command::Exists(keys) | Command::MGet(keys) => keys.clone(),
-            Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+            Command::MSet(pairs) | Command::MSetNx(pairs) => {
+                pairs.iter().map(|(k, _)| k.clone()).collect()
+            }
             Command::BatchSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
             Command::BatchGet(keys) => keys.clone(),
             Command::Watch(keys) => keys.clone(),
@@ -541,6 +638,8 @@ impl Command {
             | Command::Info
             | Command::Ping(_)
             | Command::DbSize
+            | Command::Wait(_, _)
+            | Command::Time
             | Command::Auth { .. }
             | Command::AclWhoami
             | Command::AclList
@@ -574,6 +673,13 @@ impl Command {
             | Command::ObjectFreq(k)
             | Command::DebugObject(k) => vec![k.clone()],
 
+            Command::Sort { key, store } => {
+                let mut keys = vec![key.clone()];
+                if let Some(dest) = store {
+                    keys.push(dest.clone());
+                }
+                keys
+            }
             Command::Rename(src, dst) | Command::RenameNx(src, dst) => {
                 vec![src.clone(), dst.clone()]
             }
@@ -591,24 +697,36 @@ impl Command {
             Command::StrLen(_) => "STRLEN",
             Command::MGet(_) => "MGET",
             Command::MSet(_) => "MSET",
+            Command::MSetNx(_) => "MSETNX",
             Command::BatchSet(_) => "BATCHSET",
             Command::BatchGet(_) => "BATCHGET",
+            Command::GetRange(_, _, _) => "GETRANGE",
+            Command::SetRange(_, _, _) => "SETRANGE",
+            Command::GetEx { .. } => "GETEX",
+            Command::GetDel(_) => "GETDEL",
             Command::Incr(_) => "INCR",
             Command::Decr(_) => "DECR",
             Command::IncrBy(_, _) => "INCRBY",
             Command::DecrBy(_, _) => "DECRBY",
+            Command::IncrByFloat(_, _) => "INCRBYFLOAT",
             Command::Del(_) => "DEL",
             Command::Exists(_) => "EXISTS",
             Command::TypeOf(_) => "TYPE",
             Command::Keys(_) => "KEYS",
             Command::FlushDb => "FLUSHDB",
             Command::FlushAll => "FLUSHALL",
-            Command::Expire(_, _) => "EXPIRE",
+            Command::Expire { .. } => "EXPIRE",
             Command::ExpireAt(_, _) => "EXPIREAT",
+            Command::PExpire { .. } => "PEXPIRE",
             Command::PExpireAt(_, _) => "PEXPIREAT",
             Command::Ttl(_) => "TTL",
             Command::Pttl(_) => "PTTL",
+            Command::ExpireTime(_) => "EXPIRETIME",
+            Command::PExpireTime(_) => "PEXPIRETIME",
             Command::Persist(_) => "PERSIST",
+            Command::Wait(_, _) => "WAIT",
+            Command::Time => "TIME",
+            Command::Sort { .. } => "SORT",
             Command::LPush(_, _) => "LPUSH",
             Command::RPush(_, _) => "RPUSH",
             Command::LPop(_) => "LPOP",

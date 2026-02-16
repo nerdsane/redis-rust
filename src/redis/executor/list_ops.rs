@@ -37,6 +37,7 @@ impl CommandExecutor {
                 let new_len = l.len() as i64;
 
                 // TigerStyle: Postcondition - length increased by pushed count
+                #[cfg(debug_assertions)]
                 debug_assert_eq!(
                     l.len(),
                     pre_len + values.len(),
@@ -72,6 +73,7 @@ impl CommandExecutor {
                 let new_len = l.len() as i64;
 
                 // TigerStyle: Postcondition - length increased by pushed count
+                #[cfg(debug_assertions)]
                 debug_assert_eq!(
                     l.len(),
                     pre_len + values.len(),
@@ -87,7 +89,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_lpop(&mut self, key: &str) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::List(l)) => match l.lpop() {
                 Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
                 None => RespValue::BulkString(None),
@@ -96,11 +98,18 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::BulkString(None),
+        };
+        // Redis auto-deletes empty lists
+        if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 
     pub(super) fn execute_rpop(&mut self, key: &str) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::List(l)) => match l.rpop() {
                 Some(v) => RespValue::BulkString(Some(v.as_bytes().to_vec())),
                 None => RespValue::BulkString(None),
@@ -109,7 +118,14 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::BulkString(None),
+        };
+        // Redis auto-deletes empty lists
+        if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 
     pub(super) fn execute_llen(&mut self, key: &str) -> RespValue {

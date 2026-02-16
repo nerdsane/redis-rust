@@ -17,9 +17,12 @@ fn test_del_multiple_keys() {
             value: SDS::from_str("value"),
             ex: None,
             px: None,
+            exat: None,
+            pxat: None,
             nx: false,
             xx: false,
             get: false,
+            keepttl: false,
         });
     }
 

@@ -179,7 +179,8 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
 
     async fn execute_global(&self, cmd: Command) -> RespValue {
         match &cmd {
-            Command::Ping => RespValue::simple("PONG"),
+            Command::Ping(None) => RespValue::simple("PONG"),
+            Command::Ping(Some(msg)) => RespValue::BulkString(Some(msg.as_bytes().to_vec())),
             Command::FlushDb | Command::FlushAll => {
                 // Execute on all shards concurrently
                 let futures: Vec<_> = self

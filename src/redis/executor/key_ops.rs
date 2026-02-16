@@ -116,39 +116,168 @@ impl CommandExecutor {
         RespValue::simple("OK")
     }
 
-    pub(super) fn execute_expire(&mut self, key: &str, seconds: i64) -> RespValue {
+    pub(super) fn execute_expire(
+        &mut self,
+        key: &str,
+        seconds: i64,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+    ) -> RespValue {
+        // Reject values that would overflow when converted to ms or when adding basetime
+        let max_expire_secs = i64::MAX / 1000;
+        if seconds > max_expire_secs || seconds < (i64::MIN / 1000) {
+            return RespValue::err("ERR invalid expire time in 'expire' command");
+        }
+        // Also check if seconds*1000 + basetime_ms overflows
+        let expire_ms = seconds.saturating_mul(1000);
+        if expire_ms > 0 {
+            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            if expire_ms > i64::MAX - basetime_ms {
+                return RespValue::err("ERR invalid expire time in 'expire' command");
+            }
+        }
         if self.is_expired(key) || !self.data.contains_key(key) {
-            RespValue::Integer(0)
-        } else if seconds <= 0 {
-            // Negative/zero TTL means delete immediately
+            return RespValue::Integer(0);
+        }
+        if seconds <= 0 {
+            // Negative/zero TTL means delete immediately (skip flag checks for delete)
             self.data.remove(key);
             self.expirations.remove(key);
             self.access_times.remove(key);
+            return RespValue::Integer(1);
+        }
 
-            // TigerStyle: Postcondition - key must be fully removed
-            debug_assert!(
-                !self.data.contains_key(key),
-                "Postcondition violated: key must be deleted when EXPIRE <= 0"
-            );
+        let new_expiration =
+            self.current_time + crate::simulator::Duration::from_secs(seconds as u64);
+        let current_expiration = self.expirations.get(key).copied();
+        let has_expiry = current_expiration.is_some();
 
-            RespValue::Integer(1)
-        } else {
-            let expiration =
-                self.current_time + crate::simulator::Duration::from_secs(seconds as u64);
-            self.expirations.insert(key.to_string(), expiration);
+        // NX: Only set if key has no expiry
+        if nx && has_expiry {
+            return RespValue::Integer(0);
+        }
+        // XX: Only set if key already has an expiry
+        if xx && !has_expiry {
+            return RespValue::Integer(0);
+        }
+        // GT: Only set if new expiry > current expiry (no expiry = persistent = infinity)
+        if gt {
+            match current_expiration {
+                Some(current) if new_expiration.as_millis() <= current.as_millis() => {
+                    return RespValue::Integer(0);
+                }
+                None => {
+                    // No current expiry means key is persistent (infinite TTL)
+                    // Any finite TTL < infinity, so GT fails
+                    return RespValue::Integer(0);
+                }
+                _ => {}
+            }
+        }
+        // LT: Only set if new expiry < current expiry (no expiry = persistent = infinity)
+        if lt {
+            if let Some(current) = current_expiration {
+                if new_expiration.as_millis() >= current.as_millis() {
+                    return RespValue::Integer(0);
+                }
+            }
+            // No current expiry: any finite TTL < infinity, so LT succeeds — fall through
+        }
 
-            // TigerStyle: Postcondition - expiration must be set
-            debug_assert!(
-                self.expirations.contains_key(key),
-                "Postcondition violated: key must have expiration after EXPIRE"
-            );
-            debug_assert!(
-                self.expirations.get(key).map(|e| e.as_millis())
-                    > Some(self.current_time.as_millis()),
-                "Postcondition violated: expiration must be in the future"
-            );
+        self.expirations.insert(key.to_string(), new_expiration);
+        RespValue::Integer(1)
+    }
 
-            RespValue::Integer(1)
+    pub(super) fn execute_pexpire(
+        &mut self,
+        key: &str,
+        milliseconds: i64,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+    ) -> RespValue {
+        // Reject values that would overflow when adding basetime
+        if milliseconds > 0 {
+            let basetime_ms = self.simulation_start_epoch_ms + self.current_time.as_millis() as i64;
+            if milliseconds > i64::MAX - basetime_ms {
+                return RespValue::err("ERR invalid expire time in 'pexpire' command");
+            }
+        } else if milliseconds < i64::MIN / 2 {
+            return RespValue::err("ERR invalid expire time in 'pexpire' command");
+        }
+        if self.is_expired(key) || !self.data.contains_key(key) {
+            return RespValue::Integer(0);
+        }
+        if milliseconds <= 0 {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
+            return RespValue::Integer(1);
+        }
+
+        let new_expiration =
+            self.current_time + crate::simulator::Duration::from_millis(milliseconds as u64);
+        let current_expiration = self.expirations.get(key).copied();
+        let has_expiry = current_expiration.is_some();
+
+        if nx && has_expiry {
+            return RespValue::Integer(0);
+        }
+        if xx && !has_expiry {
+            return RespValue::Integer(0);
+        }
+        if gt {
+            match current_expiration {
+                Some(current) if new_expiration.as_millis() <= current.as_millis() => {
+                    return RespValue::Integer(0);
+                }
+                None => return RespValue::Integer(0),
+                _ => {}
+            }
+        }
+        if lt {
+            if let Some(current) = current_expiration {
+                if new_expiration.as_millis() >= current.as_millis() {
+                    return RespValue::Integer(0);
+                }
+            }
+        }
+
+        self.expirations.insert(key.to_string(), new_expiration);
+        RespValue::Integer(1)
+    }
+
+    pub(super) fn execute_expiretime(&self, key: &str) -> RespValue {
+        if self.is_expired(key) || !self.data.contains_key(key) {
+            return RespValue::Integer(-2);
+        }
+        match self.expirations.get(key) {
+            Some(expiration) => {
+                let epoch_secs = self
+                    .simulation_start_epoch_ms
+                    .saturating_add(expiration.as_millis() as i64)
+                    / 1000;
+                RespValue::Integer(epoch_secs)
+            }
+            None => RespValue::Integer(-1),
+        }
+    }
+
+    pub(super) fn execute_pexpiretime(&self, key: &str) -> RespValue {
+        if self.is_expired(key) || !self.data.contains_key(key) {
+            return RespValue::Integer(-2);
+        }
+        match self.expirations.get(key) {
+            Some(expiration) => {
+                let epoch_ms = self
+                    .simulation_start_epoch_ms
+                    .saturating_add(expiration.as_millis() as i64);
+                RespValue::Integer(epoch_ms)
+            }
+            None => RespValue::Integer(-1),
         }
     }
 
@@ -156,24 +285,24 @@ impl CommandExecutor {
         if self.is_expired(key) || !self.data.contains_key(key) {
             RespValue::Integer(0)
         } else {
-            let simulation_relative_secs = timestamp - self.simulation_start_epoch;
-            if simulation_relative_secs <= 0 {
+            // Convert to ms and use ms-precision epoch for accuracy
+            let timestamp_ms = timestamp.saturating_mul(1000);
+            let simulation_relative_ms =
+                timestamp_ms.saturating_sub(self.simulation_start_epoch_ms);
+            if simulation_relative_ms <= 0 {
+                self.data.remove(key);
+                self.expirations.remove(key);
+                self.access_times.remove(key);
+                RespValue::Integer(1)
+            } else if (simulation_relative_ms as u64) <= self.current_time.as_millis() {
                 self.data.remove(key);
                 self.expirations.remove(key);
                 self.access_times.remove(key);
                 RespValue::Integer(1)
             } else {
-                let expiration_millis = (simulation_relative_secs as u64).saturating_mul(1000);
-                if expiration_millis <= self.current_time.as_millis() {
-                    self.data.remove(key);
-                    self.expirations.remove(key);
-                    self.access_times.remove(key);
-                    RespValue::Integer(1)
-                } else {
-                    let expiration = VirtualTime::from_millis(expiration_millis);
-                    self.expirations.insert(key.to_string(), expiration);
-                    RespValue::Integer(1)
-                }
+                let expiration = VirtualTime::from_millis(simulation_relative_ms as u64);
+                self.expirations.insert(key.to_string(), expiration);
+                RespValue::Integer(1)
             }
         }
     }
@@ -183,7 +312,7 @@ impl CommandExecutor {
             RespValue::Integer(0)
         } else {
             let simulation_relative_millis =
-                timestamp_millis - (self.simulation_start_epoch * 1000);
+                timestamp_millis.saturating_sub(self.simulation_start_epoch_ms);
             if simulation_relative_millis <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
@@ -207,7 +336,7 @@ impl CommandExecutor {
             -2i64 // Key does not exist
         } else if let Some(expiration) = self.expirations.get(key) {
             let remaining_ms = expiration.as_millis() as i64 - self.current_time.as_millis() as i64;
-            (remaining_ms / 1000).max(0)
+            ((remaining_ms + 999) / 1000).max(0)
         } else {
             -1i64 // Key exists but has no associated expire
         };

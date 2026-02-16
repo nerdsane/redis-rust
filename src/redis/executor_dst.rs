@@ -1474,7 +1474,7 @@ impl ExecutorDSTHarness {
 
             let resp = self
                 .executor
-                .execute(&Command::Expire(key.clone(), seconds));
+                .execute(&Command::expire(key.clone(), seconds));
 
             // Check response-driven invariants:
             // EXPIRE returns 1 if key exists, 0 if not

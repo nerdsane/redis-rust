@@ -34,7 +34,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_srem(&mut self, key: &str, members: &[SDS]) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::Set(s)) => {
                 // TigerStyle: Capture pre-state for postcondition
                 #[cfg(debug_assertions)]
@@ -71,7 +71,14 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::Integer(0),
+        };
+        // Redis auto-deletes empty sets
+        if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 
     pub(super) fn execute_smembers(&mut self, key: &str) -> RespValue {
@@ -120,7 +127,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_spop(&mut self, key: &str, count: Option<usize>) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::Set(s)) => match count {
                 None => {
                     // SPOP key - return single element or nil
@@ -152,6 +159,13 @@ impl CommandExecutor {
                     Some(_) => RespValue::Array(Some(vec![])),
                 }
             }
+        };
+        // Redis auto-deletes empty sets
+        if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 }

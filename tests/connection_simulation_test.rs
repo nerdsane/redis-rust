@@ -238,7 +238,7 @@ fn test_1000_seeds_connection_correctness() {
 fn test_ping_pipeline() {
     let mut conn = SimulatedConnection::new(42);
 
-    conn.send_pipeline(vec![Command::Ping, Command::Ping, Command::Ping]);
+    conn.send_pipeline(vec![Command::Ping(None), Command::Ping(None), Command::Ping(None)]);
 
     let responses = conn.process();
 

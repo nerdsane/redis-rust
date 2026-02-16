@@ -15,8 +15,17 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}=== Local CI Checks ===${NC}"
 echo ""
 
+# DST Tests (run first - fast and catches regressions early)
+echo -e "${YELLOW}[1/6] Running DST tests...${NC}"
+if cargo test --lib -- dst --test-threads=1; then
+    echo -e "${GREEN}  DST tests OK${NC}"
+else
+    echo -e "${RED}  DST tests FAILED${NC}"
+    exit 1
+fi
+
 # Formatting
-echo -e "${YELLOW}[1/5] Checking formatting...${NC}"
+echo -e "${YELLOW}[2/6] Checking formatting...${NC}"
 if cargo fmt --all -- --check; then
     echo -e "${GREEN}  Formatting OK${NC}"
 else
@@ -25,7 +34,7 @@ else
 fi
 
 # TOML validation
-echo -e "${YELLOW}[2/5] Validating TOML files...${NC}"
+echo -e "${YELLOW}[3/6] Validating TOML files...${NC}"
 if command -v taplo &> /dev/null; then
     if taplo check; then
         echo -e "${GREEN}  TOML validation OK${NC}"
@@ -38,7 +47,7 @@ else
 fi
 
 # Clippy
-echo -e "${YELLOW}[3/5] Running clippy...${NC}"
+echo -e "${YELLOW}[4/6] Running clippy...${NC}"
 if cargo clippy --all-targets -- -D warnings; then
     echo -e "${GREEN}  Clippy OK${NC}"
 else
@@ -47,7 +56,7 @@ else
 fi
 
 # Tests
-echo -e "${YELLOW}[4/5] Running tests...${NC}"
+echo -e "${YELLOW}[5/6] Running tests...${NC}"
 if cargo test --release; then
     echo -e "${GREEN}  Tests OK${NC}"
 else
@@ -56,7 +65,7 @@ else
 fi
 
 # Doc tests (quick check that documentation compiles)
-echo -e "${YELLOW}[5/5] Checking documentation...${NC}"
+echo -e "${YELLOW}[6/6] Checking documentation...${NC}"
 if cargo doc --no-deps --document-private-items 2>/dev/null; then
     echo -e "${GREEN}  Documentation OK${NC}"
 else

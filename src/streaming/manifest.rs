@@ -120,6 +120,10 @@ impl Manifest {
 
     /// Add a segment to the manifest
     pub fn add_segment(&mut self, info: SegmentInfo) {
+        // Keep next_segment_id ahead of all segment ids
+        if info.id >= self.next_segment_id {
+            self.next_segment_id = info.id + 1;
+        }
         // Maintain sorted order by id
         let pos = self.segments.partition_point(|s| s.id < info.id);
         self.segments.insert(pos, info);

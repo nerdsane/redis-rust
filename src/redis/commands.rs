@@ -36,6 +36,7 @@ impl Command {
                         Ok(Command::Ping(msg))
                     }
                     "INFO" => Ok(Command::Info),
+                    "TIME" => Ok(Command::Time),
                     "DBSIZE" => Ok(Command::DbSize),
                     "CONFIG" => {
                         if elements.len() < 2 {
@@ -254,7 +255,7 @@ impl Command {
                     }
                     "GET" => {
                         if elements.len() != 2 {
-                            return Err("GET requires 1 argument".to_string());
+                            return Err("ERR wrong number of arguments for 'get' command".to_string());
                         }
                         Ok(Command::Get(Self::extract_string_zc(&elements[1])?))
                     }
@@ -267,9 +268,12 @@ impl Command {
 
                         let mut ex = None;
                         let mut px = None;
+                        let mut exat = None;
+                        let mut pxat = None;
                         let mut nx = false;
                         let mut xx = false;
                         let mut get = false;
+                        let mut keepttl = false;
 
                         let mut i = 3;
                         while i < elements.len() {
@@ -292,10 +296,25 @@ impl Command {
                                     }
                                     px = Some(Self::extract_i64_zc(&elements[i])?);
                                 }
-                                "EXAT" | "PXAT" | "KEEPTTL" | "IFEQ" | "IFGT" => {
+                                "EXAT" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET EXAT requires a value".to_string());
+                                    }
+                                    exat = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "PXAT" => {
+                                    i += 1;
+                                    if i >= elements.len() {
+                                        return Err("SET PXAT requires a value".to_string());
+                                    }
+                                    pxat = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "KEEPTTL" => keepttl = true,
+                                "IFEQ" | "IFGT" => {
                                     return Err(format!("SET {} option not yet supported", opt));
                                 }
-                                _ => return Err(format!("ERR syntax error")),
+                                _ => return Err("ERR syntax error".to_string()),
                             }
                             i += 1;
                         }
@@ -313,9 +332,12 @@ impl Command {
                             value,
                             ex,
                             px,
+                            exat,
+                            pxat,
                             nx,
                             xx,
                             get,
+                            keepttl,
                         })
                     }
                     "SETEX" => {
@@ -330,9 +352,12 @@ impl Command {
                             value,
                             ex: Some(seconds),
                             px: None,
+                            exat: None,
+                            pxat: None,
                             nx: false,
                             xx: false,
                             get: false,
+                            keepttl: false,
                         })
                     }
                     "SETNX" => {
@@ -377,13 +402,64 @@ impl Command {
                         Ok(Command::Keys(Self::extract_string_zc(&elements[1])?))
                     }
                     "EXPIRE" => {
-                        if elements.len() != 3 {
-                            return Err("EXPIRE requires 2 arguments".to_string());
+                        if elements.len() < 3 {
+                            return Err("EXPIRE requires at least 2 arguments".to_string());
                         }
-                        Ok(Command::Expire(
-                            Self::extract_string_zc(&elements[1])?,
-                            Self::extract_integer_zc(&elements[2])? as i64,
-                        ))
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let seconds = Self::extract_integer_zc(&elements[2])? as i64;
+                        let mut nx = false;
+                        let mut xx = false;
+                        let mut gt = false;
+                        let mut lt = false;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "NX" => nx = true,
+                                "XX" => xx = true,
+                                "GT" => gt = true,
+                                "LT" => lt = true,
+                                _ => return Err(format!("ERR Unsupported option {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        if nx && (xx || gt || lt) {
+                            return Err("ERR NX and XX, GT or LT options at the same time are not compatible".to_string());
+                        }
+                        if gt && lt {
+                            return Err("ERR GT and LT options at the same time are not compatible".to_string());
+                        }
+                        Ok(Command::Expire { key, seconds, nx, xx, gt, lt })
+                    }
+                    "PEXPIRE" => {
+                        if elements.len() < 3 {
+                            return Err("PEXPIRE requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let milliseconds = Self::extract_integer_zc(&elements[2])? as i64;
+                        let mut nx = false;
+                        let mut xx = false;
+                        let mut gt = false;
+                        let mut lt = false;
+                        let mut i = 3;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "NX" => nx = true,
+                                "XX" => xx = true,
+                                "GT" => gt = true,
+                                "LT" => lt = true,
+                                _ => return Err(format!("ERR Unsupported option {}", opt)),
+                            }
+                            i += 1;
+                        }
+                        if nx && (xx || gt || lt) {
+                            return Err("ERR NX and XX, GT or LT options at the same time are not compatible".to_string());
+                        }
+                        if gt && lt {
+                            return Err("ERR GT and LT options at the same time are not compatible".to_string());
+                        }
+                        Ok(Command::PExpire { key, milliseconds, nx, xx, gt, lt })
                     }
                     "EXPIREAT" => {
                         if elements.len() != 3 {
@@ -423,19 +499,19 @@ impl Command {
                     }
                     "INCR" => {
                         if elements.len() != 2 {
-                            return Err("INCR requires 1 argument".to_string());
+                            return Err("ERR wrong number of arguments for 'incr' command".to_string());
                         }
                         Ok(Command::Incr(Self::extract_string_zc(&elements[1])?))
                     }
                     "DECR" => {
                         if elements.len() != 2 {
-                            return Err("DECR requires 1 argument".to_string());
+                            return Err("ERR wrong number of arguments for 'decr' command".to_string());
                         }
                         Ok(Command::Decr(Self::extract_string_zc(&elements[1])?))
                     }
                     "INCRBY" => {
                         if elements.len() != 3 {
-                            return Err("INCRBY requires 2 arguments".to_string());
+                            return Err("ERR wrong number of arguments for 'incrby' command".to_string());
                         }
                         Ok(Command::IncrBy(
                             Self::extract_string_zc(&elements[1])?,
@@ -444,7 +520,7 @@ impl Command {
                     }
                     "DECRBY" => {
                         if elements.len() != 3 {
-                            return Err("DECRBY requires 2 arguments".to_string());
+                            return Err("ERR wrong number of arguments for 'decrby' command".to_string());
                         }
                         Ok(Command::DecrBy(
                             Self::extract_string_zc(&elements[1])?,
@@ -488,7 +564,7 @@ impl Command {
                     }
                     "MSET" => {
                         if elements.len() < 3 || (elements.len() - 1) % 2 != 0 {
-                            return Err("MSET requires key-value pairs".to_string());
+                            return Err("ERR wrong number of arguments for 'mset' command".to_string());
                         }
                         // Pre-allocate capacity (Abseil Tip #19)
                         let mut pairs = Vec::with_capacity((elements.len() - 1) / 2);
@@ -499,6 +575,19 @@ impl Command {
                             ));
                         }
                         Ok(Command::MSet(pairs))
+                    }
+                    "MSETNX" => {
+                        if elements.len() < 3 || (elements.len() - 1) % 2 != 0 {
+                            return Err("ERR wrong number of arguments for 'msetnx' command".to_string());
+                        }
+                        let mut pairs = Vec::with_capacity((elements.len() - 1) / 2);
+                        for i in (1..elements.len()).step_by(2) {
+                            pairs.push((
+                                Self::extract_string_zc(&elements[i])?,
+                                Self::extract_sds_zc(&elements[i + 1])?,
+                            ));
+                        }
+                        Ok(Command::MSetNx(pairs))
                     }
                     "LPUSH" => {
                         if elements.len() < 3 {
@@ -1121,6 +1210,157 @@ impl Command {
                             }
                         }
                     }
+                    "GETRANGE" | "SUBSTR" => {
+                        if elements.len() != 4 {
+                            return Err("GETRANGE requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let start = Self::extract_integer_zc(&elements[2])?;
+                        let end = Self::extract_integer_zc(&elements[3])?;
+                        Ok(Command::GetRange(key, start, end))
+                    }
+                    "SETRANGE" => {
+                        if elements.len() != 4 {
+                            return Err("SETRANGE requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let offset = Self::extract_integer_zc(&elements[2])?;
+                        if offset < 0 {
+                            return Err("ERR offset is out of range".to_string());
+                        }
+                        let value = Self::extract_sds_zc(&elements[3])?;
+                        Ok(Command::SetRange(key, offset as usize, value))
+                    }
+                    "GETEX" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'getex' command".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let mut ex = None;
+                        let mut px = None;
+                        let mut exat = None;
+                        let mut pxat = None;
+                        let mut persist = false;
+                        let mut i = 2;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            match opt.as_str() {
+                                "EX" => {
+                                    i += 1;
+                                    if i >= elements.len() { return Err("GETEX EX requires a value".to_string()); }
+                                    ex = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "PX" => {
+                                    i += 1;
+                                    if i >= elements.len() { return Err("GETEX PX requires a value".to_string()); }
+                                    px = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "EXAT" => {
+                                    i += 1;
+                                    if i >= elements.len() { return Err("GETEX EXAT requires a value".to_string()); }
+                                    exat = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "PXAT" => {
+                                    i += 1;
+                                    if i >= elements.len() { return Err("GETEX PXAT requires a value".to_string()); }
+                                    pxat = Some(Self::extract_i64_zc(&elements[i])?);
+                                }
+                                "PERSIST" => persist = true,
+                                _ => return Err("ERR syntax error".to_string()),
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::GetEx { key, ex, px, exat, pxat, persist })
+                    }
+                    "GETDEL" => {
+                        if elements.len() != 2 {
+                            return Err("GETDEL requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        Ok(Command::GetDel(key))
+                    }
+                    "INCRBYFLOAT" => {
+                        if elements.len() != 3 {
+                            return Err("ERR wrong number of arguments for 'incrbyfloat' command".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let increment = Self::extract_float_zc(&elements[2])?;
+                        if increment.is_nan() || increment.is_infinite() {
+                            return Err("ERR increment would produce NaN or Infinity".to_string());
+                        }
+                        Ok(Command::IncrByFloat(key, increment))
+                    }
+                    "PSETEX" => {
+                        if elements.len() != 4 {
+                            return Err("PSETEX requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let millis = Self::extract_integer_zc(&elements[2])? as i64;
+                        let value = Self::extract_sds_zc(&elements[3])?;
+                        Ok(Command::Set {
+                            key,
+                            value,
+                            ex: None,
+                            px: Some(millis),
+                            exat: None,
+                            pxat: None,
+                            nx: false,
+                            xx: false,
+                            get: false,
+                            keepttl: false,
+                        })
+                    }
+                    "EXPIRETIME" => {
+                        if elements.len() != 2 {
+                            return Err("EXPIRETIME requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        Ok(Command::ExpireTime(key))
+                    }
+                    "PEXPIRETIME" => {
+                        if elements.len() != 2 {
+                            return Err("PEXPIRETIME requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        Ok(Command::PExpireTime(key))
+                    }
+                    "UNLINK" => {
+                        if elements.len() < 2 {
+                            return Err("UNLINK requires at least 1 argument".to_string());
+                        }
+                        let keys: Vec<String> = elements[1..]
+                            .iter()
+                            .map(Self::extract_string_zc)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Del(keys))
+                    }
+                    "WAIT" => {
+                        if elements.len() != 3 {
+                            return Err("WAIT requires 2 arguments".to_string());
+                        }
+                        let numreplicas = Self::extract_i64_zc(&elements[1])?;
+                        let timeout = Self::extract_i64_zc(&elements[2])?;
+                        Ok(Command::Wait(numreplicas, timeout))
+                    }
+                    "SORT" => {
+                        if elements.len() < 2 {
+                            return Err("ERR wrong number of arguments for 'sort' command".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let mut store = None;
+                        let mut i = 2;
+                        while i < elements.len() {
+                            let opt = Self::extract_string_zc(&elements[i])?.to_uppercase();
+                            if opt == "STORE" {
+                                i += 1;
+                                if i < elements.len() {
+                                    store = Some(Self::extract_string_zc(&elements[i])?);
+                                }
+                            }
+                            i += 1;
+                        }
+                        Ok(Command::Sort { key, store })
+                    }
                     "RANDOMKEY" => Ok(Command::RandomKey),
                     "RENAME" => {
                         if elements.len() != 3 {
@@ -1165,10 +1405,11 @@ impl Command {
         match value {
             RespValueZeroCopy::BulkString(Some(data)) => {
                 let s = String::from_utf8_lossy(data);
-                s.parse::<isize>().map_err(|e| e.to_string())
+                s.parse::<isize>()
+                    .map_err(|_| "ERR value is not an integer or out of range".to_string())
             }
             RespValueZeroCopy::Integer(n) => Ok(*n as isize),
-            _ => Err("Expected integer".to_string()),
+            _ => Err("ERR value is not an integer or out of range".to_string()),
         }
     }
 
@@ -1176,9 +1417,10 @@ impl Command {
         match value {
             RespValueZeroCopy::BulkString(Some(data)) => {
                 let s = String::from_utf8_lossy(data);
-                s.parse::<f64>().map_err(|e| e.to_string())
+                s.parse::<f64>()
+                    .map_err(|_| "ERR value is not a valid float".to_string())
             }
-            _ => Err("Expected float".to_string()),
+            _ => Err("ERR value is not a valid float".to_string()),
         }
     }
 
@@ -1186,10 +1428,11 @@ impl Command {
         match value {
             RespValueZeroCopy::BulkString(Some(data)) => {
                 let s = String::from_utf8_lossy(data);
-                s.parse::<i64>().map_err(|e| e.to_string())
+                s.parse::<i64>()
+                    .map_err(|_| "ERR value is not an integer or out of range".to_string())
             }
             RespValueZeroCopy::Integer(n) => Ok(*n),
-            _ => Err("Expected integer".to_string()),
+            _ => Err("ERR value is not an integer or out of range".to_string()),
         }
     }
 

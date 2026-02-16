@@ -16,9 +16,12 @@ fn test_scan_basic() {
             value: SDS::from_str("value"),
             ex: None,
             px: None,
+            exat: None,
+            pxat: None,
             nx: false,
             xx: false,
             get: false,
+            keepttl: false,
         });
     }
 
@@ -50,27 +53,36 @@ fn test_scan_with_pattern() {
         value: SDS::from_str("alice"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
     executor.execute(&Command::Set {
         key: "user:2".to_string(),
         value: SDS::from_str("bob"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
     executor.execute(&Command::Set {
         key: "session:1".to_string(),
         value: SDS::from_str("data"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     let cmd = Command::Scan {

@@ -19,9 +19,12 @@ fn test_multi_exec_basic() {
         value: SDS::from_str("bar"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
     assert_eq!(r1, RespValue::simple("QUEUED"));
 
@@ -56,9 +59,12 @@ fn test_multi_discard() {
         value: SDS::from_str("bar"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     let result = executor.execute(&Command::Discard);
@@ -102,9 +108,12 @@ fn test_watch_unmodified_key() {
         value: SDS::from_str("initial"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     // Watch the key
@@ -117,9 +126,12 @@ fn test_watch_unmodified_key() {
         value: SDS::from_str("updated"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     // Execute - should succeed since key wasn't modified

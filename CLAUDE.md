@@ -173,6 +173,8 @@ Systems must remain stable under partial failures:
 
 ## Testing Strategy
 
+> **Read [HARNESS.md](HARNESS.md) first.** It documents the full 4-layer verification loop, expected outputs, Tcl harness pitfalls, and the command addition checklist. Everything below is supplementary.
+
 **Priority Order (most to least important):**
 
 ### 1. DST Tests (REQUIRED for I/O components)
@@ -209,11 +211,49 @@ fn test_with_fault_injection() {
 - Use real async runtime but simulated I/O
 
 ### 4. Redis Compatibility Tests (Official Tcl Suite)
+
 Run the official Redis test suite against our implementation:
 ```bash
 ./scripts/run-redis-compat.sh                          # default test files
-./scripts/run-redis-compat.sh tests/unit/type/string   # specific test file
+./scripts/run-redis-compat.sh unit/type/string         # specific test file
+./scripts/run-redis-compat.sh unit/type/incr unit/expire  # multiple files
 ```
+
+**IMPORTANT: Tcl Harness Pitfalls (read before modifying commands)**
+
+The Tcl harness crashes the entire test file on unimplemented commands. One `ERR unknown command 'FOO'` kills all remaining tests in that file. This means:
+
+- **Adding a stub that returns an error is better than not parsing at all.** Parse unknown commands as `Command::Unknown(name)` so they return a clean error instead of crashing the RESP parser.
+- **Error message format matters.** The Tcl tests use `assert_error "*pattern*"` with glob matching. Redis uses these exact formats:
+  - `ERR wrong number of arguments for 'xxx' command`
+  - `ERR value is not an integer or out of range`
+  - `ERR value is not a valid float`
+  - `ERR syntax error`
+  - `WRONGTYPE Operation against a key holding the wrong kind of value`
+- **Double ERR prefix bug.** `connection_optimized.rs::encode_error_into` prepends `ERR ` to messages. If your parser error string already starts with `ERR `, the client sees `ERR ERR ...`. The function now checks for this, but keep it in mind.
+- **`perf_config.toml` affects tests.** The root config has `num_shards = 1` which is required for Tcl tests (MULTI/EXEC, Lua scripts need all keys on one shard). The `docker-benchmark/perf_config.toml` has `num_shards = 16` for throughput. **Do not change the root config to multi-shard without understanding the consequences for transactions and Lua.**
+- **`max_size` in `perf_config.toml` limits request size.** It was previously 1MB which caused `string.tcl` to crash on 4MB payloads. Now 512MB. If you see "buffer overflow" in server logs, check this value.
+- **MULTI/EXEC state is at the connection level** (`connection_optimized.rs`), not per-shard executor. The executor still has transaction state for the simulation/DST path, but the production server intercepts MULTI/EXEC/DISCARD/WATCH before routing to shards.
+- **WATCH uses GET-snapshot comparison.** At WATCH time, the connection does `GET key` and stores the result. At EXEC time, it does `GET key` again and compares. If different, EXEC returns nil array. This is correct but different from Redis's internal dirty-flag approach.
+- **Shard-aggregated commands.** DBSIZE, SCAN, KEYS, EXISTS, FLUSHDB/FLUSHALL, and DEL are handled specially in `sharded_actor.rs` to fan out across all shards. If you add a new command that needs to see all keys, add aggregation there.
+- **TIME command** returns real wall-clock time via `SystemTime::now()` at the sharded_actor level, not virtual time from the executor.
+
+**Current Tcl compatibility status:**
+
+| Suite | Pass | Blocker |
+|-------|------|---------|
+| `unit/type/incr` | 28/28 | - |
+| `unit/expire` | all | - |
+| `unit/type/string` | 35/39 | SETBIT (bitmaps not implemented) |
+| `unit/multi` | 20/56 | SWAPDB (database swapping not implemented) |
+
+**To add a new command without breaking the harness:**
+1. Add variant to `Command` enum in `command.rs`
+2. Update `get_primary_key()`, `get_keys()`, `name()`, `is_read_only()` match arms
+3. Add parsing in BOTH `parser.rs` AND `commands.rs` (zero-copy parser)
+4. Add execution in `executor/mod.rs` dispatch + the appropriate `*_ops.rs` file
+5. If the command needs all-shard visibility, add aggregation in `sharded_actor.rs`
+6. If adding `keepttl` or similar fields to `Command::Set`, update ALL struct literal constructions (there are ~25+ across test files, script_ops.rs, etc.)
 
 ### 5. Linearizability Tests (Jepsen-style)
 - Use Maelstrom for distributed correctness

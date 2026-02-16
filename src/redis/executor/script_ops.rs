@@ -403,9 +403,12 @@ impl CommandExecutor {
                     value,
                     ex,
                     px,
+                    exat: None,
+                    pxat: None,
                     nx,
                     xx,
                     get,
+                    keepttl: false,
                 })
             }
             "DEL" => {
@@ -529,7 +532,7 @@ impl CommandExecutor {
                 let seconds: i64 = to_string(&args[1])
                     .parse()
                     .map_err(|_| "EXPIRE seconds must be integer")?;
-                Ok(Command::Expire(to_string(&args[0]), seconds))
+                Ok(Command::expire(to_string(&args[0]), seconds))
             }
             "TTL" => {
                 if args.len() != 1 {
@@ -684,7 +687,7 @@ impl CommandExecutor {
                 let stop: isize = to_string(&args[2])
                     .parse()
                     .map_err(|_| "ZRANGE stop must be integer")?;
-                Ok(Command::ZRange(to_string(&args[0]), start, stop))
+                Ok(Command::ZRange(to_string(&args[0]), start, stop, false))
             }
             "ZSCORE" => {
                 if args.len() != 2 {

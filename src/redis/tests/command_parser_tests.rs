@@ -205,8 +205,8 @@ fn test_ping_from_both_parsers() {
     let old_cmd = Command::from_resp(&old_resp).unwrap();
     let new_cmd = Command::from_resp_zero_copy(&new_resp).unwrap();
 
-    assert!(matches!(old_cmd, Command::Ping));
-    assert!(matches!(new_cmd, Command::Ping));
+    assert!(matches!(old_cmd, Command::Ping(None)));
+    assert!(matches!(new_cmd, Command::Ping(None)));
 }
 
 #[test]

@@ -49,6 +49,8 @@ pub struct CommandExecutor {
     pub(crate) key_count: usize,
     pub(crate) commands_processed: usize,
     pub(crate) simulation_start_epoch: i64,
+    /// Exact server start time in milliseconds (for precise PEXPIREAT/PXAT)
+    pub(crate) simulation_start_epoch_ms: i64,
     // Transaction state
     pub(crate) in_transaction: bool,
     pub(crate) queued_commands: Vec<Command>,
@@ -71,6 +73,7 @@ impl CommandExecutor {
             key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
+            simulation_start_epoch_ms: 0,
             in_transaction: false,
             queued_commands: Vec::new(),
             watched_keys: AHashMap::new(),
@@ -90,6 +93,7 @@ impl CommandExecutor {
             key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
+            simulation_start_epoch_ms: 0,
             in_transaction: false,
             queued_commands: Vec::new(),
             watched_keys: AHashMap::new(),
@@ -106,6 +110,14 @@ impl CommandExecutor {
 
     pub fn set_simulation_start_epoch(&mut self, epoch: i64) {
         self.simulation_start_epoch = epoch;
+        // Default ms value from seconds if not set separately
+        if self.simulation_start_epoch_ms == 0 {
+            self.simulation_start_epoch_ms = epoch * 1000;
+        }
+    }
+
+    pub fn set_simulation_start_epoch_ms(&mut self, epoch_ms: i64) {
+        self.simulation_start_epoch_ms = epoch_ms;
     }
 
     pub fn set_time(&mut self, time: VirtualTime) {
@@ -346,6 +358,16 @@ impl CommandExecutor {
             Command::Ping(Some(msg)) => RespValue::BulkString(Some(msg.as_bytes().to_vec())),
             Command::Info => self.execute_info(),
             Command::DbSize => self.execute_dbsize(),
+            Command::Time => {
+                // Return real wall-clock time as [seconds, microseconds]
+                let epoch_secs = self.simulation_start_epoch
+                    .saturating_add(self.current_time.as_millis() as i64 / 1000);
+                let remaining_us = (self.current_time.as_millis() % 1000) * 1000;
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(epoch_secs.to_string().into_bytes())),
+                    RespValue::BulkString(Some(remaining_us.to_string().into_bytes())),
+                ]))
+            }
 
             // String commands
             Command::Get(key) => self.execute_get(key),
@@ -354,18 +376,33 @@ impl CommandExecutor {
                 value,
                 ex,
                 px,
+                exat,
+                pxat,
                 nx,
                 xx,
                 get,
-            } => self.execute_set(key, value, ex, px, nx, xx, get),
+                keepttl,
+            } => self.execute_set(key, value, ex, px, exat, pxat, nx, xx, get, keepttl),
             Command::SetNx(key, value) => self.execute_setnx(key, value),
             Command::Append(key, value) => self.execute_append(key, value),
             Command::GetSet(key, value) => self.execute_getset(key, value),
             Command::StrLen(key) => self.execute_strlen(key),
             Command::MGet(keys) => self.execute_mget(keys),
             Command::MSet(pairs) => self.execute_mset(pairs),
+            Command::MSetNx(pairs) => self.execute_msetnx(pairs),
             Command::BatchSet(pairs) => self.execute_batch_set(pairs),
             Command::BatchGet(keys) => self.execute_batch_get(keys),
+            Command::GetRange(key, start, end) => self.execute_getrange(key, *start, *end),
+            Command::SetRange(key, offset, value) => self.execute_setrange(key, *offset, value),
+            Command::GetEx {
+                key,
+                ex,
+                px,
+                exat,
+                pxat,
+                persist,
+            } => self.execute_getex(key, ex, px, exat, pxat, *persist),
+            Command::GetDel(key) => self.execute_getdel(key),
             Command::Incr(key) => self.incr_by_impl(key, 1),
             Command::Decr(key) => self.incr_by_impl(key, -1),
             Command::IncrBy(key, increment) => self.incr_by_impl(key, *increment),
@@ -373,6 +410,7 @@ impl CommandExecutor {
                 .checked_neg()
                 .map(|neg| self.incr_by_impl(key, neg))
                 .unwrap_or_else(|| RespValue::err("ERR value is out of range")),
+            Command::IncrByFloat(key, increment) => self.execute_incrbyfloat(key, *increment),
 
             // Key commands
             Command::Del(keys) => self.execute_del(keys),
@@ -380,13 +418,30 @@ impl CommandExecutor {
             Command::TypeOf(key) => self.execute_typeof(key),
             Command::Keys(pattern) => self.execute_keys(pattern),
             Command::FlushDb | Command::FlushAll => self.execute_flush(),
-            Command::Expire(key, seconds) => self.execute_expire(key, *seconds),
+            Command::Expire {
+                key,
+                seconds,
+                nx,
+                xx,
+                gt,
+                lt,
+            } => self.execute_expire(key, *seconds, *nx, *xx, *gt, *lt),
             Command::ExpireAt(key, timestamp) => self.execute_expireat(key, *timestamp),
+            Command::PExpire {
+                key,
+                milliseconds,
+                nx,
+                xx,
+                gt,
+                lt,
+            } => self.execute_pexpire(key, *milliseconds, *nx, *xx, *gt, *lt),
             Command::PExpireAt(key, timestamp_millis) => {
                 self.execute_pexpireat(key, *timestamp_millis)
             }
             Command::Ttl(key) => self.execute_ttl(key),
             Command::Pttl(key) => self.execute_pttl(key),
+            Command::ExpireTime(key) => self.execute_expiretime(key),
+            Command::PExpireTime(key) => self.execute_pexpiretime(key),
             Command::Persist(key) => self.execute_persist(key),
 
             // List commands
@@ -679,6 +734,50 @@ impl CommandExecutor {
                 self.access_times.remove(src);
                 self.access_times.insert(dst.clone(), self.current_time);
                 RespValue::Integer(1)
+            }
+
+            // WAIT - no replicas in simulation
+            Command::Wait(_, _) => RespValue::Integer(0),
+
+            // SORT - minimal stub (returns sorted elements, stores if STORE)
+            Command::Sort { key, store } => {
+                let members: Vec<SDS> = match self.get_value(key) {
+                    Some(Value::List(l)) => {
+                        l.range(0, l.len() as isize - 1)
+                    }
+                    Some(Value::Set(s)) => s.members(),
+                    None => vec![],
+                    Some(_) => {
+                        return RespValue::err(
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
+                        )
+                    }
+                };
+                // Sort lexicographically (basic sort; Redis sorts numerically by default but this is a stub)
+                let mut sorted = members;
+                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                let items: Vec<RespValue> = sorted
+                    .iter()
+                    .map(|s| RespValue::BulkString(Some(s.as_bytes().to_vec())))
+                    .collect();
+                if let Some(dest) = store {
+                    let count = items.len() as i64;
+                    if sorted.is_empty() {
+                        self.data.remove(dest);
+                        self.expirations.remove(dest);
+                    } else {
+                        use crate::redis::data::RedisList;
+                        let mut list = RedisList::new();
+                        for s in &sorted {
+                            list.rpush(s.clone());
+                        }
+                        self.data.insert(dest.clone(), Value::List(list));
+                        self.expirations.remove(dest);
+                    }
+                    RespValue::Integer(count)
+                } else {
+                    RespValue::Array(Some(items))
+                }
             }
 
             // Unknown

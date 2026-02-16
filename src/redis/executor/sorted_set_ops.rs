@@ -95,7 +95,7 @@ impl CommandExecutor {
     }
 
     pub(super) fn execute_zrem(&mut self, key: &str, members: &[SDS]) -> RespValue {
-        match self.get_value_mut(key) {
+        let result = match self.get_value_mut(key) {
             Some(Value::SortedSet(zs)) => {
                 // TigerStyle: Capture pre-state for postcondition
                 #[cfg(debug_assertions)]
@@ -132,18 +132,40 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => RespValue::Integer(0),
+        };
+        // Redis auto-deletes empty sorted sets
+        if matches!(self.data.get(key), Some(Value::SortedSet(zs)) if zs.len() == 0) {
+            self.data.remove(key);
+            self.expirations.remove(key);
+            self.access_times.remove(key);
         }
+        result
     }
 
-    pub(super) fn execute_zrange(&mut self, key: &str, start: isize, stop: isize) -> RespValue {
+    pub(super) fn execute_zrange(
+        &mut self,
+        key: &str,
+        start: isize,
+        stop: isize,
+        with_scores: bool,
+    ) -> RespValue {
         match self.get_value(key) {
             Some(Value::SortedSet(zs)) => {
                 let range = zs.range(start, stop);
-                let elements: Vec<RespValue> = range
-                    .iter()
-                    .map(|(m, _)| RespValue::BulkString(Some(m.as_bytes().to_vec())))
-                    .collect();
-                RespValue::Array(Some(elements))
+                if with_scores {
+                    let mut elements = Vec::with_capacity(range.len() * 2);
+                    for (m, s) in range {
+                        elements.push(RespValue::BulkString(Some(m.as_bytes().to_vec())));
+                        elements.push(RespValue::BulkString(Some(s.to_string().into_bytes())));
+                    }
+                    RespValue::Array(Some(elements))
+                } else {
+                    let elements: Vec<RespValue> = range
+                        .iter()
+                        .map(|(m, _)| RespValue::BulkString(Some(m.as_bytes().to_vec())))
+                        .collect();
+                    RespValue::Array(Some(elements))
+                }
             }
             Some(_) => {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")

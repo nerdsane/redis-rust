@@ -12,9 +12,12 @@ fn test_set_nx_when_key_not_exists() {
         value: SDS::from_str("myvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: true,
         xx: false,
         get: false,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -38,9 +41,12 @@ fn test_set_nx_when_key_exists() {
         value: SDS::from_str("original"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     // NX should fail when key exists
@@ -49,9 +55,12 @@ fn test_set_nx_when_key_exists() {
         value: SDS::from_str("newvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: true,
         xx: false,
         get: false,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -75,9 +84,12 @@ fn test_set_xx_when_key_exists() {
         value: SDS::from_str("original"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     // XX should succeed when key exists
@@ -86,9 +98,12 @@ fn test_set_xx_when_key_exists() {
         value: SDS::from_str("newvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: true,
         get: false,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -112,9 +127,12 @@ fn test_set_xx_when_key_not_exists() {
         value: SDS::from_str("myvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: true,
         get: false,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -135,9 +153,12 @@ fn test_set_get_returns_old_value() {
         value: SDS::from_str("original"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     });
 
     // SET with GET should return old value
@@ -146,9 +167,12 @@ fn test_set_get_returns_old_value() {
         value: SDS::from_str("newvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: true,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -171,9 +195,12 @@ fn test_set_get_returns_nil_when_key_not_exists() {
         value: SDS::from_str("myvalue"),
         ex: None,
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: true,
+        keepttl: false,
     };
     let result = executor.execute(&cmd);
 
@@ -190,9 +217,12 @@ fn test_set_ex_sets_expiration() {
         value: SDS::from_str("myvalue"),
         ex: Some(10), // 10 seconds
         px: None,
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     };
     executor.execute(&cmd);
 
@@ -220,9 +250,12 @@ fn test_set_px_sets_expiration_milliseconds() {
         value: SDS::from_str("myvalue"),
         ex: None,
         px: Some(500), // 500 milliseconds
+        exat: None,
+        pxat: None,
         nx: false,
         xx: false,
         get: false,
+        keepttl: false,
     };
     executor.execute(&cmd);
 

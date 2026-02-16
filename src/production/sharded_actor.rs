@@ -132,6 +132,7 @@ impl ShardActor {
     fn new(
         rx: mpsc::UnboundedReceiver<ShardMessage>,
         simulation_start_epoch: i64,
+        start_millis: u64,
         shard_id: usize,
         num_shards: usize,
     ) -> Self {
@@ -143,6 +144,7 @@ impl ShardActor {
         );
         let mut executor = CommandExecutor::new();
         executor.set_simulation_start_epoch(simulation_start_epoch);
+        executor.set_simulation_start_epoch_ms(start_millis as i64);
         ShardActor {
             executor,
             rx,
@@ -157,6 +159,7 @@ impl ShardActor {
     fn new_with_shared_scripts(
         rx: mpsc::UnboundedReceiver<ShardMessage>,
         simulation_start_epoch: i64,
+        start_millis: u64,
         shard_id: usize,
         num_shards: usize,
         shared_script_cache: crate::redis::lua::SharedScriptCache,
@@ -169,6 +172,7 @@ impl ShardActor {
         );
         let mut executor = CommandExecutor::with_shared_script_cache(shared_script_cache);
         executor.set_simulation_start_epoch(simulation_start_epoch);
+        executor.set_simulation_start_epoch_ms(start_millis as i64);
         ShardActor {
             executor,
             rx,
@@ -543,6 +547,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 let actor = ShardActor::new_with_shared_scripts(
                     rx,
                     epoch,
+                    start_millis,
                     shard_id,
                     num_shards,
                     shared_script_cache.clone(),
@@ -619,6 +624,7 @@ impl<T: TimeSource> ShardedActorState<T> {
                 let actor = ShardActor::new_with_shared_scripts(
                     rx,
                     epoch,
+                    start_millis,
                     shard_id,
                     num_shards,
                     shared_script_cache.clone(),
@@ -945,7 +951,8 @@ impl<T: TimeSource> ShardedActorState<T> {
         let virtual_time = self.get_current_virtual_time();
 
         match cmd {
-            Command::Ping => RespValue::simple("PONG"),
+            Command::Ping(None) => RespValue::simple("PONG"),
+            Command::Ping(Some(msg)) => RespValue::BulkString(Some(msg.as_bytes().to_vec())),
 
             Command::Info => {
                 let adaptive_info = self.get_adaptive_info().await;
@@ -1079,6 +1086,105 @@ impl<T: TimeSource> ShardedActorState<T> {
                 }
 
                 RespValue::simple("OK")
+            }
+
+            Command::Time => {
+                // Return real wall-clock time
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default();
+                let secs = now.as_secs() as i64;
+                let usecs = now.subsec_micros() as i64;
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(secs.to_string().into_bytes())),
+                    RespValue::BulkString(Some(usecs.to_string().into_bytes())),
+                ]))
+            }
+
+            Command::DbSize => {
+                let mut futures = Vec::with_capacity(self.num_shards);
+                for shard in self.shards.iter() {
+                    futures.push(shard.execute(Command::DbSize, virtual_time));
+                }
+                let results = futures::future::join_all(futures).await;
+                let total: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                RespValue::Integer(total)
+            }
+
+            Command::Scan {
+                cursor: _,
+                ref pattern,
+                ref count,
+            } => {
+                // Fan out to all shards with cursor 0, merge results
+                let mut futures = Vec::with_capacity(self.num_shards);
+                for shard in self.shards.iter() {
+                    futures.push(shard.execute(
+                        Command::Scan {
+                            cursor: 0,
+                            pattern: pattern.clone(),
+                            count: *count,
+                        },
+                        virtual_time,
+                    ));
+                }
+                let results = futures::future::join_all(futures).await;
+                let mut all_keys: Vec<RespValue> = Vec::new();
+                for result in results {
+                    if let RespValue::Array(Some(parts)) = result {
+                        // SCAN returns [cursor, [keys...]]
+                        if parts.len() == 2 {
+                            if let RespValue::Array(Some(keys)) = &parts[1] {
+                                all_keys.extend(keys.iter().cloned());
+                            }
+                        }
+                    }
+                }
+                // Return cursor 0 (done) with merged keys
+                RespValue::Array(Some(vec![
+                    RespValue::BulkString(Some(b"0".to_vec())),
+                    RespValue::Array(Some(all_keys)),
+                ]))
+            }
+
+            Command::Del(keys) if keys.len() > 1 => {
+                // Fan out multi-key DEL to correct shards
+                let num_shards = self.num_shards;
+                let mut shard_batches: std::collections::HashMap<usize, Vec<String>> =
+                    std::collections::HashMap::new();
+                for key in keys {
+                    let shard_idx = hash_key(key, num_shards);
+                    shard_batches.entry(shard_idx).or_default().push(key.clone());
+                }
+                let futures: Vec<_> = shard_batches
+                    .into_iter()
+                    .map(|(shard_idx, batch_keys)| {
+                        self.shards[shard_idx]
+                            .execute(Command::Del(batch_keys), virtual_time)
+                    })
+                    .collect();
+                let results = futures::future::join_all(futures).await;
+                let count: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                RespValue::Integer(count)
             }
 
             Command::Exists(keys) => {

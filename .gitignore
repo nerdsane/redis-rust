@@ -21,3 +21,9 @@ maelstrom/maelstrom/store/
 
 # Profiling
 profile.json
+
+# DST verification marker (local-only)
+.dst-verified
+
+# Claude Code local state
+.claude/

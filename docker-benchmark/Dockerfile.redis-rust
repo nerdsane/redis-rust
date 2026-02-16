@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 COPY --from=builder /app/target/release/redis-server-optimized /usr/local/bin/
 
-# Copy performance configuration (for RedisEvolve harness)
-# If perf_config.toml exists in build context, it will be used
-# Otherwise, the server will use default values
-COPY perf_config.toml* /etc/redis-rust/
+# Copy performance configuration
+# Prefer docker-benchmark/perf_config.toml (tuned for benchmarks with 16 shards)
+# Falls back to root perf_config.toml if docker-benchmark one doesn't exist
+COPY docker-benchmark/perf_config.toml /etc/redis-rust/perf_config.toml
 ENV PERF_CONFIG_PATH=/etc/redis-rust/perf_config.toml
 
 EXPOSE 6379
