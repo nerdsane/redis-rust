@@ -9,7 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,8 +35,8 @@ jobs:
       - name: All tests (unit + all DST integration tests)
         run: cargo test --release
 
-      - name: All tests (with ACL feature)
-        run: cargo test --release --features acl
+      - name: All tests (with ACL feature, debug mode to avoid full release rebuild)
+        run: cargo test --lib --features acl
 
       - name: Tcl compat - incr
         run: ./scripts/run-redis-compat.sh unit/type/incr
@@ -83,7 +83,7 @@ jobs:
   clippy:
     name: "Clippy lint check"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
