@@ -276,10 +276,11 @@ The Tcl harness crashes the entire test file on unimplemented commands. One `ERR
 **To add a new command without breaking the harness:**
 1. Add variant to `Command` enum in `command.rs`
 2. Update `get_primary_key()`, `get_keys()`, `name()`, `is_read_only()` match arms
-3. Add parsing in BOTH `parser.rs` AND `commands.rs` (zero-copy parser)
+3. Add parsing in BOTH `parser.rs` AND `commands.rs` (zero-copy parser). Use `map_err` to return Redis-compatible error strings, never raw Rust parse errors.
 4. Add execution in `executor/mod.rs` dispatch + the appropriate `*_ops.rs` file
-5. If the command needs all-shard visibility, add aggregation in `sharded_actor.rs`
-6. If adding `keepttl` or similar fields to `Command::Set`, update ALL struct literal constructions (there are ~25+ across test files, script_ops.rs, etc.)
+5. Add DST coverage in `executor_dst.rs` with shadow state tracking (see `/dst` skill section 8)
+6. If the command needs all-shard visibility, add aggregation in `sharded_actor.rs`
+7. If adding `keepttl` or similar fields to `Command::Set`, update ALL struct literal constructions (there are ~25+ across test files, script_ops.rs, etc.)
 
 ### 5. Linearizability Tests (Jepsen-style)
 - Use Maelstrom for distributed correctness

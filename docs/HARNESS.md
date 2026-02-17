@@ -149,19 +149,21 @@ Checklist. Every step is required or the Tcl harness will crash:
 
 1. **`src/redis/command.rs`** — Add enum variant. Update ALL match arms: `get_primary_key()`, `get_keys()`, `name()`, `is_read_only()`.
 
-2. **`src/redis/parser.rs` AND `src/redis/commands.rs`** — Add parsing in BOTH. They must stay in sync. The first is for the standard RESP parser, the second is the zero-copy parser used by production connections.
+2. **`src/redis/parser.rs` AND `src/redis/commands.rs`** — Add parsing in BOTH. They must stay in sync. The first is for the standard RESP parser, the second is the zero-copy parser used by production connections. Use `map_err` on parse calls to return Redis-compatible error strings (e.g., `ERR bit offset is not an integer or out of range`), never raw Rust parse errors which will fail Tcl `assert_error` glob matching.
 
 3. **`src/redis/executor/*_ops.rs`** — Implement the logic. Follow the existing pattern: `pub(super) fn execute_xxx(&mut self, ...) -> RespValue`.
 
 4. **`src/redis/executor/mod.rs`** — Add dispatch arm in `execute()`.
 
-5. **If the command needs all keys** (like DBSIZE, SCAN) — add shard fan-out in `src/production/sharded_actor.rs`.
+5. **`src/redis/executor_dst.rs`** — Add DST coverage with shadow state in the appropriate `run_*_op()` method. Track expected results in the shadow and assert against executor results.
 
-6. **If you add a field to `Command::Set`** — update ALL ~25+ struct literal constructions across test files, `script_ops.rs`, etc. Use `cargo check --all-targets` to find them all.
+6. **If the command needs all keys** (like DBSIZE, SCAN) — add shard fan-out in `src/production/sharded_actor.rs`.
 
-7. **Error messages** — Use Redis-standard format. The Tcl tests glob-match on error strings.
+7. **If you add a field to `Command::Set`** — update ALL ~25+ struct literal constructions across test files, `script_ops.rs`, etc. Use `cargo check --all-targets` to find them all.
 
-8. **Run layers 1 and 2** before considering it done.
+8. **Error messages** — Use Redis-standard format. The Tcl tests glob-match on error strings.
+
+9. **Run layers 1 and 2** before considering it done.
 
 ## What the tests do NOT cover
 

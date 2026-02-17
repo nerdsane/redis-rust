@@ -264,27 +264,35 @@ For enums, extract into a local enum/variable before asserting.
 
 ## 8. How to Add DST Coverage for a New Command
 
+**This is step 5 in the command addition checklist** (see `/rust-dev` section 13 and
+`docs/HARNESS.md`). DST coverage is required for every new command.
+
 1. **Identify the category** — is it a string/list/set/hash/sorted_set/transaction command?
 
-2. **Open the appropriate harness** — e.g., `src/redis/list_dst.rs` for list commands.
+2. **Open the appropriate harness** — e.g., `src/redis/executor_dst.rs` for string/key
+   commands, `src/redis/list_dst.rs` for list commands, etc.
 
-3. **Add a new operation variant** to the random operation generator:
+3. **Add a new operation variant** to the random operation generator. For executor_dst.rs,
+   this means adding a branch in the appropriate `run_*_op()` method with a probability
+   allocation from the `sub` range:
    ```rust
-   // In the operation generation match:
-   N => {
-       let key = self.random_key(&mut rng);
-       let value = self.random_value(&mut rng);
-       Command::YourNewCommand { key, value }
+   // In run_string_op(), carve a % from the sub range:
+   } else {
+       // YOUR_NEW_COMMAND
+       let key = self.random_key();
+       let resp = self.executor.execute(&Command::YourNewCommand(key.clone(), ...));
+       // Assert against shadow
    }
    ```
 
 4. **Update the shadow state** to track the expected result of your command.
 
-5. **Add assertion** comparing real executor result to shadow expectation.
+5. **Add assertion** comparing real executor result to shadow expectation. Use the
+   extract-then-assert pattern (see section 7) to avoid borrow checker conflicts.
 
 6. **Run with multiple seeds:**
    ```bash
-   cargo test --lib your_category_dst -- --nocapture
+   cargo test --release --test executor_dst_test -- --nocapture
    ```
    Minimum 10 seeds, prefer 50+.
 

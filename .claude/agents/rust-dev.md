@@ -326,7 +326,9 @@ Use `simulation_start_epoch` for second-precision commands (EXPIRE, TTL).
    - `name()` — returns the command name string
    - `is_read_only()` — true if the command doesn't mutate state
 
-2. **`src/redis/parser.rs`** — Add RESP parsing
+2. **`src/redis/parser.rs`** — Add RESP parsing. Use `map_err` to return Redis-compatible
+   error strings (e.g., `ERR bit offset is not an integer or out of range`), never raw
+   Rust parse errors which will fail Tcl `assert_error` glob matching.
 
 3. **`src/redis/commands.rs`** — Add zero-copy parsing (must stay in sync with parser.rs)
 
@@ -334,9 +336,12 @@ Use `simulation_start_epoch` for second-precision commands (EXPIRE, TTL).
 
 5. **`src/redis/executor/mod.rs`** — Add dispatch arm in the main execute match
 
-6. **If all-shard command** — Add aggregation in `src/production/sharded_actor.rs`
+6. **`src/redis/executor_dst.rs`** — Add DST coverage with shadow state tracking
+   in the appropriate `run_*_op()` method. See `/dst` skill section 8 for the pattern.
 
-7. **If adding fields to Set variant** — Update ALL ~25+ struct literals across test files
+7. **If all-shard command** — Add aggregation in `src/production/sharded_actor.rs`
+
+8. **If adding fields to Set variant** — Update ALL ~25+ struct literals across test files
 
 ---
 
