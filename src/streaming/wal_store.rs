@@ -515,17 +515,17 @@ impl<R: Rng> WalFileWriter for SimulatedWalWriter<R> {
     fn append(&mut self, data: &[u8]) -> Result<u64, WalError> {
         {
             let mut s = self.state.lock().expect("simulated wal store mutex poisoned");
-            s.stats.write_attempts += 1;
+            s.stats.write_attempts = s.stats.write_attempts.saturating_add(1);
 
             // Check disk full
             if crate::buggify!(&mut s.rng, disk_faults::DISK_FULL, self.config.disk_full_prob) {
-                s.stats.disk_full_errors += 1;
+                s.stats.disk_full_errors = s.stats.disk_full_errors.saturating_add(1);
                 return Err(WalError::DiskFull);
             }
 
             // Check write failure
             if crate::buggify!(&mut s.rng, disk_faults::WRITE_FAIL, self.config.write_fail_prob) {
-                s.stats.write_failures += 1;
+                s.stats.write_failures = s.stats.write_failures.saturating_add(1);
                 return Err(WalError::Io(IoError::new(
                     ErrorKind::Other,
                     "simulated write failure",
@@ -540,7 +540,7 @@ impl<R: Rng> WalFileWriter for SimulatedWalWriter<R> {
                     self.config.partial_write_prob
                 )
             {
-                s.stats.partial_writes += 1;
+                s.stats.partial_writes = s.stats.partial_writes.saturating_add(1);
                 let partial_len = s.rng.gen_range(1, data.len() as u64) as usize;
                 // Write partial data then return error (simulates mid-write crash)
                 let _ = self.inner.append(&data[..partial_len]);
@@ -556,10 +556,10 @@ impl<R: Rng> WalFileWriter for SimulatedWalWriter<R> {
 
     fn sync(&mut self) -> Result<(), WalError> {
         let mut s = self.state.lock().expect("simulated wal store mutex poisoned");
-        s.stats.sync_attempts += 1;
+        s.stats.sync_attempts = s.stats.sync_attempts.saturating_add(1);
 
         if crate::buggify!(&mut s.rng, disk_faults::FSYNC_FAIL, self.config.fsync_fail_prob) {
-            s.stats.sync_failures += 1;
+            s.stats.sync_failures = s.stats.sync_failures.saturating_add(1);
             return Err(WalError::FsyncFailed("simulated fsync failure".to_string()));
         }
 
@@ -584,14 +584,14 @@ impl<R: Rng> WalFileReader for SimulatedWalReader<R> {
     fn read_all(&mut self) -> Result<Vec<u8>, WalError> {
         {
             let mut s = self.state.lock().expect("simulated wal store mutex poisoned");
-            s.stats.read_attempts += 1;
+            s.stats.read_attempts = s.stats.read_attempts.saturating_add(1);
 
             if crate::buggify!(
                 &mut s.rng,
                 disk_faults::CORRUPTION,
                 self.config.corruption_prob
             ) {
-                s.stats.read_corruptions += 1;
+                s.stats.read_corruptions = s.stats.read_corruptions.saturating_add(1);
                 let mut data = self.inner.read_all()?;
                 if !data.is_empty() {
                     let idx = s.rng.gen_range(0, data.len() as u64) as usize;

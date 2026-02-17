@@ -641,8 +641,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
             println!("  WAL: enabled ({:?} fsync)", wc.fsync_policy);
 
-            state.set_wal_handle(wal_handle);
-            Some(wal_join)
+            state.set_wal_handle(wal_handle.clone());
+            Some((wal_handle, wal_join))
         } else {
             None
         }
@@ -752,18 +752,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // Graceful shutdown
-    info!("Shutting down persistence workers...");
-    worker_handles.shutdown().await;
-
-    // Shutdown WAL actor (final fsync before exit)
-    if let Some(wal_join) = wal_task {
-        info!("Shutting down WAL actor...");
-        // WAL actor shuts down when all handles are dropped or via shutdown message.
-        // The join handle lets us wait for completion.
+    // Graceful shutdown — WAL first (closest to write path), then streaming
+    if let Some((wal_handle, wal_join)) = wal_task {
+        info!("Shutting down WAL actor (final fsync)...");
+        wal_handle.shutdown().await;
         let _ = wal_join.await;
         info!("WAL actor shutdown complete");
     }
+
+    info!("Shutting down streaming persistence workers...");
+    worker_handles.shutdown().await;
 
     // Shutdown observability (flush pending spans/metrics)
     shutdown();

@@ -84,6 +84,10 @@ impl WalEntry {
 
     /// Encode the entry to bytes for writing
     pub fn encode(&self) -> Vec<u8> {
+        debug_assert!(
+            self.data.len() <= u32::MAX as usize,
+            "Precondition: entry data must fit in u32 length field"
+        );
         let data_len = self.data.len() as u32;
         let total_size = WAL_ENTRY_OVERHEAD
             .checked_add(self.data.len())
@@ -196,6 +200,11 @@ impl<W: WalFileWriter> WalWriter<W> {
         if entry.timestamp > self.max_timestamp {
             self.max_timestamp = entry.timestamp;
         }
+
+        debug_assert!(
+            self.min_timestamp <= self.max_timestamp,
+            "Postcondition: min_timestamp must be <= max_timestamp after append"
+        );
 
         Ok(offset)
     }

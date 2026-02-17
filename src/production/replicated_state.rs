@@ -171,10 +171,17 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                     let timestamp = delta.value.timestamp.time;
                     match wal.fsync_policy() {
                         FsyncPolicy::Always => {
-                            // Durable write: await fsync before client gets response
+                            // Durable write: await fsync before client gets response.
+                            // Design choice: on WAL failure, we log and continue rather
+                            // than returning an error to the client. Rationale:
+                            // 1. The write succeeded in memory and will be replicated via gossip
+                            // 2. The delta is still sent to the streaming object store
+                            // 3. Failing the client response would require unwinding the
+                            //    in-memory state change, which is not supported
+                            // This means Always mode provides best-effort local durability,
+                            // not strict "fail client on WAL error" semantics.
                             if let Err(e) = wal.write_durable(delta.clone(), timestamp).await {
                                 tracing::error!("WAL durable write failed: {}", e);
-                                // Continue — the write succeeded in memory, just not on disk
                             }
                         }
                         FsyncPolicy::EverySecond | FsyncPolicy::No => {

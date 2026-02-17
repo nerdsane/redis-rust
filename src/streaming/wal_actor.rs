@@ -134,11 +134,9 @@ impl<S: WalStore> WalActor<S> {
                             }
                         }
                         Err(e) => {
+                            // Forward original error — don't erase type info
                             if let Some(tx) = ack_tx {
-                                let _ = tx.send(Err(WalError::Io(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    e.to_string(),
-                                ))));
+                                let _ = tx.send(Err(e));
                             }
                         }
                     },
@@ -194,6 +192,9 @@ impl<S: WalStore> WalActor<S> {
         }
 
         self.entries_since_sync = 0;
+
+        debug_assert_eq!(self.entries_since_sync, 0, "Postcondition: entries_since_sync must be 0 after flush");
+        debug_assert!(self.pending_acks.is_empty(), "Postcondition: pending_acks must be empty after flush");
     }
 
     /// EverySecond mode: append + ack immediately; fsync on timer
@@ -216,7 +217,7 @@ impl<S: WalStore> WalActor<S> {
                     self.entries_since_sync = self
                         .entries_since_sync
                         .checked_add(1)
-                        .unwrap_or(self.entries_since_sync);
+                        .expect("entries_since_sync overflow unreachable");
 
                     // Ack immediately (before fsync) — RPO ≤ 1s
                     if let Some(tx) = ack_tx {
