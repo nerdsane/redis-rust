@@ -10,7 +10,7 @@
 //! - `SimulatedWalStore`: For DST with buggify fault injection
 
 use std::collections::HashMap;
-use std::io::{Error as IoError, ErrorKind, Write};
+use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -295,16 +295,11 @@ impl WalFileWriter for LocalWalWriter {
     fn append(&mut self, data: &[u8]) -> Result<u64, WalError> {
         debug_assert!(!data.is_empty(), "Precondition: data must not be empty");
 
-        let written = self.file.write(data).map_err(WalError::Io)?;
-        if written != data.len() {
-            return Err(WalError::PartialWrite {
-                expected: data.len(),
-                actual: written,
-            });
-        }
+        use std::io::Write;
+        self.file.write_all(data).map_err(WalError::Io)?;
         self.current_size = self
             .current_size
-            .checked_add(written as u64)
+            .checked_add(data.len() as u64)
             .expect("WAL size overflow is unreachable for files < u64::MAX");
 
         Ok(self.current_size)

@@ -23,7 +23,6 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     MaxWrites,              \* Maximum number of writes for model checking
-    MaxWalFiles,            \* Maximum WAL files before rotation
     MaxSegments,            \* Maximum object store segments
     GroupCommitBatchSize    \* Maximum entries per group commit batch
 
@@ -31,8 +30,6 @@ VARIABLES
     \* WAL state
     wal_buffer,             \* wal_buffer = sequence of entries pending fsync
     wal_synced,             \* wal_synced = set of entry timestamps that have been fsync'd
-    wal_files,              \* wal_files = number of WAL files created
-    wal_synced_up_to,       \* wal_synced_up_to = highest timestamp in synced WAL
 
     \* Object store / streaming state (from StreamingPersistence)
     streamed_entries,       \* streamed_entries = set of entry timestamps in object store
@@ -48,7 +45,7 @@ VARIABLES
     \* Counters
     write_counter           \* write_counter = next timestamp to assign
 
-vars == <<wal_buffer, wal_synced, wal_files, wal_synced_up_to,
+vars == <<wal_buffer, wal_synced,
           streamed_entries, high_water_mark,
           acknowledged, crashed, recovered, write_counter>>
 
@@ -59,8 +56,6 @@ vars == <<wal_buffer, wal_synced, wal_files, wal_synced_up_to,
 Init ==
     /\ wal_buffer = <<>>
     /\ wal_synced = {}
-    /\ wal_files = 0
-    /\ wal_synced_up_to = 0
     /\ streamed_entries = {}
     /\ high_water_mark = 0
     /\ acknowledged = {}
@@ -75,8 +70,6 @@ Init ==
 TypeOK ==
     /\ wal_buffer \in Seq(Nat)
     /\ wal_synced \subseteq Nat
-    /\ wal_files \in Nat
-    /\ wal_synced_up_to \in Nat
     /\ streamed_entries \subseteq Nat
     /\ high_water_mark \in Nat
     /\ acknowledged \subseteq Nat
@@ -96,8 +89,7 @@ WalAppend ==
     /\ LET ts == write_counter
        IN /\ wal_buffer' = Append(wal_buffer, ts)
           /\ write_counter' = write_counter + 1
-    /\ UNCHANGED <<wal_synced, wal_files, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
+    /\ UNCHANGED <<wal_synced, streamed_entries, high_water_mark,
                    acknowledged, crashed, recovered>>
 
 \* Group commit: fsync all entries in WAL buffer, acknowledge to clients
@@ -106,23 +98,19 @@ WalSync ==
     /\ ~crashed
     /\ Len(wal_buffer) > 0
     /\ LET entries == { wal_buffer[i] : i \in 1..Len(wal_buffer) }
-           max_ts == CHOOSE ts \in entries : \A t \in entries : ts >= t
        IN /\ wal_synced' = wal_synced \union entries
           /\ acknowledged' = acknowledged \union entries
-          /\ wal_synced_up_to' = IF max_ts > wal_synced_up_to
-                                  THEN max_ts
-                                  ELSE wal_synced_up_to
     /\ wal_buffer' = <<>>
-    /\ UNCHANGED <<wal_files, streamed_entries, high_water_mark,
+    /\ UNCHANGED <<streamed_entries, high_water_mark,
                    crashed, recovered, write_counter>>
 
-\* Streaming: object store flush — entries move from WAL to object store
-\* Models the async path: DeltaSink -> PersistenceActor -> ObjectStore
+\* Streaming: object store flush — entries move from WAL to object store.
+\* Models the async path: DeltaSink -> PersistenceActor -> ObjectStore.
+\* Non-deterministically picks a subset (models partial streaming).
 StreamFlush ==
     /\ ~crashed
     /\ wal_synced # {}
     /\ Cardinality(streamed_entries) < MaxSegments * GroupCommitBatchSize
-    \* Pick a subset of synced WAL entries to stream
     /\ \E subset \in (SUBSET wal_synced \ {{}}) :
         /\ Cardinality(subset) <= GroupCommitBatchSize
         /\ LET max_ts == CHOOSE ts \in subset : \A t \in subset : ts >= t
@@ -130,7 +118,7 @@ StreamFlush ==
               /\ high_water_mark' = IF max_ts > high_water_mark
                                     THEN max_ts
                                     ELSE high_water_mark
-    /\ UNCHANGED <<wal_buffer, wal_synced, wal_files, wal_synced_up_to,
+    /\ UNCHANGED <<wal_buffer, wal_synced,
                    acknowledged, crashed, recovered, write_counter>>
 
 \* WAL truncation: delete WAL entries that are already in object store
@@ -141,17 +129,7 @@ WalTruncate ==
     /\ LET entries_to_remove == { ts \in wal_synced : ts <= high_water_mark }
        IN /\ entries_to_remove # {}
           /\ wal_synced' = wal_synced \ entries_to_remove
-    /\ UNCHANGED <<wal_buffer, wal_files, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
-                   acknowledged, crashed, recovered, write_counter>>
-
-\* WAL rotation: increment file count (abstraction of creating new WAL file)
-WalRotate ==
-    /\ ~crashed
-    /\ wal_files < MaxWalFiles
-    /\ wal_files' = wal_files + 1
-    /\ UNCHANGED <<wal_buffer, wal_synced, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
+    /\ UNCHANGED <<wal_buffer, streamed_entries, high_water_mark,
                    acknowledged, crashed, recovered, write_counter>>
 
 \* System crash: loses WAL buffer, but synced WAL entries and object store survive
@@ -159,38 +137,26 @@ Crash ==
     /\ ~crashed
     /\ crashed' = TRUE
     /\ recovered' = FALSE
-    \* Buffer (un-synced entries) is lost
     /\ wal_buffer' = <<>>
-    \* Synced WAL entries survive (that's the whole point of fsync)
-    \* Object store entries survive
-    /\ UNCHANGED <<wal_synced, wal_files, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
+    /\ UNCHANGED <<wal_synced, streamed_entries, high_water_mark,
                    acknowledged, write_counter>>
 
 \* Recovery: rebuild state from object store + WAL replay
-\* 1. Load from object store (up to high_water_mark)
-\* 2. Replay WAL entries with timestamp > high_water_mark
 Recover ==
     /\ crashed
     /\ ~recovered
     /\ crashed' = FALSE
     /\ recovered' = TRUE
-    \* Buffer starts empty after recovery
     /\ wal_buffer' = <<>>
-    \* WAL synced entries remain (they're on disk)
-    \* Object store entries remain (they're in the cloud)
-    /\ UNCHANGED <<wal_synced, wal_files, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
+    /\ UNCHANGED <<wal_synced, streamed_entries, high_water_mark,
                    acknowledged, write_counter>>
 
 \* Fsync failure: WAL buffer entries are NOT acknowledged (realistic fault)
 WalSyncFail ==
     /\ ~crashed
     /\ Len(wal_buffer) > 0
-    \* On sync failure, discard buffer without acknowledging
     /\ wal_buffer' = <<>>
-    /\ UNCHANGED <<wal_synced, wal_files, wal_synced_up_to,
-                   streamed_entries, high_water_mark,
+    /\ UNCHANGED <<wal_synced, streamed_entries, high_water_mark,
                    acknowledged, crashed, recovered, write_counter>>
 
 --------------------------------------------------------------------------------
@@ -203,7 +169,6 @@ Next ==
     \/ WalSyncFail
     \/ StreamFlush
     \/ WalTruncate
-    \/ WalRotate
     \/ Crash
     \/ Recover
 
@@ -215,61 +180,47 @@ FairSpec == Spec /\ WF_vars(WalSync) /\ WF_vars(Recover) /\ WF_vars(StreamFlush)
 \* Invariants
 --------------------------------------------------------------------------------
 
-\* INVARIANT 1: WAL Durability
-\* If fsync returned success (entry is in wal_synced), it must survive crash.
-\* After recovery, all synced entries are still in wal_synced.
-\* (This is trivially maintained because Crash doesn't modify wal_synced.)
-WalDurability ==
-    TRUE \* Enforced by the Crash action definition: UNCHANGED wal_synced
-
-\* INVARIANT 2: Truncation Safety
-\* WAL truncation only removes entries that are ALSO in the object store.
-\* Entries not yet streamed are never removed from the WAL.
-TruncationSafety ==
-    \* Every acknowledged entry is either in wal_synced OR in streamed_entries
+\* INVARIANT 1: Acknowledged Entries Are Recoverable
+\* The primary safety invariant: every acknowledged entry is either in
+\* wal_synced (local WAL) OR in streamed_entries (object store).
+\* This must hold in ALL states including post-crash states.
+AcknowledgedRecoverable ==
     \A ts \in acknowledged :
         ts \in wal_synced \/ ts \in streamed_entries
 
-\* INVARIANT 3: Recovery Completeness
-\* After recovery, the union of object store entries and WAL entries
-\* contains ALL acknowledged writes.
+\* INVARIANT 2: Recovery Completeness
+\* After recovery completes, all acknowledged entries are still recoverable.
+\* (Strictly weaker than AcknowledgedRecoverable but explicit about recovery state.)
 RecoveryCompleteness ==
     recovered =>
         \A ts \in acknowledged :
             ts \in streamed_entries \/ ts \in wal_synced
 
-\* INVARIANT 4: Group Commit Atomicity
-\* The WAL buffer is all-or-nothing: either ALL entries in the buffer
-\* get synced (WalSync action), or NONE do (WalSyncFail or Crash).
-\* This is enforced by the action definitions — WalSync moves ALL buffer
-\* entries to wal_synced atomically.
-GroupCommitAtomicity ==
-    TRUE \* Enforced structurally by WalSync/WalSyncFail/Crash actions
+\* INVARIANT 3: Buffer Entries Not Acknowledged
+\* Entries still in the WAL buffer (pre-fsync) must NOT be in the acknowledged set.
+\* This ensures we never tell a client "durable" before fsync completes.
+BufferNotAcknowledged ==
+    \A i \in 1..Len(wal_buffer) :
+        wal_buffer[i] \notin acknowledged
 
-\* INVARIANT 5: High-Water Mark Monotonic
-\* The streamed high-water mark never decreases.
-\* (Enforced by StreamFlush only setting it to max.)
-HighWaterMarkMonotonic ==
-    TRUE \* Enforced structurally: high_water_mark' >= high_water_mark
+\* INVARIANT 4: High-Water Mark Consistency
+\* High-water mark equals the maximum of streamed entries (or 0 if none).
+HighWaterMarkConsistent ==
+    IF streamed_entries = {}
+    THEN high_water_mark = 0
+    ELSE high_water_mark >= CHOOSE ts \in streamed_entries : \A t \in streamed_entries : ts >= t
 
-\* INVARIANT 6: Acknowledged entries are always synced
-\* An entry is acknowledged only if it was synced to WAL.
-AcknowledgedAreSynced ==
-    \* acknowledged is subset of (wal_synced UNION streamed_entries)
-    \* (entries may have been truncated from wal_synced after streaming)
-    \A ts \in acknowledged :
-        ts \in wal_synced \/ ts \in streamed_entries
-
-\* INVARIANT 7: Write counter monotonic
+\* INVARIANT 5: Write counter monotonic
 WriteCounterMonotonic ==
     write_counter >= 1
 
 \* Combined invariant for TLC
 AllInvariants ==
     /\ TypeOK
-    /\ TruncationSafety
+    /\ AcknowledgedRecoverable
     /\ RecoveryCompleteness
-    /\ AcknowledgedAreSynced
+    /\ BufferNotAcknowledged
+    /\ HighWaterMarkConsistent
     /\ WriteCounterMonotonic
 
 --------------------------------------------------------------------------------

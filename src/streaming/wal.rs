@@ -233,6 +233,22 @@ impl<W: WalFileWriter> WalWriter<W> {
     pub fn max_timestamp(&self) -> u64 {
         self.max_timestamp
     }
+
+    /// Verify invariants (TigerStyle)
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        if self.entry_count > 0 {
+            debug_assert!(
+                self.min_timestamp <= self.max_timestamp,
+                "Invariant: min_timestamp ({}) must be <= max_timestamp ({})",
+                self.min_timestamp,
+                self.max_timestamp
+            );
+        } else {
+            debug_assert_eq!(self.min_timestamp, u64::MAX, "Invariant: empty writer min_timestamp must be u64::MAX");
+            debug_assert_eq!(self.max_timestamp, 0, "Invariant: empty writer max_timestamp must be 0");
+        }
+    }
 }
 
 // ============================================================================
@@ -304,12 +320,13 @@ impl WalReader {
         entries
     }
 
-    /// Read entries with timestamp strictly greater than the given threshold.
-    /// Used during recovery to skip entries already in object store.
+    /// Read entries with timestamp greater than or equal to the given threshold.
+    /// Uses `>=` (not `>`) because two deltas can share the same Lamport timestamp;
+    /// CRDT idempotency makes duplicate replay safe.
     pub fn entries_after(&self, after_timestamp: u64) -> Vec<WalEntry> {
         self.entries()
             .into_iter()
-            .filter(|e| e.timestamp > after_timestamp)
+            .filter(|e| e.timestamp >= after_timestamp)
             .collect()
     }
 }
@@ -449,12 +466,14 @@ impl<S: WalStore> WalRotator<S> {
         Ok(all_entries)
     }
 
-    /// Recover entries with timestamp strictly greater than the given threshold.
+    /// Recover entries with timestamp >= the given threshold.
+    /// Uses `>=` because two deltas can share the same Lamport timestamp;
+    /// CRDT idempotency makes duplicate replay safe.
     pub fn recover_entries_after(&self, after_timestamp: u64) -> Result<Vec<ReplicationDelta>, WalError> {
         let entries = self.recover_all_entries()?;
         let mut deltas = Vec::new();
         for entry in entries {
-            if entry.timestamp > after_timestamp {
+            if entry.timestamp >= after_timestamp {
                 deltas.push(entry.to_delta()?);
             }
         }
@@ -474,7 +493,7 @@ impl<S: WalStore> WalRotator<S> {
             .map(|w| wal_file_name(w.sequence()));
 
         for name in &files {
-            if Some(name.clone()) == current_name {
+            if current_name.as_deref() == Some(name.as_str()) {
                 continue;
             }
 
@@ -760,9 +779,10 @@ mod tests {
             rotator.append(&entry).unwrap();
         }
 
+        // >= filter: includes ts=500 (CRDT idempotency makes duplicate replay safe)
         let deltas = rotator.recover_entries_after(500).unwrap();
-        assert_eq!(deltas.len(), 5);
-        assert_eq!(deltas[0].key, "k5");
+        assert_eq!(deltas.len(), 6);
+        assert_eq!(deltas[0].key, "k4"); // ts=500
     }
 
     #[test]
