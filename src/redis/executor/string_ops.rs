@@ -76,7 +76,14 @@ impl CommandExecutor {
         let old_value = if *get {
             match self.get_value(key) {
                 Some(Value::String(s)) => Some(s.clone()),
-                _ => None,
+                Some(_) => {
+                    // Redis: SET ... GET on non-string type returns WRONGTYPE error
+                    // and does NOT modify the key
+                    return RespValue::err(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
+                    );
+                }
+                None => None,
             }
         } else {
             None
@@ -391,6 +398,11 @@ impl CommandExecutor {
                 RespValue::err("WRONGTYPE Operation against a key holding the wrong kind of value")
             }
             None => {
+                // Redis: SETRANGE on non-existing key with empty value returns 0
+                // and does NOT create the key
+                if needed == 0 {
+                    return RespValue::Integer(0);
+                }
                 let mut bytes = vec![0u8; needed];
                 bytes[offset..needed].copy_from_slice(val_bytes);
                 let new_len = bytes.len() as i64;

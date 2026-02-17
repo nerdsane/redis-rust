@@ -75,7 +75,7 @@ Discovered → Open → Investigating → ADR-Drafted → Closed
 
 | Gap | Title | Status | Severity |
 |-----|-------|--------|----------|
-| GAP-001 | Bitmaps not implemented | Open | Medium — blocks 4/39 string Tcl tests (SETBIT, GETBIT, BITCOUNT, BITOP) |
+| GAP-001 | Bitmaps partially implemented | Closed (SETBIT/GETBIT done) | Low — BITCOUNT, BITOP remain; next blocker is LCS |
 | GAP-002 | SWAPDB not implemented | Open | Medium — blocks 36/56 multi Tcl tests |
 | GAP-003 | ACL LOG / ACL DRYRUN not implemented | Open | Medium — blocks Tcl `acl.tcl`/`acl-v2.tcl` suites |
 | GAP-004 | Read/write key patterns (`%R~`, `%W~`) parsed but not enforced | Open | Low — ACL feature gap |

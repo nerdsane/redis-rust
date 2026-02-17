@@ -1249,6 +1249,29 @@ impl Command {
                         let value = Self::extract_sds(&elements[3])?;
                         Ok(Command::SetRange(key, offset as usize, value))
                     }
+                    "SETBIT" => {
+                        if elements.len() != 4 {
+                            return Err("ERR wrong number of arguments for 'setbit' command".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let offset = Self::extract_u64(&elements[2])
+                            .map_err(|_| "ERR bit offset is not an integer or out of range".to_string())?;
+                        let value = Self::extract_integer(&elements[3])
+                            .map_err(|_| "ERR bit is not an integer or out of range".to_string())?;
+                        if value < 0 || value > 1 {
+                            return Err("ERR bit is not an integer or out of range".to_string());
+                        }
+                        Ok(Command::SetBit(key, offset, value as u8))
+                    }
+                    "GETBIT" => {
+                        if elements.len() != 3 {
+                            return Err("ERR wrong number of arguments for 'getbit' command".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let offset = Self::extract_u64(&elements[2])
+                            .map_err(|_| "ERR bit offset is not an integer or out of range".to_string())?;
+                        Ok(Command::GetBit(key, offset))
+                    }
                     "GETEX" => {
                         if elements.len() < 2 {
                             return Err("ERR wrong number of arguments for 'getex' command".to_string());

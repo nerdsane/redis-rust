@@ -16,6 +16,7 @@
 //! - `acl_ops.rs`: ACL command implementations
 
 mod acl_ops;
+mod bitmap_ops;
 mod config_ops;
 mod hash_ops;
 mod key_ops;
@@ -400,6 +401,8 @@ impl CommandExecutor {
             Command::BatchGet(keys) => self.execute_batch_get(keys),
             Command::GetRange(key, start, end) => self.execute_getrange(key, *start, *end),
             Command::SetRange(key, offset, value) => self.execute_setrange(key, *offset, value),
+            Command::SetBit(key, offset, value) => self.execute_setbit(key, *offset, *value),
+            Command::GetBit(key, offset) => self.execute_getbit(key, *offset),
             Command::GetEx {
                 key,
                 ex,

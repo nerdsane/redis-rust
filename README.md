@@ -22,7 +22,7 @@ An experimental Redis-compatible in-memory data store in Rust with CRDT-based mu
 |-------|--------|
 | `unit/type/incr` | **28/28 pass** |
 | `unit/expire` | **all pass** |
-| `unit/type/string` | 35/39 pass (stops at SETBIT - bitmaps not implemented) |
+| `unit/type/string` | **72 pass, 0 errors** (stops at LCS - not implemented) |
 | `unit/multi` | 20/56 pass (stops at SWAPDB - database swapping not implemented) |
 
 **Performance** (Docker, 2 CPUs, 1GB RAM, 50 clients, `redis-benchmark`):

@@ -248,7 +248,7 @@ The first layer draws directly from FoundationDB's simulation testing philosophy
 
 The official Redis test suite, maintained by the Redis authors, is run unmodified against the Rust implementation. This is the strongest form of external verification: the tests were written by people who had no knowledge of this project, and the AI had no role in creating them.
 
-Current results: `unit/type/incr` passes 28/28 tests; `unit/expire` passes all tests; `unit/type/string` passes 35/39 (crashing at bitmaps); `unit/multi` passes 20/56 (crashing at SWAPDB). The remaining failures are from unimplemented commands, not behavioral bugs.
+Current results: `unit/type/incr` passes 28/28 tests; `unit/expire` passes all tests; `unit/type/string` passes 72 with 0 errors (crashing at LCS); `unit/multi` passes 20/56 (crashing at SWAPDB). The remaining failures are from unimplemented commands, not behavioral bugs.
 
 A critical property: error message strings must match Redis's exact format, since the Tcl tests use glob assertions like `assert_error "*wrong number of arguments*"`. This caught several formatting bugs that the DST harness, which checks error *types* rather than error *strings*, missed entirely.
 
@@ -280,7 +280,7 @@ The CI pipeline runs three layers in a single job on every push and every pull r
 |-------|------|---------|
 | `unit/type/incr` | 28/28 | None |
 | `unit/expire` | All pass | None |
-| `unit/type/string` | 35/39 | SETBIT (bitmaps not implemented) |
+| `unit/type/string` | 72 pass, 0 err | LCS (not implemented) |
 | `unit/multi` | 20/56 | SWAPDB (database swapping not implemented) |
 
 The Tcl harness terminates a test file on the first unimplemented command. Every test that runs against an implemented command passes.
@@ -348,9 +348,9 @@ This matters beyond this project. As AI-generated code becomes more common, the 
 
 This project is a case study in AI-assisted systems programming with rigorous verification, not a production Redis replacement. It demonstrates that an AI agent can co-author a functional, reasonably performant Redis-compatible server -- 75+ commands, within 80--99% of Redis 7.4 throughput, passing the official test suite for implemented commands -- when paired with a human engineer who provides architectural direction and a verification harness that catches the AI's mistakes.
 
-The verification methodology is the main contribution. Deterministic simulation testing, official compatibility suites, Jepsen-style linearizability checking, and controlled benchmarking together form a pipeline that makes AI-generated systems code auditable. The three bugs caught by DST -- empty collection cleanup, MSET postconditions, WATCH-inside-MULTI -- are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
+The verification methodology is the main contribution. Deterministic simulation testing, official compatibility suites, Jepsen-style linearizability checking, and controlled benchmarking together form a pipeline that makes AI-generated systems code auditable. The six bugs caught by DST -- empty collection cleanup, MSET postconditions, WATCH-inside-MULTI, SETRANGE on non-existing key with empty value, SET...GET on wrong type, and DBSIZE shadow drift -- are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
 
-Future work includes expanding Tcl suite coverage (bitmaps and blocking operations are the next frontier), adding persistence beyond the experimental S3 streaming layer, and exploring cluster-mode sharding across multiple machines. A particularly interesting direction is closing the loop between verification and production: connecting the server to observability systems like Datadog to feed real-world performance data, error rates, and latency distributions back into the development cycle. The project already includes optional Datadog integration (metrics, tracing, and logging via feature flag). The vision is a feedback loop where production telemetry informs which commands to optimize, which edge cases to harden, and which verification layers need strengthening -- turning observability into a fifth verification layer that operates on real traffic rather than synthetic workloads.
+Future work includes expanding Tcl suite coverage (LCS, blocking operations, and BITCOUNT/BITOP are the next frontier), adding persistence beyond the experimental S3 streaming layer, and exploring cluster-mode sharding across multiple machines. A particularly interesting direction is closing the loop between verification and production: connecting the server to observability systems like Datadog to feed real-world performance data, error rates, and latency distributions back into the development cycle. The project already includes optional Datadog integration (metrics, tracing, and logging via feature flag). The vision is a feedback loop where production telemetry informs which commands to optimize, which edge cases to harden, and which verification layers need strengthening -- turning observability into a fifth verification layer that operates on real traffic rather than synthetic workloads.
 
 On the verification side, the open question is whether this methodology scales: as AI capabilities improve and the generated code grows more complex, do four verification layers remain sufficient, or does the harness itself need to evolve?
 

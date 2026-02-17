@@ -56,6 +56,10 @@ pub enum Command {
     GetRange(String, isize, isize),
     /// SETRANGE key offset value
     SetRange(String, usize, SDS),
+    /// SETBIT key offset value (0 or 1)
+    SetBit(String, u64, u8),
+    /// GETBIT key offset
+    GetBit(String, u64),
     /// GETEX key [EX s|PX ms|EXAT t|PXAT t|PERSIST]
     GetEx {
         key: String,
@@ -363,6 +367,7 @@ impl Command {
             self,
             Command::Get(_)
                 | Command::GetRange(_, _, _)
+                | Command::GetBit(_, _)
                 | Command::StrLen(_)
                 | Command::MGet(_)
                 | Command::Exists(_)
@@ -423,6 +428,8 @@ impl Command {
             | Command::SetNx(k, _)
             | Command::GetRange(k, _, _)
             | Command::SetRange(k, _, _)
+            | Command::SetBit(k, _, _)
+            | Command::GetBit(k, _)
             | Command::GetEx { key: k, .. }
             | Command::GetDel(k)
             | Command::TypeOf(k)
@@ -553,6 +560,8 @@ impl Command {
             | Command::SetNx(k, _)
             | Command::GetRange(k, _, _)
             | Command::SetRange(k, _, _)
+            | Command::SetBit(k, _, _)
+            | Command::GetBit(k, _)
             | Command::GetEx { key: k, .. }
             | Command::GetDel(k)
             | Command::TypeOf(k)
@@ -702,6 +711,8 @@ impl Command {
             Command::BatchGet(_) => "BATCHGET",
             Command::GetRange(_, _, _) => "GETRANGE",
             Command::SetRange(_, _, _) => "SETRANGE",
+            Command::SetBit(_, _, _) => "SETBIT",
+            Command::GetBit(_, _) => "GETBIT",
             Command::GetEx { .. } => "GETEX",
             Command::GetDel(_) => "GETDEL",
             Command::Incr(_) => "INCR",

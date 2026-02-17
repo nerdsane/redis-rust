@@ -130,6 +130,65 @@ impl SDS {
         }
     }
 
+    /// Get mutable byte slice — needed for in-place bit manipulation
+    #[inline]
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            SDS::Inline { len, data } => &mut data[..*len as usize],
+            SDS::Heap(data) => data.as_mut_slice(),
+        }
+    }
+
+    /// Resize SDS to at least `new_len` bytes, zero-filling new bytes.
+    /// If current length is already >= new_len, this is a no-op.
+    pub fn resize(&mut self, new_len: usize) {
+        debug_assert!(
+            new_len <= 512 * 1024 * 1024,
+            "Precondition: resize must not exceed 512MB"
+        );
+
+        let current_len = self.len();
+        if current_len >= new_len {
+            return;
+        }
+
+        if new_len <= SSO_MAX_LEN {
+            // Can stay inline — just zero-fill and update len
+            match self {
+                SDS::Inline { len, data } => {
+                    data[current_len..new_len].fill(0);
+                    *len = new_len as u8;
+                }
+                SDS::Heap(data) => {
+                    data.resize(new_len, 0);
+                }
+            }
+        } else {
+            // Need heap storage
+            match self {
+                SDS::Inline { len, data } => {
+                    let old_len = *len as usize;
+                    let mut heap_data = Vec::with_capacity(new_len);
+                    heap_data.extend_from_slice(&data[..old_len]);
+                    heap_data.resize(new_len, 0);
+                    *self = SDS::Heap(heap_data);
+                }
+                SDS::Heap(data) => {
+                    data.resize(new_len, 0);
+                }
+            }
+        }
+
+        // TigerStyle: Postconditions
+        debug_assert_eq!(
+            self.len(),
+            new_len,
+            "Postcondition: len must equal new_len after resize"
+        );
+
+        self.verify_invariants();
+    }
+
     pub fn to_string(&self) -> String {
         String::from_utf8_lossy(self.as_bytes()).to_string()
     }

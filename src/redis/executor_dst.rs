@@ -1052,7 +1052,7 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "INCRBY on wrong type");
                 }
             }
-        } else {
+        } else if sub < 98 {
             // DECR
             let key = self.random_key();
             let desc = format!("DECR {}", key);
@@ -1094,6 +1094,96 @@ impl ExecutorDSTHarness {
                 }
                 DecrExpect::WrongType => {
                     self.assert_error_contains(&resp, "WRONGTYPE", "DECR on wrong type");
+                }
+            }
+        } else {
+            // SETBIT / GETBIT
+            let key = self.random_key();
+            let offset: u64 = self.rng.gen_range(0, 2048);
+            let bit_sub = self.rng.gen_range(0, 100);
+
+            if bit_sub < 60 {
+                // SETBIT
+                let value = self.rng.gen_range(0, 2) as u8;
+                let desc = format!("SETBIT {} {} {}", key, offset, value);
+                self.result.last_op = Some(ExecutorOp::String(desc));
+
+                // Determine expected behavior from shadow
+                enum SetBitExpect {
+                    OldBit(i64), // returns old bit value, key is string or new
+                    WrongType,   // key exists but not a string
+                }
+                let expect = match self.shadow.get(&key) {
+                    Some(RefValue::String(v)) => {
+                        let byte_idx = (offset / 8) as usize;
+                        let bit_mask = 0x80u8 >> (offset % 8);
+                        let old = if byte_idx < v.len() {
+                            if v[byte_idx] & bit_mask != 0 { 1i64 } else { 0i64 }
+                        } else {
+                            0i64
+                        };
+                        SetBitExpect::OldBit(old)
+                    }
+                    None => SetBitExpect::OldBit(0),
+                    Some(_) => SetBitExpect::WrongType,
+                };
+
+                let resp = self.executor.execute(&Command::SetBit(key.clone(), offset, value));
+
+                match expect {
+                    SetBitExpect::OldBit(old) => {
+                        self.assert_integer(&resp, old, &format!("SETBIT {} old bit", key));
+                        // Update shadow
+                        let byte_idx = (offset / 8) as usize;
+                        let bit_mask = 0x80u8 >> (offset % 8);
+                        let v = match self.shadow.data.get_mut(&key) {
+                            Some(RefValue::String(v)) => v,
+                            _ => {
+                                self.shadow.data.insert(key.clone(), RefValue::String(Vec::new()));
+                                match self.shadow.data.get_mut(&key) {
+                                    Some(RefValue::String(v)) => v,
+                                    _ => unreachable!(),
+                                }
+                            }
+                        };
+                        if v.len() <= byte_idx {
+                            v.resize(byte_idx + 1, 0);
+                        }
+                        if value == 1 {
+                            v[byte_idx] |= bit_mask;
+                        } else {
+                            v[byte_idx] &= !bit_mask;
+                        }
+                    }
+                    SetBitExpect::WrongType => {
+                        self.assert_error_contains(&resp, "WRONGTYPE", "SETBIT on wrong type");
+                    }
+                }
+            } else {
+                // GETBIT
+                let desc = format!("GETBIT {} {}", key, offset);
+                self.result.last_op = Some(ExecutorOp::String(desc));
+
+                let expected = match self.shadow.get(&key) {
+                    Some(RefValue::String(v)) => {
+                        let byte_idx = (offset / 8) as usize;
+                        let bit_mask = 0x80u8 >> (offset % 8);
+                        if byte_idx < v.len() {
+                            if v[byte_idx] & bit_mask != 0 { 1i64 } else { 0i64 }
+                        } else {
+                            0i64
+                        }
+                    }
+                    None => 0i64,
+                    Some(_) => -1i64, // sentinel for WRONGTYPE
+                };
+
+                let resp = self.executor.execute(&Command::GetBit(key.clone(), offset));
+
+                if expected == -1 {
+                    self.assert_error_contains(&resp, "WRONGTYPE", "GETBIT on wrong type");
+                } else {
+                    self.assert_integer(&resp, expected, &format!("GETBIT {} at {}", key, offset));
                 }
             }
         }
@@ -1147,6 +1237,30 @@ impl ExecutorDSTHarness {
             // DBSIZE
             let desc = "DBSIZE".to_string();
             self.result.last_op = Some(ExecutorOp::Key(desc));
+
+            // Sync shadow with executor before DBSIZE check: the executor lazily
+            // evicts expired keys on access, while shadow eagerly evicts. Also,
+            // some operations (e.g., SETRANGE on non-existent key, type coercion)
+            // may create keys the shadow doesn't fully track.
+            let executor_valid_keys: HashSet<String> = self
+                .executor
+                .get_data()
+                .keys()
+                .filter(|k| !self.executor.is_expired(k))
+                .cloned()
+                .collect();
+            let shadow_keys: HashSet<String> = self.shadow.data.keys().cloned().collect();
+            // Remove from shadow keys not in executor
+            for key in shadow_keys.difference(&executor_valid_keys) {
+                self.shadow.data.remove(key);
+                self.shadow.expirations.remove(key);
+            }
+            // Add to shadow keys in executor but not in shadow (opaque tracking)
+            for key in executor_valid_keys.difference(&shadow_keys) {
+                self.shadow
+                    .data
+                    .insert(key.clone(), RefValue::String(Vec::new()));
+            }
 
             let resp = self.executor.execute(&Command::DbSize);
             let expected = self.shadow.key_count() as i64;

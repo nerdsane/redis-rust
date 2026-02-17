@@ -54,11 +54,11 @@ git submodule update --init            # First time only
 ```
 unit/type/incr:   ALL PASS (28/28)
 unit/expire:      ALL PASS
-unit/type/string: 35/39 pass, crash at SETBIT (bitmaps not implemented)
+unit/type/string: 72 pass, 0 errors, crash at LCS (not implemented)
 unit/multi:       20/56 pass, crash at SWAPDB (database swap not implemented)
 ```
 
-The remaining failures are from unimplemented commands (SETBIT, SWAPDB), not bugs. The harness crashes on the first unimplemented command in a file, so all subsequent tests in that file are skipped.
+The remaining failures are from unimplemented commands (LCS, SWAPDB), not bugs. The harness crashes on the first unimplemented command in a file, so all subsequent tests in that file are skipped.
 
 **Run a single suite:**
 ```bash

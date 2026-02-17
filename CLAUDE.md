@@ -269,7 +269,7 @@ The Tcl harness crashes the entire test file on unimplemented commands. One `ERR
 |-------|------|---------|
 | `unit/type/incr` | 28/28 | - |
 | `unit/expire` | all | - |
-| `unit/type/string` | 35/39 | SETBIT (bitmaps not implemented) |
+| `unit/type/string` | 72 pass, 0 err | LCS command not implemented (crashes test file) |
 | `unit/multi` | 20/56 | SWAPDB (database swapping not implemented) |
 | ACL (`--features acl`) | 536/536 lib tests | ACL DST + 21 unit tests pass; Tcl `acl.tcl`/`acl-v2.tcl` blocked on ACL LOG, DRYRUN |
 
