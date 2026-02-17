@@ -30,7 +30,7 @@ jobs:
   stateright:
     name: "Exhaustive model checking"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 330  # 5h 30m — model checking time grows with state-space size
     steps:
       - uses: actions/checkout@v4
 

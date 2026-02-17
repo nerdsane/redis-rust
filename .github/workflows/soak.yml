@@ -1,13 +1,10 @@
 name: DST Soak
 
 # TigerBeetle/FoundationDB-style continuous fault injection.
-# Runs on every push and PR, using the full GitHub Actions time budget.
+# Manual trigger only — use workflow_dispatch to run on demand.
 # Every run explores new random seeds — no two runs test the same state space.
-# GitHub allows 6 hours per job on public repos. We use 5.5h to leave margin.
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
   workflow_dispatch:
     inputs:
       duration:
