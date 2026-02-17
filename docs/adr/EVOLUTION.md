@@ -47,9 +47,9 @@ This document defines how redis-rust tracks architectural change through three c
 | 4 | Actor isolation | ✅ | ADR-002 | Message passing, no shared state |
 | 5 | Streaming persistence | ✅ | ADR-005 | S3/object store, delta encoding |
 | 6 | TigerStyle assertions | ✅ | ADR-003 | verify_invariants() pattern |
-| 7 | TLA+ specifications | ⏳ | - | Formal specs for protocols |
-| 8 | Stateright model checking | ⏳ | - | Exhaustive state exploration |
-| 9 | Kani bounded proofs | ⏳ | - | Bounded verification |
+| 7 | TLA+ specifications | ✅ | ADR-003 | 4 specs: GossipProtocol, ReplicationConvergence, AntiEntropy, StreamingPersistence in `specs/tla/` |
+| 8 | Stateright model checking | ✅ | ADR-003 | 3 models: CrdtMerge, WriteBuffer, AntiEntropy in `src/stateright/` |
+| 9 | Kani bounded proofs | ✅ | ADR-003 | CRDT merge properties proven in `src/replication/lattice.rs` (gated behind `#[cfg(kani)]`) |
 | 10 | Linearizability (single-node) | ✅ | ADR-001 | Maelstrom verified |
 | 11 | Linearizability (multi-node) | ❌ | - | By design: eventual consistency |
 
@@ -75,7 +75,12 @@ Discovered → Open → Investigating → ADR-Drafted → Closed
 
 | Gap | Title | Status | Severity |
 |-----|-------|--------|----------|
-| - | (None yet) | - | - |
+| GAP-001 | Bitmaps not implemented | Open | Medium — blocks 4/39 string Tcl tests (SETBIT, GETBIT, BITCOUNT, BITOP) |
+| GAP-002 | SWAPDB not implemented | Open | Medium — blocks 36/56 multi Tcl tests |
+| GAP-003 | ACL LOG / ACL DRYRUN not implemented | Open | Medium — blocks Tcl `acl.tcl`/`acl-v2.tcl` suites |
+| GAP-004 | Read/write key patterns (`%R~`, `%W~`) parsed but not enforced | Open | Low — ACL feature gap |
+| GAP-005 | Transaction ACL re-check | Open | Low — permissions not re-verified during EXEC |
+| GAP-006 | CRDT-aware MGET/MSET | Open | Low — commands exist but don't generate replication deltas |
 
 ## Deviations (Pragmatic)
 
@@ -92,7 +97,7 @@ Discovered → Open → Investigating → ADR-Drafted → Closed
 
 | Deviation | Title | Related ADR | Priority |
 |-----------|-------|-------------|----------|
-| - | (None yet) | - | - |
+| [DEV-001](./deviations/DEV-001-file-size-limit.md) | Files Exceeding 500-Line Limit | ADR-003 | Medium — 10 files documented, some split completed |
 
 ## Relationships
 

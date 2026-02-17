@@ -102,7 +102,7 @@ pub struct SimulatedRng {
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| SimulatedRng | `src/simulator/rng.rs` | ChaCha8-based seeded RNG |
+| SimulatedRng | `src/io/simulation.rs` | ChaCha8-based seeded RNG |
 | VirtualTime | `src/simulator/time.rs` | Controllable time abstraction |
 | SimulationHarness | `src/simulator/harness.rs` | Test harness with fault injection |
 | SimulatedObjectStore | `src/streaming/simulated_store.rs` | Fault-injectable object store |
@@ -122,9 +122,14 @@ pub struct SimulatedRng {
 
 | Component | Notes |
 |-----------|-------|
-| Network fault injection | Delay, reorder, duplicate packets |
-| Disk fault injection | Partial writes, bit flips |
-| Clock skew simulation | Test under clock drift |
+| Low-level disk fault injection | Disk fault constants defined in buggify but not wired to actual I/O (object store faults ARE wired) |
+
+### Previously Listed as Not Implemented (Now Done)
+
+| Component | Location | When |
+|-----------|----------|------|
+| Network fault injection | `src/io/simulation.rs` | All 8 network faults wired: PACKET_DROP, REORDER, DUPLICATE, DELAY, CORRUPT, CONNECTION_RESET, CONNECT_TIMEOUT, PARTIAL_WRITE |
+| Clock skew simulation | `src/io/simulation.rs` | `ClockOffset` with per-node drift_ppm, fixed offsets, tested |
 
 ## References
 

@@ -49,15 +49,23 @@ Client Connections
 
 ```rust
 pub enum ShardMessage {
-    Command {
-        cmd: RedisCommand,
-        response_tx: oneshot::Sender<Value>,
-    },
-    EvictExpired,
-    Shutdown {
-        response: oneshot::Sender<()>,
-    },
+    // Core command execution
+    Command { cmd, virtual_time, response_tx },
+    BatchCommand { cmd, virtual_time },         // Fire-and-forget
+    EvictExpired { virtual_time, response_tx },
+
+    // Fast-path optimizations (bypass Command enum)
+    FastGet { key, response_tx },
+    FastSet { key, value, response_tx },
+    FastBatchGet { keys, response_tx },
+    FastBatchSet { pairs, response_tx },
+
+    // Response-pooled variants (reduce allocations)
+    PooledFastGet { key, slot },
+    PooledFastSet { key, value, slot },
 }
+// Note: Shutdown is achieved by dropping the channel sender,
+// not via a Shutdown message variant.
 ```
 
 ### Actor Pattern
@@ -146,7 +154,7 @@ impl ShardActor {
 
 | Component | Notes |
 |-----------|-------|
-| Dynamic shard rebalancing | Shards fixed at startup |
+| Dynamic shard rebalancing | `src/production/load_balancer.rs` provides metrics and `ScalingDecision` data structures, but not yet integrated into shard actor lifecycle |
 | Actor supervision | No automatic restart on failure |
 | Work stealing | No load balancing between shards |
 

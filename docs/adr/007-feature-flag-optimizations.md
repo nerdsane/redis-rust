@@ -136,9 +136,9 @@ diff baseline.log opt-single-key.log
 | opt-static-responses | `src/redis/commands.rs` | Pre-allocated OK |
 | opt-zero-copy-get | `src/production/sharded_actor.rs` | Avoid data copy |
 | opt-itoa-encode | `src/redis/resp.rs` | Fast integer encoding |
-| opt-fxhash-routing | `src/production/sharded_actor.rs` | Fast hash routing |
+| opt-fxhash-routing | `src/production/sharded_actor.rs` | AHash for shard routing (feature named fxhash for historical reasons) |
 | opt-atoi-parse | `src/redis/commands.rs` | Fast integer parsing |
-| Benchmark tracking | `BENCHMARK_RESULTS.md` | Impact documentation |
+| Benchmark tracking | `docker-benchmark/results/` | Timestamped result files; summary in root README.md |
 
 ### Validated
 

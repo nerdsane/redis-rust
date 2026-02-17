@@ -29,16 +29,16 @@ We will use **Docker containers** as the **only valid method** for Redis vs Rust
 # Both containers get identical resources
 services:
   redis:
-    image: redis:8.0-alpine
+    image: redis:7.4-alpine   # Primary comparison target
     cpus: 2
-    mem_limit: 1g
-    network_mode: host
+    memory: 1G
 
   rust-redis:
     build: .
     cpus: 2
-    mem_limit: 1g
-    network_mode: host
+    memory: 1G
+
+# Redis 8.0 comparison available via docker-compose.redis8.yml
 ```
 
 ### Benchmark Parameters
@@ -51,7 +51,7 @@ services:
 | Requests | 100,000 | Statistically significant |
 | Clients | 50 concurrent | Realistic load |
 | Data Size | 64 bytes | Standard benchmark size |
-| Pipeline depths | 1, 16, 64 | Tests different patterns |
+| Pipeline depths | 1, 16 | Tests non-pipelined and pipelined patterns (P=64 available in run-detailed-benchmarks.sh) |
 
 ### Benchmark Scripts
 
@@ -142,8 +142,8 @@ But they **MUST NOT** be used for Redis vs Rust performance claims.
 | run-benchmarks.sh | `docker-benchmark/` | Automated comparison script |
 | run-redis8-comparison.sh | `docker-benchmark/` | Three-way comparison |
 | run-persistent-benchmarks.sh | `docker-benchmark/` | Persistence benchmark |
-| Results tracking | `docker-benchmark/results/` | Historical results |
-| BENCHMARK_RESULTS.md | Root directory | Current results summary |
+| Results tracking | `docker-benchmark/results/` | Timestamped historical results |
+| Results summary | Root `README.md` | Current results inline in README |
 
 ### Validated
 

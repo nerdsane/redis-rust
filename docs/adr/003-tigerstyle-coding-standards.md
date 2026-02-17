@@ -145,7 +145,7 @@ fn parse_integer(s: &str) -> i64 {
 | Component | Location | Status |
 |-----------|----------|--------|
 | Checked arithmetic | `src/redis/commands.rs` | INCR/DECR use checked_add/sub |
-| Invariant verification | `src/redis/data.rs` | SortedSet, Hash verify invariants |
+| Invariant verification | `src/redis/data/{hash,sorted_set,list}.rs` | SortedSet, Hash, List verify invariants |
 | Error handling | Throughout | Result<T, E> instead of panics |
 | Clippy configuration | `src/lib.rs` | Allowed lints documented |
 | Precondition assertions | Command handlers | Input validation assertions |
@@ -158,11 +158,18 @@ fn parse_integer(s: &str) -> i64 {
 - Invariant checks run in debug builds
 - DST tests with assertions enabled catch bugs
 
+### Formally Verified
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| TLA+ Specifications | `specs/tla/*.tla` | 4 specs: GossipProtocol, ReplicationConvergence, AntiEntropy, StreamingPersistence |
+| Stateright Models | `src/stateright/*.rs` | 3 models: CrdtMergeModel, WriteBufferModel, AntiEntropyModel |
+| Kani Proofs | `src/replication/lattice.rs` | CRDT merge commutativity, associativity, idempotence proven |
+
 ### Not Yet Implemented
 
 | Component | Notes |
 |-----------|-------|
-| Formal verification | TLA+ specs not yet written |
 | Fuzzing integration | No libfuzzer/AFL coverage |
 | Mutation testing | No cargo-mutants integration |
 

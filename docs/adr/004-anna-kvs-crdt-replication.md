@@ -121,23 +121,28 @@ Node 1                    Node 2                    Node 3
 | GossipRouter | `src/replication/gossip_router.rs` | Message routing |
 | HashRing | `src/replication/hash_ring.rs` | Consistent hashing |
 | AntiEntropyManager | `src/replication/anti_entropy.rs` | Merkle tree sync |
-| ReplicatedState | `src/replication/state.rs` | CRDT-backed state |
+| ReplicatedState | `src/replication/state/` | CRDT-backed state (module: shard_state.rs, crdt_value.rs, delta.rs, replicated_value.rs) |
 | CRDT DST Tests | `src/replication/crdt_dst.rs` | Convergence verification |
 
 ### Validated
 
-- CRDT convergence verified with 16+ DST tests
-- Multi-node replication verified with 9 tests
-- Partition tolerance verified with 14 tests
+- CRDT convergence verified with 16 DST tests (100+ seeds each = 1,600+ deterministic runs)
+- Multi-node replication verified with 27+ tests (eventual consistency: 9, causal: 10, anti-entropy: 8)
+- Partition tolerance verified via DST harnesses in `src/simulator/partition_tests.rs`
 - Maelstrom single-node linearizability passes
 
 ### Not Yet Implemented
 
 | Component | Notes |
 |-----------|-------|
-| Delta-state CRDTs | Full state sync only, no deltas |
-| CRDT-aware MGET/MSET | Cross-key operations |
-| Read-your-writes consistency | Session guarantees |
+| CRDT-aware MGET/MSET | MGET/MSET exist in executor but don't generate replication deltas |
+| Read-your-writes consistency | Session guarantees not implemented |
+
+### Previously Listed as Not Implemented (Now Done)
+
+| Component | Location | When |
+|-----------|----------|------|
+| Delta-state CRDTs | `src/replication/state/delta.rs`, `src/replication/gossip.rs` | Delta-based gossip with `GossipMessage::DeltaBatch`, `drain_deltas()`/`apply_delta()`, selective routing via hash ring |
 
 ## References
 
