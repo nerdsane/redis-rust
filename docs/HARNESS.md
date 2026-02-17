@@ -9,7 +9,8 @@ How to verify this codebase is correct. Written for AI agents and human engineer
 Every change must survive all four layers. Run them in order. If any layer fails, stop and fix before proceeding.
 
 ```
-Layer 1: cargo test --lib                              # 507 unit tests (< 70s)
+Layer 1: cargo test --lib                              # unit tests (< 70s)
+Layer 1b: cargo test --release wal                     # WAL DST tests (multi-seed)
 Layer 2: ./scripts/run-redis-compat.sh                 # Official Redis Tcl suite (< 60s)
 Layer 3: Maelstrom linearizability check               # Jepsen/Knossos (< 60s)
 Layer 4: docker-benchmark/run-benchmarks.sh            # Performance regression (< 5min)
@@ -41,6 +42,7 @@ cargo test --lib executor_dst          # Command executor correctness
 cargo test --lib crdt_dst              # CRDT convergence
 cargo test --lib multi_node            # Multi-node replication
 cargo test --lib replicat              # All 87 replication tests
+cargo test --release wal               # WAL durability + group commit DST
 ```
 
 ## Layer 2: Redis Tcl compatibility

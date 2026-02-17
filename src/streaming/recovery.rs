@@ -347,6 +347,47 @@ impl<S: ObjectStore + Clone + 'static> RecoveryManager<S> {
     pub fn manifest_manager(&self) -> &ManifestManager<S> {
         &self.manifest_manager
     }
+
+    /// Perform recovery with WAL replay phase.
+    ///
+    /// 1. Load from object store (checkpoint + segments) — bulk state
+    /// 2. Determine high-water mark (max timestamp from segments)
+    /// 3. Replay WAL entries with timestamp > high_water_mark
+    /// 4. CRDT idempotency makes duplicate replay safe — no dedup needed
+    pub async fn recover_with_wal<W: crate::streaming::wal_store::WalStore>(
+        &self,
+        wal_rotator: &crate::streaming::wal::WalRotator<W>,
+    ) -> Result<RecoveredState, RecoveryError> {
+        let mut recovered = self.recover().await?;
+
+        // Determine high-water mark from object store segments
+        let high_water = recovered
+            .manifest
+            .segments
+            .iter()
+            .map(|s| s.max_timestamp)
+            .max()
+            .unwrap_or(0);
+
+        // Replay WAL entries after the high-water mark
+        let wal_deltas = wal_rotator
+            .recover_entries_after(high_water)
+            .map_err(|e| RecoveryError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("WAL recovery failed: {}", e),
+            )))?;
+
+        if !wal_deltas.is_empty() {
+            recovered.stats.deltas_replayed = recovered
+                .stats
+                .deltas_replayed
+                .checked_add(wal_deltas.len() as u64)
+                .unwrap_or(recovered.stats.deltas_replayed);
+            recovered.deltas.extend(wal_deltas);
+        }
+
+        Ok(recovered)
+    }
 }
 
 #[cfg(test)]

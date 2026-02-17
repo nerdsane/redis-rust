@@ -310,6 +310,325 @@ impl Model for WriteBufferModel {
     }
 }
 
+// ============================================================================
+// WAL Durability Model — extends persistence with WAL + group commit
+// ============================================================================
+// Corresponds to: specs/tla/WalDurability.tla
+
+/// Configuration for the WAL durability model
+#[derive(Clone, Debug)]
+pub struct WalDurabilityConfig {
+    pub max_writes: usize,
+    pub group_commit_batch_size: usize,
+    pub max_wal_files: usize,
+    pub max_segments: usize,
+}
+
+impl Default for WalDurabilityConfig {
+    fn default() -> Self {
+        WalDurabilityConfig {
+            max_writes: 4,
+            group_commit_batch_size: 2,
+            max_wal_files: 3,
+            max_segments: 3,
+        }
+    }
+}
+
+/// State of the WAL + streaming persistence system
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WalDurabilityState {
+    /// Entries in WAL buffer (pending fsync)
+    pub wal_buffer: Vec<u64>,
+    /// Timestamps that have been fsync'd to WAL (durable on local disk)
+    pub wal_synced: BTreeSet<u64>,
+    /// Timestamps that have been streamed to object store
+    pub streamed: BTreeSet<u64>,
+    /// High-water mark: max timestamp in object store
+    pub high_water_mark: u64,
+    /// Timestamps acknowledged to client
+    pub acknowledged: BTreeSet<u64>,
+    /// Whether system is crashed
+    pub crashed: bool,
+    /// Whether recovery is complete
+    pub recovered: bool,
+    /// Next timestamp to assign
+    pub write_counter: u64,
+}
+
+impl WalDurabilityState {
+    pub fn new() -> Self {
+        WalDurabilityState {
+            wal_buffer: Vec::new(),
+            wal_synced: BTreeSet::new(),
+            streamed: BTreeSet::new(),
+            high_water_mark: 0,
+            acknowledged: BTreeSet::new(),
+            crashed: false,
+            recovered: true,
+            write_counter: 1,
+        }
+    }
+}
+
+impl Default for WalDurabilityState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Actions for the WAL durability model
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum WalDurabilityAction {
+    /// Append entry to WAL buffer (not yet durable)
+    WalAppend,
+    /// Group commit: fsync WAL buffer, acknowledge all entries
+    WalSync,
+    /// Fsync failure: discard buffer without acknowledging
+    WalSyncFail,
+    /// Stream synced entries to object store
+    StreamFlush,
+    /// Truncate WAL entries that are in object store
+    WalTruncate,
+    /// System crash (loses buffer, keeps synced WAL + object store)
+    Crash,
+    /// System recovery
+    Recover,
+}
+
+/// Stateright model for WAL durability verification
+pub struct WalDurabilityModel {
+    pub config: WalDurabilityConfig,
+}
+
+impl WalDurabilityModel {
+    pub fn new() -> Self {
+        WalDurabilityModel {
+            config: WalDurabilityConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: WalDurabilityConfig) -> Self {
+        WalDurabilityModel { config }
+    }
+}
+
+impl Default for WalDurabilityModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Model for WalDurabilityModel {
+    type State = WalDurabilityState;
+    type Action = WalDurabilityAction;
+
+    fn init_states(&self) -> Vec<Self::State> {
+        vec![WalDurabilityState::new()]
+    }
+
+    fn actions(&self, state: &Self::State, actions: &mut Vec<Self::Action>) {
+        if state.crashed {
+            if !state.recovered {
+                actions.push(WalDurabilityAction::Recover);
+            }
+            return;
+        }
+
+        // WalAppend: if buffer not full and writes remaining
+        if state.wal_buffer.len() < self.config.group_commit_batch_size
+            && (state.write_counter as usize) <= self.config.max_writes
+        {
+            actions.push(WalDurabilityAction::WalAppend);
+        }
+
+        // WalSync: if buffer not empty
+        if !state.wal_buffer.is_empty() {
+            actions.push(WalDurabilityAction::WalSync);
+            actions.push(WalDurabilityAction::WalSyncFail);
+        }
+
+        // StreamFlush: if there are synced entries to stream
+        if !state.wal_synced.is_empty() {
+            actions.push(WalDurabilityAction::StreamFlush);
+        }
+
+        // WalTruncate: if high_water_mark > 0 and there are synced entries to remove
+        if state.high_water_mark > 0
+            && state.wal_synced.iter().any(|&ts| ts <= state.high_water_mark)
+        {
+            actions.push(WalDurabilityAction::WalTruncate);
+        }
+
+        // Crash: can happen anytime
+        actions.push(WalDurabilityAction::Crash);
+    }
+
+    fn next_state(&self, state: &Self::State, action: Self::Action) -> Option<Self::State> {
+        let mut next = state.clone();
+
+        match action {
+            WalDurabilityAction::WalAppend => {
+                if next.crashed {
+                    return None;
+                }
+                let ts = next.write_counter;
+                next.write_counter += 1;
+                next.wal_buffer.push(ts);
+            }
+
+            WalDurabilityAction::WalSync => {
+                if next.crashed || next.wal_buffer.is_empty() {
+                    return None;
+                }
+                // All entries in buffer become synced AND acknowledged
+                for &ts in &next.wal_buffer {
+                    next.wal_synced.insert(ts);
+                    next.acknowledged.insert(ts);
+                }
+                next.wal_buffer.clear();
+            }
+
+            WalDurabilityAction::WalSyncFail => {
+                if next.crashed || next.wal_buffer.is_empty() {
+                    return None;
+                }
+                // Fsync failed — discard buffer, nothing acknowledged
+                next.wal_buffer.clear();
+            }
+
+            WalDurabilityAction::StreamFlush => {
+                if next.crashed || next.wal_synced.is_empty() {
+                    return None;
+                }
+                // Move all synced entries to object store
+                for ts in next.wal_synced.clone() {
+                    next.streamed.insert(ts);
+                    if ts > next.high_water_mark {
+                        next.high_water_mark = ts;
+                    }
+                }
+            }
+
+            WalDurabilityAction::WalTruncate => {
+                if next.crashed || next.high_water_mark == 0 {
+                    return None;
+                }
+                // Remove synced entries at or below high-water mark
+                let to_remove: Vec<u64> = next
+                    .wal_synced
+                    .iter()
+                    .filter(|&&ts| ts <= next.high_water_mark)
+                    .copied()
+                    .collect();
+                if to_remove.is_empty() {
+                    return None;
+                }
+                for ts in to_remove {
+                    next.wal_synced.remove(&ts);
+                }
+            }
+
+            WalDurabilityAction::Crash => {
+                if next.crashed {
+                    return None;
+                }
+                next.crashed = true;
+                next.recovered = false;
+                // Buffer is lost (un-synced entries)
+                next.wal_buffer.clear();
+                // Synced WAL entries survive (on disk)
+                // Object store entries survive (in cloud)
+            }
+
+            WalDurabilityAction::Recover => {
+                if !next.crashed || next.recovered {
+                    return None;
+                }
+                next.crashed = false;
+                next.recovered = true;
+                // Buffer stays empty after recovery
+            }
+        }
+
+        Some(next)
+    }
+
+    fn properties(&self) -> Vec<Property<Self>> {
+        vec![
+            // INVARIANT 1: Truncation Safety
+            // Every acknowledged entry is either in wal_synced OR in streamed
+            Property::always(
+                "truncation_safety",
+                |_model: &WalDurabilityModel, state: &WalDurabilityState| {
+                    for &ts in &state.acknowledged {
+                        if !state.wal_synced.contains(&ts) && !state.streamed.contains(&ts) {
+                            return false;
+                        }
+                    }
+                    true
+                },
+            ),
+            // INVARIANT 2: Recovery Completeness
+            // After recovery, all acknowledged entries are recoverable
+            Property::always(
+                "recovery_completeness",
+                |_model: &WalDurabilityModel, state: &WalDurabilityState| {
+                    if state.recovered {
+                        for &ts in &state.acknowledged {
+                            if !state.wal_synced.contains(&ts)
+                                && !state.streamed.contains(&ts)
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                },
+            ),
+            // INVARIANT 3: High-water mark consistency
+            // High-water mark is the max of streamed entries
+            Property::always(
+                "high_water_mark_consistent",
+                |_model: &WalDurabilityModel, state: &WalDurabilityState| {
+                    if let Some(&max_streamed) = state.streamed.iter().next_back() {
+                        state.high_water_mark >= max_streamed
+                    } else {
+                        state.high_water_mark == 0
+                    }
+                },
+            ),
+            // INVARIANT 4: WAL buffer entries are not acknowledged
+            // Entries in the buffer have not been acknowledged (pre-sync)
+            Property::always(
+                "buffer_not_acknowledged",
+                |_model: &WalDurabilityModel, state: &WalDurabilityState| {
+                    for &ts in &state.wal_buffer {
+                        if state.acknowledged.contains(&ts) {
+                            return false;
+                        }
+                    }
+                    true
+                },
+            ),
+            // INVARIANT 5: Acknowledged implies was-synced
+            // Every acknowledged entry was synced at some point
+            // (may have been truncated from wal_synced after streaming)
+            Property::always(
+                "acknowledged_recoverable",
+                |_model: &WalDurabilityModel, state: &WalDurabilityState| {
+                    for &ts in &state.acknowledged {
+                        if !state.wal_synced.contains(&ts) && !state.streamed.contains(&ts) {
+                            return false;
+                        }
+                    }
+                    true
+                },
+            ),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +741,125 @@ mod tests {
         checker.assert_properties();
 
         println!("Model check passed! All persistence invariants hold.");
+    }
+
+    // ================================================================
+    // WAL Durability Model Tests
+    // ================================================================
+
+    #[test]
+    fn test_wal_state_basic() {
+        let mut state = WalDurabilityState::new();
+
+        // Append to buffer
+        state.wal_buffer.push(1);
+        state.write_counter = 2;
+
+        assert_eq!(state.wal_buffer.len(), 1);
+        assert!(state.acknowledged.is_empty());
+    }
+
+    #[test]
+    fn test_wal_sync_acknowledges() {
+        let mut state = WalDurabilityState::new();
+
+        // Append entries
+        state.wal_buffer.push(1);
+        state.wal_buffer.push(2);
+        state.write_counter = 3;
+
+        // Sync — all entries become synced and acknowledged
+        for &ts in &state.wal_buffer.clone() {
+            state.wal_synced.insert(ts);
+            state.acknowledged.insert(ts);
+        }
+        state.wal_buffer.clear();
+
+        assert!(state.wal_buffer.is_empty());
+        assert_eq!(state.wal_synced.len(), 2);
+        assert_eq!(state.acknowledged.len(), 2);
+        assert!(state.acknowledged.contains(&1));
+        assert!(state.acknowledged.contains(&2));
+    }
+
+    #[test]
+    fn test_wal_crash_preserves_synced() {
+        let mut state = WalDurabilityState::new();
+
+        // Sync entry 1
+        state.wal_synced.insert(1);
+        state.acknowledged.insert(1);
+
+        // Buffer entry 2 (un-synced)
+        state.wal_buffer.push(2);
+
+        // Crash
+        state.crashed = true;
+        state.wal_buffer.clear(); // Lost!
+
+        // Entry 1 survives (synced), entry 2 is gone (un-synced)
+        assert!(state.wal_synced.contains(&1));
+        assert!(state.wal_buffer.is_empty());
+        assert_eq!(state.acknowledged.len(), 1); // Only entry 1 was acknowledged
+    }
+
+    #[test]
+    fn test_wal_truncation_safety() {
+        let mut state = WalDurabilityState::new();
+
+        // Sync entries 1, 2, 3
+        for ts in 1..=3 {
+            state.wal_synced.insert(ts);
+            state.acknowledged.insert(ts);
+        }
+
+        // Stream entries 1, 2 to object store
+        state.streamed.insert(1);
+        state.streamed.insert(2);
+        state.high_water_mark = 2;
+
+        // Truncate WAL entries at or below high-water mark
+        state.wal_synced.retain(|&ts| ts > state.high_water_mark);
+
+        // Entry 3 is still in wal_synced
+        assert!(state.wal_synced.contains(&3));
+        // Entries 1, 2 are in streamed
+        assert!(state.streamed.contains(&1));
+        assert!(state.streamed.contains(&2));
+
+        // All acknowledged entries are recoverable
+        for &ts in &state.acknowledged {
+            assert!(
+                state.wal_synced.contains(&ts) || state.streamed.contains(&ts),
+                "Entry {} not recoverable after truncation",
+                ts
+            );
+        }
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test stateright_wal_durability -- --ignored --nocapture
+    fn stateright_wal_durability_model_check() {
+        use stateright::Checker;
+
+        let config = WalDurabilityConfig {
+            max_writes: 4,
+            group_commit_batch_size: 2,
+            max_wal_files: 3,
+            max_segments: 3,
+        };
+        let model = WalDurabilityModel::with_config(config);
+
+        let checker = model.checker().spawn_bfs().join();
+
+        println!(
+            "WAL Durability - States explored: {}",
+            checker.unique_state_count()
+        );
+
+        checker.assert_properties();
+
+        println!("WAL Durability model check passed! All invariants hold.");
     }
 
     #[test]

@@ -4,6 +4,7 @@ FROM rust:1.83-slim-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential && \
     cargo build --release --features s3 --bin server-persistent

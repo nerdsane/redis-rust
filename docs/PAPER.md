@@ -2,7 +2,7 @@
 
 **Authors:** Sesh Nalla and Claude Code (Anthropic, Opus 4.5 → Opus 4.6)
 
-**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: after a step-change in AI code generation capability in late 2025, could human-AI collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements 75+ Redis commands across strings, lists, sets, hashes, sorted sets, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. Correctness is established through a 4-layer verification harness: 507 deterministic unit and simulation tests (including fault-injected CRDT convergence under network partitions), the official Redis Tcl test suite (28/28 incr, all expire tests passing), 5-node Maelstrom/Jepsen linearizability checking, and Docker-based performance benchmarking. On equivalent hardware, throughput reaches 80--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
+**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: after a step-change in AI code generation capability in late 2025, could human-AI collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements 75+ Redis commands across strings, lists, sets, hashes, sorted sets, bitmaps, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. A hybrid persistence layer combines a local Write-Ahead Log (WAL) with group commit for zero-RPO durability and cloud-native streaming to object storage (S3/local) for long-term backup. Correctness is established through a 6-layer verification pyramid: 549+ deterministic unit and simulation tests (including fault-injected CRDT convergence and WAL crash recovery), the official Redis Tcl test suite, 5-node Maelstrom/Jepsen linearizability checking, Stateright exhaustive model checking, 5 TLA+ specifications, and Docker-based performance benchmarking. On equivalent hardware, throughput reaches 80--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
 
 ---
 
@@ -40,11 +40,11 @@ We also want to be straightforward about the limitations. The system does not im
 
 This paper makes three contributions:
 
-1. **A verification methodology for AI-assisted systems code.** The 4-layer harness (deterministic simulation testing with FoundationDB-style fault injection, official Redis Tcl compatibility suite, Maelstrom/Jepsen linearizability checking, and performance benchmarking) provides defense-in-depth against the specific failure modes of AI-generated code: plausible-looking implementations that are subtly wrong, correct logic with incorrect error messages, and working code that silently regresses under load. Each layer catches different classes of bugs, and none requires trusting the AI that wrote the code.
+1. **A verification methodology for AI-assisted systems code.** The 6-layer verification pyramid (TLA+ protocol specs, Stateright exhaustive model checking, deterministic simulation testing with FoundationDB-style fault injection, official Redis Tcl compatibility suite, Maelstrom/Jepsen linearizability checking, and performance benchmarking) provides defense-in-depth against the specific failure modes of AI-generated code: plausible-looking implementations that are subtly wrong, correct logic with incorrect error messages, and working code that silently regresses under load. Each layer catches different classes of bugs, and none requires trusting the AI that wrote the code.
 
 2. **An architecture case study.** The actor-per-shard design, CRDT-based replication with gossip protocol, and Lua scripting integration demonstrate how a human-AI team navigated real systems design decisions -- lock-free concurrency via message passing, connection-level vs. shard-level transaction state, virtual time for deterministic simulation. We document the trade-offs explicitly, including the ones we got wrong on the first attempt.
 
-3. **An honest accounting of results.** 507 passing tests, 2 fully passing Tcl suites, 5-node Maelstrom validation, and 80--99% of Redis 7.4 throughput. Also: 4 Tcl suites not attempted, no persistence, no pub/sub, no linearizable replication. Three production-grade bugs caught by DST that would have shipped in a less-tested implementation: empty-collection cleanup, MSET postcondition violation, and WATCH-inside-MULTI mishandling. We report what works, what does not, and what we learned from each failure.
+3. **An honest accounting of results.** 549+ passing tests, 2 fully passing Tcl suites, 5-node Maelstrom validation, and 80--99% of Redis 7.4 throughput. Also: 4 Tcl suites not attempted, no pub/sub, no linearizable replication. Six production-grade bugs caught by DST that would have shipped in a less-tested implementation: empty-collection cleanup, MSET postcondition violation, WATCH-inside-MULTI mishandling, SETRANGE on non-existing key, SET...GET on wrong type, and DBSIZE shadow drift. We report what works, what does not, and what we learned from each failure.
 
 ---
 
@@ -169,13 +169,36 @@ Key finding: with 2 available cores, 2-4 shards peak at roughly 1M SET/s pipelin
 | Aspect | Redis 7.4 | redis-rust | Rationale |
 |--------|-----------|------------|-----------|
 | WATCH semantics | Dirty-flag per key | Value-snapshot comparison | Cannot track mutations across shards |
-| Persistence | RDB + AOF | None | Focus on in-memory correctness |
+| Persistence | RDB + AOF | WAL (group commit) + S3 streaming | Local fsync for zero-RPO, async cloud backup |
 | Blocking ops | BLPOP, BRPOP | Not implemented | Requires cross-shard signaling |
-| Bitmaps/Streams | Full support | Not implemented | Low priority for verification research |
+| Bitmaps | Full support | SETBIT/GETBIT | Operates on string (SDS) values |
+| Streams | Full support | Not implemented | Low priority for verification research |
 | Thread model | Single-threaded + I/O | Actor-per-shard (tokio) | Multi-core scaling without a GIL |
 | Transaction scope | All keys visible | Queued at connection, per-shard dispatch | Atomicity from client perspective |
 | Cluster mode | Hash slots | Single-node sharding + CRDT gossip | Hash slots require client-side routing |
 | Lua key access | All keys | Only executing shard (or single-shard mode) | Multi-shard Lua needs distributed locking |
+
+### 2.6 WAL Hybrid Persistence
+
+Redis uses a combined RDB snapshot + AOF append-only log for persistence. We chose a different architecture: a local WAL for immediate durability paired with asynchronous streaming to object storage (S3/local filesystem) for long-term backup.
+
+```
+Client request → ShardActor.execute(cmd) → (result, delta)
+                                              ↓
+                                    WalActor.write(delta) → group commit → fsync
+                                              ↓
+                                    Response to client (data is now durable)
+                                              ↓ (async, non-blocking)
+                                    DeltaSink → PersistenceActor → ObjectStore
+                                              ↓ (after successful stream)
+                                    WalActor.truncate(streamed_timestamp)
+```
+
+The WAL actor implements turbopuffer-inspired group commit: concurrent writers append entries to a buffer, then a single `fsync` flushes the entire batch to disk before resolving all waiters. With 50 concurrent clients, this amortizes the ~100μs fsync cost to ~2μs per write.
+
+Three fsync policies mirror Redis AOF `appendfsync` options: `Always` (group commit before ack, RPO=0), `EverySecond` (ack before fsync, RPO≤1s), and `No` (OS-managed flush, unbounded RPO). Recovery loads from the object store first (checkpoint + segments), determines the high-water mark, then replays WAL entries above that mark. CRDT idempotency makes duplicate replay safe, eliminating the need for exactly-once tracking.
+
+The WAL file format uses 16-byte entry overhead (data length + Lamport timestamp + CRC32 checksum). Per-entry checksumming means a torn write from a crash corrupts only the last entry; the reader stops at the first corrupt entry and recovers everything before it.
 
 ---
 
@@ -191,18 +214,21 @@ This principle is the foundation of the project's engineering discipline. When a
   ┌─────────────────────────────────────────────┐
   │           Verification Pyramid              │
   │                                             │
-  │              ╱╲    TLA+ / Stateright        │  Design bugs
-  │             ╱  ╲   (formal methods)         │
+  │              ╱╲    TLA+ (5 specs)           │  Protocol bugs
+  │             ╱  ╲   (formal proofs)          │
   │            ╱────╲                           │
-  │           ╱      ╲  Maelstrom/Jepsen        │  Consistency bugs
-  │          ╱        ╲ (linearizability)        │
+  │           ╱      ╲  Stateright              │  State-space bugs
+  │          ╱        ╲ (exhaustive BFS)        │
   │         ╱──────────╲                        │
-  │        ╱            ╲ Redis Tcl Suite       │  Semantic bugs
-  │       ╱              ╲(official, external)  │
+  │        ╱            ╲ Maelstrom/Jepsen      │  Consistency bugs
+  │       ╱              ╲(linearizability)     │
   │      ╱────────────────╲                     │
-  │     ╱                  ╲ DST + Unit Tests   │  Implementation bugs
-  │    ╱    507 tests       ╲(fault injection)  │
+  │     ╱    Redis Tcl     ╲ WAL DST (260+     │  Semantic + durability
+  │    ╱     Suite          ╲ seeds, crash)     │  bugs
   │   ╱──────────────────────╲                  │
+  │  ╱     549+ Unit + DST    ╲                 │  Implementation bugs
+  │ ╱       (fault injection)  ╲                │
+  │╱────────────────────────────╲               │
   └─────────────────────────────────────────────┘
     More tests, faster          Fewer, slower, deeper
 ```
@@ -244,6 +270,8 @@ The first layer draws directly from FoundationDB's simulation testing philosophy
 
 **The CRDT convergence DST** tests four data structures -- GCounter, PNCounter, ORSet, and VectorClock -- under partition injection and message loss. Each harness creates multiple replicas, applies random operations, runs pairwise sync rounds (with configurable message drop probability), and asserts that all replicas converge to identical state. Ten CRDT suites run 100 seeds each.
 
+**The WAL DST harness** verifies durability guarantees under crash and disk fault injection. A `SimulatedWalStore` wraps the in-memory store with buggify fault injection (WRITE_FAIL, PARTIAL_WRITE, FSYNC_FAIL, CORRUPTION, DISK_FULL). The harness writes deltas, tracks which were acknowledged (fsync returned success), simulates a crash by truncating all files to their last synced position, then recovers and verifies every acknowledged write is present. The key invariant: in `Always` fsync mode, zero acknowledged writes may be lost. The suite runs 260+ seeds across five scenarios: baseline (no faults), crash-only, faults with crash, rotation under load, and truncation correctness. A 1000-seed chaos stress test is available for manual runs.
+
 ### 3.3 Layer 2: Redis Tcl Compatibility
 
 The official Redis test suite, maintained by the Redis authors, is run unmodified against the Rust implementation. This is the strongest form of external verification: the tests were written by people who had no knowledge of this project, and the AI had no role in creating them.
@@ -260,13 +288,13 @@ What this proves: under Maelstrom's simulated network (reliable, near-instant de
 
 ### 3.5 Layer 4: Formal Methods
 
-**Stateright model checking** enumerates all possible interleavings of Set, Delete, and Sync operations across replicas, verifying that merge is commutative, associative, and idempotent. Because the state space is finite and bounded, Stateright checks *every* reachable state, not a random sample.
+**Stateright model checking** enumerates all possible interleavings of operations across replicas and persistence states, verifying that properties hold in *every* reachable state. Three models are checked exhaustively: `CrdtMergeModel` (commutativity, associativity, idempotence of LWW merge), `WriteBufferModel` (buffer bounds, segment ID monotonicity, crash durability), and `WalDurabilityModel` (truncation safety, recovery completeness, group commit atomicity, high-water mark consistency). The WAL model explores all interleavings of WalAppend, WalSync, WalSyncFail, StreamFlush, WalTruncate, Crash, and Recover, verifying that every acknowledged write is recoverable after any crash.
 
-**Four TLA+ specifications** formalize the distributed protocols: `ReplicationConvergence.tla` (LWW merge under partitions), `GossipProtocol.tla` (delta dissemination), `AntiEntropy.tla` (Merkle-tree sync), and `StreamingPersistence.tla` (write buffer durability). Each TLA+ invariant maps to a concrete runtime assertion in the Rust code.
+**Five TLA+ specifications** formalize the distributed protocols: `ReplicationConvergence.tla` (LWW merge under partitions), `GossipProtocol.tla` (delta dissemination), `AntiEntropy.tla` (Merkle-tree sync), `StreamingPersistence.tla` (write buffer durability), and `WalDurability.tla` (WAL group commit, fsync policies, truncation safety, crash recovery with object store high-water mark). The WAL spec defines 5 invariants (truncation safety, recovery completeness, group commit atomicity, acknowledged-are-synced, high-water mark consistency) and 3 temporal properties (eventual durability, eventual streaming, recovery terminates). Each TLA+ invariant maps to a concrete Stateright property and a runtime assertion in the Rust code.
 
 ### 3.6 CI Integration
 
-The CI pipeline runs three layers in a single job on every push and every pull request: unit tests (which include Stateright model checking), Tcl compatibility, and Maelstrom linearizability. TLA+ specifications are checked manually with the TLC model checker; they are not part of automated CI. Every PR must pass all automated layers. There are no `#[ignore]` annotations, no `--skip` flags, no optional test suites. A failure in any layer blocks the merge.
+The CI pipeline runs on every push and pull request across three parallel jobs. The main `build-and-test` job runs unit tests, WAL DST integration tests (260+ seeds), Tcl compatibility, and Maelstrom linearizability. A `clippy` job enforces zero warnings. Stateright exhaustive model checking runs in a separate workflow (scheduled every 12 hours and triggered on changes to stateright or streaming code) because state-space exploration can take minutes to hours depending on model bounds. A `DST Soak` workflow runs every 6 hours, cycling through executor, connection transaction, CRDT, and WAL DST harnesses with time-based random seeds -- every run explores new state space. TLA+ specifications are checked manually with the TLC model checker. Every PR must pass all automated layers; a failure in any layer blocks the merge.
 
 ---
 
@@ -346,11 +374,13 @@ This matters beyond this project. As AI-generated code becomes more common, the 
 
 ## 6. Conclusion and Future Work
 
-This project is a case study in AI-assisted systems programming with rigorous verification, not a production Redis replacement. It demonstrates that an AI agent can co-author a functional, reasonably performant Redis-compatible server -- 75+ commands, within 80--99% of Redis 7.4 throughput, passing the official test suite for implemented commands -- when paired with a human engineer who provides architectural direction and a verification harness that catches the AI's mistakes.
+This project is a case study in AI-assisted systems programming with rigorous verification, not a production Redis replacement. It demonstrates that an AI agent can co-author a functional, reasonably performant Redis-compatible server -- 75+ commands, within 80--99% of Redis 7.4 throughput, passing the official test suite for implemented commands, with DST-verified durable persistence -- when paired with a human engineer who provides architectural direction and a verification harness that catches the AI's mistakes.
 
-The verification methodology is the main contribution. Deterministic simulation testing, official compatibility suites, Jepsen-style linearizability checking, and controlled benchmarking together form a pipeline that makes AI-generated systems code auditable. The six bugs caught by DST -- empty collection cleanup, MSET postconditions, WATCH-inside-MULTI, SETRANGE on non-existing key with empty value, SET...GET on wrong type, and DBSIZE shadow drift -- are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
+The verification methodology is the main contribution. The 6-layer pyramid -- TLA+ protocol specs, Stateright exhaustive model checking, deterministic simulation with fault injection, official Redis Tcl tests, Maelstrom/Jepsen linearizability, and performance benchmarking -- forms a pipeline that makes AI-generated systems code auditable. The six bugs caught by DST -- empty collection cleanup, MSET postconditions, WATCH-inside-MULTI, SETRANGE on non-existing key with empty value, SET...GET on wrong type, and DBSIZE shadow drift -- are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
 
-Future work includes expanding Tcl suite coverage (LCS, blocking operations, and BITCOUNT/BITOP are the next frontier), adding persistence beyond the experimental S3 streaming layer, and exploring cluster-mode sharding across multiple machines. A particularly interesting direction is closing the loop between verification and production: connecting the server to observability systems like Datadog to feed real-world performance data, error rates, and latency distributions back into the development cycle. The project already includes optional Datadog integration (metrics, tracing, and logging via feature flag). The vision is a feedback loop where production telemetry informs which commands to optimize, which edge cases to harden, and which verification layers need strengthening -- turning observability into a fifth verification layer that operates on real traffic rather than synthetic workloads.
+The WAL hybrid persistence layer (turbopuffer-inspired group commit + S3 streaming) demonstrates the methodology applied to a durability subsystem. The key invariant -- every acknowledged write survives crash+recovery in `Always` fsync mode -- is verified at three levels: TLA+ proves the protocol correct, Stateright exhaustively checks all state interleavings, and DST runs 260+ seeds with simulated disk faults and crash injection. Docker integration tests confirm zero data loss across multiple SIGKILL crashes. This is the first Redis-compatible system we are aware of that proves durability guarantees through deterministic simulation.
+
+Future work includes expanding Tcl suite coverage (LCS, blocking operations, and BITCOUNT/BITOP are the next frontier) and exploring cluster-mode sharding across multiple machines. A particularly interesting direction is closing the loop between verification and production: connecting the server to observability systems like Datadog to feed real-world performance data, error rates, and latency distributions back into the development cycle. The project already includes optional Datadog integration (metrics, tracing, and logging via feature flag). The vision is a feedback loop where production telemetry informs which commands to optimize, which edge cases to harden, and which verification layers need strengthening -- turning observability into a seventh verification layer that operates on real traffic rather than synthetic workloads.
 
 On the verification side, the open question is whether this methodology scales: as AI capabilities improve and the generated code grows more complex, do four verification layers remain sufficient, or does the harness itself need to evolve?
 

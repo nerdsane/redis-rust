@@ -1,0 +1,123 @@
+# WAL + Streaming Hybrid Persistence Integration Tests
+#
+# Tests zero-RPO crash recovery, WAL+S3 consistency, and multi-node operation.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.wal-integration.yml up -d
+#   ./scripts/run-wal-integration.sh
+#   docker compose -f docker/docker-compose.wal-integration.yml down -v
+
+services:
+  # MinIO - S3-compatible object store (shared by all nodes)
+  minio:
+    image: minio/minio:latest
+    container_name: wal-minio
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # MinIO bucket setup
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/redis-wal-test --ignore-existing;
+      exit 0;
+      "
+
+  # Node A: redis-rust with WAL (fsync: always) + S3 streaming
+  node-a:
+    build:
+      context: ..
+      dockerfile: docker-benchmark/Dockerfile.server-persistent
+    container_name: wal-node-a
+    ports:
+      - "6380:6379"
+    environment:
+      - RUST_LOG=info
+      - REDIS_STORE_TYPE=s3
+      - REDIS_S3_BUCKET=redis-wal-test
+      - REDIS_S3_PREFIX=node-a
+      - REDIS_S3_ENDPOINT=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
+      - REDIS_WAL_ENABLED=true
+      - REDIS_WAL_DIR=/wal
+      - REDIS_WAL_FSYNC=always
+    volumes:
+      - wal-a:/wal
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+
+  # Node B: redis-rust with WAL (fsync: always) + S3 streaming (different prefix)
+  node-b:
+    build:
+      context: ..
+      dockerfile: docker-benchmark/Dockerfile.server-persistent
+    container_name: wal-node-b
+    ports:
+      - "6381:6379"
+    environment:
+      - RUST_LOG=info
+      - REDIS_STORE_TYPE=s3
+      - REDIS_S3_BUCKET=redis-wal-test
+      - REDIS_S3_PREFIX=node-b
+      - REDIS_S3_ENDPOINT=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
+      - REDIS_WAL_ENABLED=true
+      - REDIS_WAL_DIR=/wal
+      - REDIS_WAL_FSYNC=always
+    volumes:
+      - wal-b:/wal
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+
+  # Official Redis 7.4 with AOF for comparison
+  redis-official:
+    image: redis:7.4-alpine
+    container_name: wal-redis-official
+    ports:
+      - "6382:6379"
+    command: redis-server --appendonly yes --appendfsync always
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+
+volumes:
+  wal-a:
+  wal-b:

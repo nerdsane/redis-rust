@@ -32,11 +32,11 @@ jobs:
       - name: Build
         run: cargo build --release --bin redis-server-optimized --bin maelstrom-kv-replicated
 
-      - name: Unit tests
-        run: cargo test --lib
+      - name: All tests (unit + all DST integration tests)
+        run: cargo test --release
 
-      - name: Unit tests (with ACL feature)
-        run: cargo test --lib --features acl
+      - name: All tests (with ACL feature)
+        run: cargo test --release --features acl
 
       - name: Tcl compat - incr
         run: ./scripts/run-redis-compat.sh unit/type/incr
@@ -79,3 +79,19 @@ jobs:
           if [ "$EXIT" -ne 0 ]; then \
             echo "::warning::Maelstrom 5-node linearizability violation (expected for eventual consistency)"; \
           fi
+
+  clippy:
+    name: "Clippy lint check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - name: Override cargo config
+        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy -- -D warnings

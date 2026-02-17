@@ -20,7 +20,7 @@ models and proofs below are project-specific.
 ```
        ┌───────────────────────────────┐
        │       TLA+ / P Specs          │  ← Protocol-level correctness
-       │  (Formal Protocol Models)     │     4 specs in specs/tla/
+       │  (Formal Protocol Models)     │     5 specs in specs/tla/
        └───────────────────────────────┘
                      ↓
        ┌───────────────────────────────┐
@@ -60,6 +60,7 @@ Each layer catches different classes of bugs:
 | Replication Convergence | `specs/tla/ReplicationConvergence.tla` | CRDT merge properties, eventual consistency |
 | Anti-Entropy | `specs/tla/AntiEntropy.tla` | Merkle tree sync, divergence detection, partition healing |
 | Streaming Persistence | `specs/tla/StreamingPersistence.tla` | Write buffer bounds, segment durability, crash recovery |
+| WAL Durability | `specs/tla/WalDurability.tla` | WAL group commit, fsync policies, truncation safety, crash recovery with object store high-water mark |
 
 ### Invariant-to-Code Mapping
 
@@ -70,6 +71,10 @@ Each layer catches different classes of bugs:
 | `SYNC_COMPLETENESS` | `AntiEntropyModel::sync_convergence_progress` | `src/stateright/anti_entropy.rs` |
 | `SEGMENT_ID_MONOTONIC` | `WriteBufferModel::segment_id_monotonic` | `src/stateright/persistence.rs` |
 | `MERKLE_CONSISTENCY` | `AntiEntropyModel` properties | `src/stateright/anti_entropy.rs` |
+| `WAL_DURABILITY` | `WalDurabilityModel::truncation_safety` | `src/stateright/persistence.rs` |
+| `TRUNCATION_SAFETY` | `WalDurabilityModel::truncation_safety` | `src/stateright/persistence.rs` |
+| `RECOVERY_COMPLETENESS` | `WalDurabilityModel::recovery_completeness` | `src/stateright/persistence.rs` |
+| `GROUP_COMMIT_ATOMICITY` | `WalDurabilityModel::buffer_not_acknowledged` | `src/stateright/persistence.rs` |
 
 ### When to Update TLA+ Specs
 
@@ -77,6 +82,7 @@ Each layer catches different classes of bugs:
 - Changing CRDT merge semantics → update `ReplicationConvergence.tla`
 - Changing anti-entropy sync → update `AntiEntropy.tla`
 - Changing write buffer/persistence → update `StreamingPersistence.tla`
+- Changing WAL behavior/group commit/recovery → update `WalDurability.tla`
 
 ---
 
@@ -136,6 +142,30 @@ pub struct WriteBufferModel {
 
 **Actions:** `PushDelta { key, value }`, `Flush`, `Crash`, `Recover`
 
+#### WalDurabilityModel (`src/stateright/persistence.rs`)
+
+Verifies WAL + streaming hybrid persistence durability invariants:
+
+```rust
+pub struct WalDurabilityModel {
+    pub config: WalDurabilityConfig,  // max_writes, group_commit_batch_size, etc.
+}
+```
+
+**Properties verified (5):**
+- `truncation_safety` — Every acknowledged entry is in wal_synced OR streamed
+- `recovery_completeness` — After recovery, all acknowledged entries are recoverable
+- `high_water_mark_consistent` — High-water mark matches max streamed timestamp
+- `buffer_not_acknowledged` — Entries in WAL buffer have not been acknowledged (pre-sync)
+- `acknowledged_recoverable` — All acknowledged entries are in WAL or object store
+
+**Actions:** `WalAppend`, `WalSync`, `WalSyncFail`, `StreamFlush`, `WalTruncate`, `Crash`, `Recover`
+
+**Run:**
+```bash
+cargo test -p redis-sim stateright_wal_durability -- --ignored --nocapture
+```
+
 #### AntiEntropyModel (`src/stateright/anti_entropy.rs`)
 
 Verifies Merkle tree-based synchronization:
@@ -168,6 +198,7 @@ cargo test -p redis-sim stateright -- --ignored --nocapture
 cargo test -p redis-sim stateright_replication -- --ignored --nocapture
 cargo test -p redis-sim stateright_persistence -- --ignored --nocapture
 cargo test -p redis-sim stateright_anti_entropy -- --ignored --nocapture
+cargo test -p redis-sim stateright_wal_durability -- --ignored --nocapture
 ```
 
 ### How to Add a New Stateright Model
@@ -325,6 +356,7 @@ When modifying a protocol or algorithm, update ALL relevant layers:
 | Change gossip protocol | Update GossipProtocol.tla | - | - | - | Retest |
 | Change anti-entropy | Update AntiEntropy.tla | Update model | - | - | Retest |
 | Change persistence | Update StreamingPersistence.tla | Update model | - | Update DST | - |
+| Change WAL / durability | Update WalDurability.tla | Update model | - | Update wal_dst | - |
 
 ---
 
