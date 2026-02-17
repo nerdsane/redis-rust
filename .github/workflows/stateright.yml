@@ -1,0 +1,57 @@
+name: Stateright Model Checking
+
+# Exhaustive state-space exploration — verifies protocol invariants
+# hold in ALL reachable states, not just sampled ones.
+#
+# Runs on schedule (every 12 hours) and on-demand.
+# Model checking time grows with state-space size, so this runs
+# separately from the fast CI pipeline.
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  # Every 12 hours
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/stateright/**'
+      - 'src/streaming/wal*.rs'
+      - 'src/streaming/persistence.rs'
+      - 'src/streaming/write_buffer.rs'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/stateright/**'
+      - 'src/streaming/wal*.rs'
+      - 'src/streaming/persistence.rs'
+      - 'src/streaming/write_buffer.rs'
+
+jobs:
+  stateright:
+    name: "Exhaustive model checking"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Override cargo config
+        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
+
+      - name: Build stateright tests
+        run: cargo test --release --no-run 2>&1 | tail -3
+
+      - name: Persistence model (write buffer bounds + durability)
+        run: cargo test --release stateright_persistence -- --ignored --nocapture
+
+      - name: WAL durability model (truncation safety + recovery completeness)
+        run: cargo test --release stateright_wal_durability -- --ignored --nocapture
+
+      - name: Replication model (CRDT merge properties)
+        run: cargo test --release stateright_replication -- --ignored --nocapture
+
+      - name: Anti-entropy model (Merkle tree sync completeness)
+        run: cargo test --release stateright_anti_entropy -- --ignored --nocapture
+        continue-on-error: true  # May not exist yet

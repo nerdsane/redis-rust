@@ -25,7 +25,7 @@ echo "Duration: ${DURATION_SECS}s | Ops/seed: ${OPS_PER_SEED} | Base seed: ${BAS
 echo ""
 
 # Build once in release mode
-cargo build --release --test executor_dst_test --test transaction_dst_test --test connection_transaction_dst 2>&1 | tail -1
+cargo build --release --test executor_dst_test --test transaction_dst_test --test connection_transaction_dst --test wal_dst_test 2>&1 | tail -1
 
 EXECUTOR_SEEDS=0
 EXECUTOR_FAILURES=0
@@ -121,9 +121,34 @@ while [ "$(date +%s)" -lt "$END_TIME" ]; do
 done
 echo "CRDT: ${CRDT_SEEDS} seeds, ${CRDT_FAILURES} failures"
 
+# Phase 4: WAL DST (crash + fault injection)
+echo ""
+echo "--- Phase 4: WAL DST ---"
+WAL_SEEDS=0
+WAL_FAILURES=0
+while [ "$(date +%s)" -lt "$END_TIME" ]; do
+    OUTPUT=$(cargo test --release --test wal_dst_test \
+        -- --nocapture --test-threads=1 2>&1 || true)
+
+    if echo "$OUTPUT" | grep -q "0 failed"; then
+        WAL_SEEDS=$((WAL_SEEDS + 260))  # 100 + 50 + 50 + 30 + 30 seeds across tests
+    else
+        WAL_FAILURES=$((WAL_FAILURES + 1))
+        FAILED_SEEDS="${FAILED_SEEDS}wal:batch "
+        echo "WAL FAILURE"
+        break
+    fi
+
+    REMAINING=$((END_TIME - $(date +%s)))
+    if [ "$REMAINING" -le 10 ]; then
+        break
+    fi
+done
+echo "WAL: ${WAL_SEEDS} seeds, ${WAL_FAILURES} failures"
+
 # Summary
-TOTAL_SEEDS=$((EXECUTOR_SEEDS + TRANSACTION_SEEDS + CONNECTION_SEEDS + CRDT_SEEDS))
-TOTAL_FAILURES=$((EXECUTOR_FAILURES + TRANSACTION_FAILURES + CONNECTION_FAILURES + CRDT_FAILURES))
+TOTAL_SEEDS=$((EXECUTOR_SEEDS + TRANSACTION_SEEDS + CONNECTION_SEEDS + CRDT_SEEDS + WAL_SEEDS))
+TOTAL_FAILURES=$((EXECUTOR_FAILURES + TRANSACTION_FAILURES + CONNECTION_FAILURES + CRDT_FAILURES + WAL_FAILURES))
 
 echo ""
 echo "=== Soak Test Summary ==="

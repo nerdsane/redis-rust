@@ -38,6 +38,9 @@ jobs:
       - name: Unit tests (with ACL feature)
         run: cargo test --lib --features acl
 
+      - name: WAL DST integration tests (multi-seed)
+        run: cargo test --release --test wal_dst_test
+
       - name: Tcl compat - incr
         run: ./scripts/run-redis-compat.sh unit/type/incr
 
@@ -79,44 +82,6 @@ jobs:
           if [ "$EXIT" -ne 0 ]; then \
             echo "::warning::Maelstrom 5-node linearizability violation (expected for eventual consistency)"; \
           fi
-
-  wal-dst:
-    name: "WAL DST (crash + fault injection)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Override cargo config
-        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
-
-      - name: WAL unit tests
-        run: cargo test --release wal
-
-      - name: WAL DST integration tests (multi-seed)
-        run: cargo test --release --test wal_dst_test
-
-  stateright:
-    name: "Stateright model checking"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Override cargo config
-        run: echo -e '[build]\nrustc-wrapper = ""' > .cargo/config.toml
-
-      - name: Persistence model (write buffer + WAL durability)
-        run: cargo test --release stateright_persistence -- --ignored --nocapture
-
-      - name: WAL durability model (exhaustive BFS)
-        run: cargo test --release stateright_wal_durability -- --ignored --nocapture
 
   clippy:
     name: "Clippy lint check"
