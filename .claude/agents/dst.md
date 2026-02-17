@@ -202,6 +202,12 @@ Key methods:
 | `src/replication/crdt_dst.rs` | `tests/crdt_dst_test.rs` | CRDT merge properties under fault injection |
 | `src/streaming/compaction_dst.rs` | `tests/streaming_dst_test.rs` | Streaming persistence with faults |
 
+### WAL / Persistence DST
+
+| Harness file | Test file | What it tests |
+|-------------|-----------|---------------|
+| `src/streaming/wal_dst.rs` | `tests/wal_dst_test.rs` | WAL durability, group commit, crash recovery, fsync fault injection |
+
 ### Other DST tests
 
 | Test file | What it tests |

@@ -35,6 +35,11 @@ pub mod recovery;
 pub mod s3_store;
 pub mod segment;
 pub mod simulated_store;
+pub mod wal;
+pub mod wal_actor;
+pub mod wal_config;
+pub mod wal_dst;
+pub mod wal_store;
 pub mod write_buffer;
 
 pub use checkpoint::{
@@ -86,6 +91,16 @@ pub use segment::{
     Compression, Segment, SegmentError, SegmentFooter, SegmentHeader, SegmentReader, SegmentWriter,
 };
 pub use simulated_store::{SimulatedObjectStore, SimulatedStoreConfig, SimulatedStoreStats};
+pub use wal::{WalEntry, WalReader, WalRotator, WalWriter};
+pub use wal_actor::{spawn_wal_actor, WalActorHandle, WalMessage};
+pub use wal_config::{FsyncPolicy, WalConfig};
+pub use wal_dst::{
+    run_wal_dst_batch, summarize_wal_dst_batch, WalDSTConfig, WalDSTHarness, WalDSTResult,
+};
+pub use wal_store::{
+    InMemoryWalStore, LocalWalStore, SimulatedWalStore, SimulatedWalStoreConfig,
+    SimulatedWalStoreStats, WalError, WalFileReader, WalFileWriter, WalStore,
+};
 pub use write_buffer::{
     FlushWorker, FlushWorkerHandle, WriteBuffer, WriteBufferError, WriteBufferStats,
 };

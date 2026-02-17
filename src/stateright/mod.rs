@@ -55,6 +55,6 @@ pub mod replication;
 #[cfg(test)]
 pub use anti_entropy::AntiEntropyModel;
 #[cfg(test)]
-pub use persistence::WriteBufferModel;
+pub use persistence::{WalDurabilityModel, WriteBufferModel};
 #[cfg(test)]
 pub use replication::CrdtMergeModel;

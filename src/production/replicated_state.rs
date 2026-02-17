@@ -5,6 +5,8 @@ use crate::redis::{Command, RespValue};
 use crate::replication::gossip::GossipState;
 use crate::replication::{ReplicaId, ReplicationConfig, ReplicationDelta};
 use crate::simulator::VirtualTime;
+use crate::streaming::wal_actor::WalActorHandle;
+use crate::streaming::wal_config::FsyncPolicy;
 use crate::streaming::DeltaSinkSender;
 use parking_lot::RwLock;
 use std::collections::hash_map::DefaultHasher;
@@ -59,6 +61,8 @@ pub struct ReplicatedShardedState<T: TimeSource = ProductionTimeSource> {
     gossip_backend: GossipBackend,
     /// Optional delta sink for streaming persistence
     delta_sink: Option<DeltaSinkSender>,
+    /// Optional WAL actor handle for durable writes
+    wal_handle: Option<WalActorHandle>,
     /// Time source for getting current time
     time_source: T,
 }
@@ -98,6 +102,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
             config,
             gossip_backend: GossipBackend::Locked(gossip_state),
             delta_sink: None,
+            wal_handle: None,
             time_source,
         }
     }
@@ -124,6 +129,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
             config,
             gossip_backend: GossipBackend::Actor(gossip_handle),
             delta_sink: None,
+            wal_handle: None,
             time_source,
         }
     }
@@ -143,6 +149,16 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
         self.delta_sink.is_some()
     }
 
+    /// Set the WAL actor handle for durable writes
+    pub fn set_wal_handle(&mut self, handle: WalActorHandle) {
+        self.wal_handle = Some(handle);
+    }
+
+    /// Clear the WAL handle (for shutdown)
+    pub fn clear_wal_handle(&mut self) {
+        self.wal_handle = None;
+    }
+
     /// Execute a command (async - uses actor message passing)
     pub async fn execute(&self, cmd: Command) -> RespValue {
         if let Some(key) = cmd.get_primary_key() {
@@ -150,6 +166,24 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
             let (result, delta) = self.shards[shard_idx].execute(cmd).await;
 
             if let Some(delta) = delta {
+                // Write to WAL for local durability (before responding to client)
+                if let Some(ref wal) = self.wal_handle {
+                    let timestamp = delta.value.timestamp.time;
+                    match wal.fsync_policy() {
+                        FsyncPolicy::Always => {
+                            // Durable write: await fsync before client gets response
+                            if let Err(e) = wal.write_durable(delta.clone(), timestamp).await {
+                                tracing::error!("WAL durable write failed: {}", e);
+                                // Continue — the write succeeded in memory, just not on disk
+                            }
+                        }
+                        FsyncPolicy::EverySecond | FsyncPolicy::No => {
+                            // Fire-and-forget: client gets response before fsync
+                            wal.write_fire_and_forget(delta.clone(), timestamp);
+                        }
+                    }
+                }
+
                 // Send to gossip for replication
                 if self.config.enabled {
                     match &self.gossip_backend {
@@ -413,6 +447,7 @@ impl<T: TimeSource> Clone for ReplicatedShardedState<T> {
             config: self.config.clone(),
             gossip_backend: self.gossip_backend.clone(),
             delta_sink: self.delta_sink.clone(),
+            wal_handle: self.wal_handle.clone(),
             time_source: self.time_source.clone(),
         }
     }

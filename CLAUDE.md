@@ -313,6 +313,12 @@ With skew=1.0, top 10 keys receive ~40% of accesses (like real workloads).
 | `src/security/acl/` | ACL system (users, commands, patterns, file) |
 | `src/security/acl_dst.rs` | ACL DST harness with shadow state |
 | `tests/acl_dst_test.rs` | ACL DST multi-seed integration tests |
+| `src/streaming/wal.rs` | WAL entry format, writer, reader, rotator |
+| `src/streaming/wal_store.rs` | WAL storage trait + local/simulated impls |
+| `src/streaming/wal_actor.rs` | WAL group commit actor (turbopuffer pattern) |
+| `src/streaming/wal_config.rs` | WAL configuration (fsync policies, rotation) |
+| `src/streaming/wal_dst.rs` | WAL DST harness with crash/recovery testing |
+| `tests/wal_dst_test.rs` | WAL DST multi-seed integration tests |
 
 ## Common Patterns
 

@@ -2,6 +2,7 @@
 //!
 //! Defines configuration structs for the streaming persistence module.
 
+use crate::streaming::wal_config::WalConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,6 +27,8 @@ pub struct StreamingConfig {
     pub checkpoint: CheckpointConfig,
     /// Compaction settings
     pub compaction: CompactionConfig,
+    /// WAL settings (optional — disabled by default)
+    pub wal: Option<WalConfig>,
 }
 
 impl Default for StreamingConfig {
@@ -40,6 +43,7 @@ impl Default for StreamingConfig {
             write_buffer: WriteBufferConfig::default(),
             checkpoint: CheckpointConfig::default(),
             compaction: CompactionConfig::default(),
+            wal: None,
         }
     }
 }
@@ -57,6 +61,7 @@ impl StreamingConfig {
             write_buffer: WriteBufferConfig::default(),
             checkpoint: CheckpointConfig::default(),
             compaction: CompactionConfig::default(),
+            wal: None,
         }
     }
 
@@ -72,6 +77,7 @@ impl StreamingConfig {
             write_buffer: WriteBufferConfig::test(),
             checkpoint: CheckpointConfig::test(),
             compaction: CompactionConfig::test(),
+            wal: None,
         }
     }
 }

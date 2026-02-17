@@ -413,6 +413,7 @@ impl Config {
                 write_buffer: redis_sim::streaming::WriteBufferConfig::default(),
                 checkpoint: redis_sim::streaming::config::CheckpointConfig::default(),
                 compaction: redis_sim::streaming::config::CompactionConfig::default(),
+                wal: None,
             }),
             #[cfg(feature = "s3")]
             "s3" => {
@@ -434,6 +435,7 @@ impl Config {
                     write_buffer: redis_sim::streaming::WriteBufferConfig::default(),
                     checkpoint: redis_sim::streaming::config::CheckpointConfig::default(),
                     compaction: redis_sim::streaming::config::CompactionConfig::default(),
+                    wal: None,
                 })
             }
             #[cfg(not(feature = "s3"))]
