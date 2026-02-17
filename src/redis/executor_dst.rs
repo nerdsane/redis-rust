@@ -1008,7 +1008,7 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "DECRBY on wrong type");
                 }
             }
-        } else if sub < 95 {
+        } else if sub < 92 {
             // INCRBY
             let key = self.random_key();
             let increment = self.rng.gen_range(1, 100) as i64;
@@ -1052,7 +1052,7 @@ impl ExecutorDSTHarness {
                     self.assert_error_contains(&resp, "WRONGTYPE", "INCRBY on wrong type");
                 }
             }
-        } else if sub < 98 {
+        } else if sub < 95 {
             // DECR
             let key = self.random_key();
             let desc = format!("DECR {}", key);
@@ -1239,9 +1239,11 @@ impl ExecutorDSTHarness {
             self.result.last_op = Some(ExecutorOp::Key(desc));
 
             // Sync shadow with executor before DBSIZE check: the executor lazily
-            // evicts expired keys on access, while shadow eagerly evicts. Also,
-            // some operations (e.g., SETRANGE on non-existent key, type coercion)
-            // may create keys the shadow doesn't fully track.
+            // evicts expired keys on access, while shadow eagerly evicts. Remove
+            // shadow keys that the executor no longer considers valid.
+            // NOTE: We intentionally do NOT add executor-only keys to the shadow.
+            // If the executor has keys the shadow doesn't track, that's a real
+            // tracking gap that should surface as a violation.
             let executor_valid_keys: HashSet<String> = self
                 .executor
                 .get_data()
@@ -1250,16 +1252,10 @@ impl ExecutorDSTHarness {
                 .cloned()
                 .collect();
             let shadow_keys: HashSet<String> = self.shadow.data.keys().cloned().collect();
-            // Remove from shadow keys not in executor
+            // Remove from shadow keys not in executor (lazy vs eager expiration)
             for key in shadow_keys.difference(&executor_valid_keys) {
                 self.shadow.data.remove(key);
                 self.shadow.expirations.remove(key);
-            }
-            // Add to shadow keys in executor but not in shadow (opaque tracking)
-            for key in executor_valid_keys.difference(&shadow_keys) {
-                self.shadow
-                    .data
-                    .insert(key.clone(), RefValue::String(Vec::new()));
             }
 
             let resp = self.executor.execute(&Command::DbSize);

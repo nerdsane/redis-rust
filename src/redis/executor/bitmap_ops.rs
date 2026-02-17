@@ -24,19 +24,27 @@ impl CommandExecutor {
         let byte_index = (offset / 8) as usize;
         let bit_mask: u8 = 0x80 >> (offset % 8);
 
-        // Check existing value type
-        if let Some(existing) = self.get_value(key) {
-            if !matches!(existing, Value::String(_)) {
-                return RespValue::err(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value",
-                );
-            }
+        // offset < MAX_BIT_OFFSET guarantees byte_index <= 536_870_911,
+        // so byte_index + 1 cannot overflow usize on any supported platform.
+        let required_len = match byte_index.checked_add(1) {
+            Some(n) => n,
+            None => return RespValue::err("ERR bit offset is not an integer or out of range"),
+        };
+
+        // Check existing value type and whether key exists in a single lookup
+        let (need_create, is_wrong_type) = match self.get_value(key) {
+            Some(Value::String(_)) => (false, false),
+            Some(_) => (false, true),
+            None => (true, false),
+        };
+
+        if is_wrong_type {
+            return RespValue::err(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            );
         }
 
-        // Ensure key exists as string and is large enough
-        let need_create = self.get_value(key).is_none();
         if need_create {
-            let required_len = byte_index.checked_add(1).expect("byte_index + 1 overflow");
             let sds = SDS::new(vec![0u8; required_len]);
             self.data.insert(key.to_string(), Value::String(sds));
             self.access_times
@@ -46,11 +54,13 @@ impl CommandExecutor {
         // Get mutable reference to the string
         let sds = match self.data.get_mut(key) {
             Some(Value::String(s)) => s,
-            _ => unreachable!("We just ensured it's a string"),
+            // We just verified the key is a string (or created it as one)
+            _ => {
+                return RespValue::err("ERR internal error: expected string value");
+            }
         };
 
         // Resize if needed
-        let required_len = byte_index.checked_add(1).expect("byte_index + 1 overflow");
         if sds.len() < required_len {
             sds.resize(required_len);
         }
