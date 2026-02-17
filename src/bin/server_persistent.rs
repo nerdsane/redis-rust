@@ -29,6 +29,14 @@
 //! | CLUSTER_SIZE | 3 | Number of replicas in StatefulSet |
 //! | SERVICE_NAME | redis-rust-headless | Headless service name |
 //!
+//! ## WAL (Write-Ahead Log)
+//!
+//! | Variable | Default | Description |
+//! |----------|---------|-------------|
+//! | REDIS_WAL_ENABLED | false | Enable WAL persistence |
+//! | REDIS_WAL_DIR | /tmp/redis-wal | WAL file directory |
+//! | REDIS_WAL_FSYNC | everysec | Fsync policy: always, everysec, no |
+//!
 //! ## Datadog (when built with --features datadog)
 //!
 //! | Variable | Default | Description |
@@ -54,6 +62,9 @@ use redis_sim::replication::{ConsistencyLevel, GossipState, ReplicationConfig};
 use redis_sim::streaming::{
     create_integration, ObjectStoreType, StreamingConfig, StreamingIntegrationTrait, WorkerHandles,
 };
+use redis_sim::streaming::wal_config::{FsyncPolicy, WalConfig};
+use redis_sim::streaming::wal_store::LocalWalStore;
+use redis_sim::streaming::wal_actor::spawn_wal_actor;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -400,6 +411,37 @@ impl Config {
         }
     }
 
+    fn wal_config_from_env() -> Option<WalConfig> {
+        let enabled = std::env::var("REDIS_WAL_ENABLED")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if !enabled {
+            return None;
+        }
+
+        let wal_dir = std::env::var("REDIS_WAL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp/redis-wal"));
+
+        let fsync_policy = match std::env::var("REDIS_WAL_FSYNC")
+            .unwrap_or_else(|_| "everysec".to_string())
+            .to_lowercase()
+            .as_str()
+        {
+            "always" => FsyncPolicy::Always,
+            "no" | "none" => FsyncPolicy::No,
+            _ => FsyncPolicy::EverySecond,
+        };
+
+        Some(WalConfig {
+            enabled: true,
+            wal_dir,
+            fsync_policy,
+            ..WalConfig::default()
+        })
+    }
+
     fn to_streaming_config(&self) -> Result<StreamingConfig, String> {
         match self.store_type.as_str() {
             "memory" => Ok(StreamingConfig::test()),
@@ -413,7 +455,7 @@ impl Config {
                 write_buffer: redis_sim::streaming::WriteBufferConfig::default(),
                 checkpoint: redis_sim::streaming::config::CheckpointConfig::default(),
                 compaction: redis_sim::streaming::config::CompactionConfig::default(),
-                wal: None,
+                wal: Self::wal_config_from_env(),
             }),
             #[cfg(feature = "s3")]
             "s3" => {
@@ -435,7 +477,7 @@ impl Config {
                     write_buffer: redis_sim::streaming::WriteBufferConfig::default(),
                     checkpoint: redis_sim::streaming::config::CheckpointConfig::default(),
                     compaction: redis_sim::streaming::config::CompactionConfig::default(),
-                    wal: None,
+                    wal: Self::wal_config_from_env(),
                 })
             }
             #[cfg(not(feature = "s3"))]
@@ -512,6 +554,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(&config.data_path)?;
     }
 
+    // Save WAL config before streaming_config is consumed by create_integration
+    let wal_config = streaming_config.wal.clone();
+
     // Create integration and perform recovery
     let integration = create_integration(streaming_config, DEFAULT_REPLICA_ID).await?;
 
@@ -528,10 +573,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting fresh (no existing data)");
     }
 
+    // WAL replay: apply entries not yet in object store
+    if let Some(ref wc) = wal_config {
+        if wc.enabled {
+            use redis_sim::streaming::wal::WalRotator;
+            std::fs::create_dir_all(&wc.wal_dir)?;
+            let replay_store = LocalWalStore::new(wc.wal_dir.clone())
+                .map_err(|e| format!("Failed to open WAL for replay: {}", e))?;
+            let replay_rotator = WalRotator::new(replay_store, wc.max_file_size)
+                .map_err(|e| format!("Failed to create WAL rotator for replay: {}", e))?;
+
+            // High-water mark: max timestamp from object store segments
+            // (stats doesn't expose this directly, so we replay all WAL entries;
+            // CRDT idempotency makes duplicate replay safe)
+            let wal_entries = replay_rotator.recover_all_entries()
+                .map_err(|e| format!("WAL replay failed: {}", e))?;
+
+            if !wal_entries.is_empty() {
+                let mut deltas = Vec::with_capacity(wal_entries.len());
+                for entry in &wal_entries {
+                    match entry.to_delta() {
+                        Ok(delta) => deltas.push(delta),
+                        Err(e) => {
+                            warn!("Skipping corrupt WAL entry: {}", e);
+                        }
+                    }
+                }
+                info!("WAL replay: {} entries recovered from local WAL", deltas.len());
+                state.apply_recovered_state(None, deltas);
+                info!("After WAL replay: {} keys", state.key_count().await);
+            } else {
+                info!("WAL replay: no entries to replay");
+            }
+        }
+    }
+
     let (worker_handles, sender) = integration.start_workers().await?;
 
     // Connect delta sink BEFORE wrapping state in Arc
     state.set_delta_sink(sender);
+
+    // Start WAL actor if enabled
+    let wal_task = if let Some(ref wc) = wal_config {
+        if wc.enabled {
+            std::fs::create_dir_all(&wc.wal_dir)?;
+            let wal_store = LocalWalStore::new(wc.wal_dir.clone())
+                .map_err(|e| format!("Failed to create WAL store: {}", e))?;
+            let (wal_handle, wal_join) = spawn_wal_actor(wal_store, wc.clone())
+                .map_err(|e| format!("Failed to spawn WAL actor: {}", e))?;
+
+            // Start periodic sync tick for EverySecond mode
+            if wc.fsync_policy == FsyncPolicy::EverySecond {
+                let tick_handle = wal_handle.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                    loop {
+                        interval.tick().await;
+                        tick_handle.sync_tick();
+                    }
+                });
+            }
+
+            info!(
+                "WAL enabled: dir={}, fsync={:?}",
+                wc.wal_dir.display(),
+                wc.fsync_policy
+            );
+            println!("  WAL: enabled ({:?} fsync)", wc.fsync_policy);
+
+            state.set_wal_handle(wal_handle);
+            Some(wal_join)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let state = Arc::new(state);
 
@@ -638,6 +755,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Graceful shutdown
     info!("Shutting down persistence workers...");
     worker_handles.shutdown().await;
+
+    // Shutdown WAL actor (final fsync before exit)
+    if let Some(wal_join) = wal_task {
+        info!("Shutting down WAL actor...");
+        // WAL actor shuts down when all handles are dropped or via shutdown message.
+        // The join handle lets us wait for completion.
+        let _ = wal_join.await;
+        info!("WAL actor shutdown complete");
+    }
 
     // Shutdown observability (flush pending spans/metrics)
     shutdown();

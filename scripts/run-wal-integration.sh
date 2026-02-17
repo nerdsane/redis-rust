@@ -19,7 +19,7 @@ set -euo pipefail
 COMPOSE_FILE="docker/docker-compose.wal-integration.yml"
 NODE_A_PORT=6380
 NODE_B_PORT=6381
-REDIS_PORT=6379
+REDIS_PORT=6382
 NUM_KEYS=1000
 PASS=0
 FAIL=0
