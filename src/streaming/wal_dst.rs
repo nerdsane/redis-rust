@@ -136,8 +136,20 @@ impl WalDSTHarness {
         let mut acked_timestamps: Vec<u64> = Vec::new();
         let mut failed_writes = 0;
 
-        // Phase 1: Write entries
+        // Pick a random crash point (if crash enabled) — crash mid-sequence, not just at the end
+        let crash_at = if self.config.simulate_crash {
+            self.rng.gen_range(1, (self.config.num_writes as u64).saturating_add(1)) as usize
+        } else {
+            usize::MAX
+        };
+
+        // Phase 1: Write entries (may be interrupted by crash)
         for i in 0..self.config.num_writes {
+            // Simulate crash at random point mid-sequence
+            if i == crash_at {
+                store.inner_store().simulate_crash();
+                break;
+            }
             let ts = (i as u64)
                 .checked_add(1)
                 .expect("timestamp overflow unreachable in test");
@@ -179,12 +191,10 @@ impl WalDSTHarness {
             }
         }
 
-        // Phase 2: Simulate crash (optional)
-        if self.config.simulate_crash {
-            // Crash simulation: truncate all files to their synced position.
-            // In Always mode, every acked write was fsync'd, so the synced position
-            // includes all acknowledged data. Un-synced data (appended but not fsync'd)
-            // is lost — this is the correct behavior.
+        // Phase 2: Simulate crash if we didn't already crash mid-sequence.
+        // Crash truncates all files to their synced position — un-synced data is lost.
+        let already_crashed = self.config.simulate_crash && crash_at < self.config.num_writes;
+        if self.config.simulate_crash && !already_crashed {
             store.inner_store().simulate_crash();
         }
 

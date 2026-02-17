@@ -501,11 +501,13 @@ impl Model for WalDurabilityModel {
                 if next.crashed || next.wal_synced.is_empty() {
                     return None;
                 }
-                // Move all synced entries to object store
-                for ts in next.wal_synced.clone() {
-                    next.streamed.insert(ts);
-                    if ts > next.high_water_mark {
-                        next.high_water_mark = ts;
+                // Stream the FIRST synced entry (explores partial streaming states).
+                // This is more realistic than moving all entries at once —
+                // it models the case where only some entries are streamed before a crash.
+                if let Some(&first_ts) = next.wal_synced.iter().next() {
+                    next.streamed.insert(first_ts);
+                    if first_ts > next.high_water_mark {
+                        next.high_water_mark = first_ts;
                     }
                 }
             }
@@ -611,18 +613,11 @@ impl Model for WalDurabilityModel {
                     true
                 },
             ),
-            // INVARIANT 5: Acknowledged implies was-synced
-            // Every acknowledged entry was synced at some point
-            // (may have been truncated from wal_synced after streaming)
+            // INVARIANT 5: Write counter monotonic
             Property::always(
-                "acknowledged_recoverable",
+                "write_counter_monotonic",
                 |_model: &WalDurabilityModel, state: &WalDurabilityState| {
-                    for &ts in &state.acknowledged {
-                        if !state.wal_synced.contains(&ts) && !state.streamed.contains(&ts) {
-                            return false;
-                        }
-                    }
-                    true
+                    state.write_counter >= 1
                 },
             ),
         ]

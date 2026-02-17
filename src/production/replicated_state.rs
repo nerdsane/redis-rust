@@ -166,6 +166,9 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
             let (result, delta) = self.shards[shard_idx].execute(cmd).await;
 
             if let Some(delta) = delta {
+                // Wrap in Arc to avoid cloning for each consumer
+                let delta = std::sync::Arc::new(delta);
+
                 // Write to WAL for local durability (before responding to client)
                 if let Some(ref wal) = self.wal_handle {
                     let timestamp = delta.value.timestamp.time;
@@ -180,16 +183,20 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                             //    in-memory state change, which is not supported
                             // This means Always mode provides best-effort local durability,
                             // not strict "fail client on WAL error" semantics.
-                            if let Err(e) = wal.write_durable(delta.clone(), timestamp).await {
+                            if let Err(e) = wal.write_durable(std::sync::Arc::clone(&delta), timestamp).await {
                                 tracing::error!("WAL durable write failed: {}", e);
                             }
                         }
                         FsyncPolicy::EverySecond | FsyncPolicy::No => {
                             // Fire-and-forget: client gets response before fsync
-                            wal.write_fire_and_forget(delta.clone(), timestamp);
+                            wal.write_fire_and_forget(std::sync::Arc::clone(&delta), timestamp);
                         }
                     }
                 }
+
+                // Unwrap Arc for gossip and streaming (they need owned values)
+                let delta = std::sync::Arc::try_unwrap(delta)
+                    .unwrap_or_else(|arc| (*arc).clone());
 
                 // Send to gossip for replication
                 if self.config.enabled {

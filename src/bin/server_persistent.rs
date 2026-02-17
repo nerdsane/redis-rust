@@ -622,17 +622,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let (wal_handle, wal_join) = spawn_wal_actor(wal_store, wc.clone())
                 .map_err(|e| format!("Failed to spawn WAL actor: {}", e))?;
 
-            // Start periodic sync tick for EverySecond mode
-            if wc.fsync_policy == FsyncPolicy::EverySecond {
+            // Start periodic sync tick for EverySecond mode (aborted on shutdown)
+            let tick_task = if wc.fsync_policy == FsyncPolicy::EverySecond {
                 let tick_handle = wal_handle.clone();
-                tokio::spawn(async move {
+                Some(tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
                     loop {
                         interval.tick().await;
                         tick_handle.sync_tick();
                     }
-                });
-            }
+                }))
+            } else {
+                None
+            };
 
             info!(
                 "WAL enabled: dir={}, fsync={:?}",
@@ -642,7 +644,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("  WAL: enabled ({:?} fsync)", wc.fsync_policy);
 
             state.set_wal_handle(wal_handle.clone());
-            Some((wal_handle, wal_join))
+            Some((wal_handle, wal_join, tick_task))
         } else {
             None
         }
@@ -753,7 +755,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Graceful shutdown — WAL first (closest to write path), then streaming
-    if let Some((wal_handle, wal_join)) = wal_task {
+    if let Some((wal_handle, wal_join, tick_task)) = wal_task {
+        // Abort sync tick timer first
+        if let Some(tick) = tick_task {
+            tick.abort();
+        }
         info!("Shutting down WAL actor (final fsync)...");
         wal_handle.shutdown().await;
         let _ = wal_join.await;

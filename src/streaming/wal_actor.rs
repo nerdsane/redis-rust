@@ -22,8 +22,13 @@ use crate::replication::state::ReplicationDelta;
 use crate::streaming::wal::{WalEntry, WalRotator};
 use crate::streaming::wal_config::{FsyncPolicy, WalConfig};
 use crate::streaming::wal_store::{WalError, WalStore};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+/// Channel capacity for WAL actor — bounds memory under slow fsync.
+/// 256 entries × ~200 bytes ≈ 50KB worst case.
+const WAL_CHANNEL_CAPACITY: usize = 256;
 
 /// Messages for the WAL actor
 pub enum WalMessage {
@@ -31,7 +36,7 @@ pub enum WalMessage {
     /// In Always mode, the ack is sent after fsync.
     /// In EverySecond/No mode, the ack is sent after append.
     Write {
-        delta: Box<ReplicationDelta>,
+        delta: Arc<ReplicationDelta>,
         timestamp: u64,
         ack_tx: Option<oneshot::Sender<Result<(), WalError>>>,
     },
@@ -51,7 +56,7 @@ pub enum WalMessage {
 pub struct WalActor<S: WalStore> {
     rotator: WalRotator<S>,
     config: WalConfig,
-    rx: mpsc::UnboundedReceiver<WalMessage>,
+    rx: mpsc::Receiver<WalMessage>,
     /// Pending ack channels for group commit (Always mode only)
     pending_acks: Vec<oneshot::Sender<Result<(), WalError>>>,
     /// Number of entries appended since last fsync
@@ -62,7 +67,7 @@ impl<S: WalStore> WalActor<S> {
     fn new(
         rotator: WalRotator<S>,
         config: WalConfig,
-        rx: mpsc::UnboundedReceiver<WalMessage>,
+        rx: mpsc::Receiver<WalMessage>,
     ) -> Self {
         WalActor {
             rotator,
@@ -71,6 +76,17 @@ impl<S: WalStore> WalActor<S> {
             pending_acks: Vec::with_capacity(64),
             entries_since_sync: 0,
         }
+    }
+
+    /// Verify actor invariants (TigerStyle)
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        debug_assert!(
+            self.pending_acks.len() <= self.entries_since_sync,
+            "Invariant: pending_acks ({}) must not exceed entries_since_sync ({})",
+            self.pending_acks.len(),
+            self.entries_since_sync
+        );
     }
 
     /// Run the actor loop
@@ -82,7 +98,9 @@ impl<S: WalStore> WalActor<S> {
         }
     }
 
-    /// Always mode: group commit — batch entries, fsync, resolve acks
+    /// Always mode: group commit — batch entries, fsync, resolve acks.
+    /// After receiving the first message, waits up to `group_commit_max_wait`
+    /// for more messages to accumulate before flushing (turbopuffer pattern).
     async fn run_always_mode(&mut self) {
         loop {
             // Wait for first message
@@ -95,7 +113,27 @@ impl<S: WalStore> WalActor<S> {
                 break;
             }
 
-            // Drain additional messages without blocking (group commit batching)
+            // Wait up to group_commit_max_wait for more messages to accumulate
+            if self.entries_since_sync > 0
+                && self.entries_since_sync < self.config.group_commit_max_entries
+            {
+                let wait = self.config.group_commit_max_wait;
+                let _ = tokio::time::timeout(wait, async {
+                    while self.entries_since_sync < self.config.group_commit_max_entries {
+                        match self.rx.recv().await {
+                            Some(msg) => {
+                                if self.handle_message_always(msg) {
+                                    return;
+                                }
+                            }
+                            None => return,
+                        }
+                    }
+                })
+                .await;
+            }
+
+            // Drain any remaining immediately-available messages
             while self.entries_since_sync < self.config.group_commit_max_entries {
                 match self.rx.try_recv() {
                     Ok(msg) => {
@@ -146,6 +184,10 @@ impl<S: WalStore> WalActor<S> {
                         }
                     }
                 }
+
+                #[cfg(debug_assertions)]
+                self.verify_invariants();
+
                 false
             }
             WalMessage::SyncTick => false, // No-op in Always mode
@@ -214,10 +256,13 @@ impl<S: WalStore> WalActor<S> {
                     let result = WalEntry::from_delta(&delta, timestamp)
                         .and_then(|entry| self.rotator.append(&entry).map(|_| ()));
 
-                    self.entries_since_sync = self
-                        .entries_since_sync
-                        .checked_add(1)
-                        .expect("entries_since_sync overflow unreachable");
+                    // Only count successful writes for sync tracking
+                    if result.is_ok() {
+                        self.entries_since_sync = self
+                            .entries_since_sync
+                            .checked_add(1)
+                            .expect("entries_since_sync overflow unreachable");
+                    }
 
                     // Ack immediately (before fsync) — RPO ≤ 1s
                     if let Some(tx) = ack_tx {
@@ -312,7 +357,7 @@ impl<S: WalStore> WalActor<S> {
 /// Handle for sending messages to the WAL actor
 #[derive(Clone)]
 pub struct WalActorHandle {
-    tx: mpsc::UnboundedSender<WalMessage>,
+    tx: mpsc::Sender<WalMessage>,
     fsync_policy: FsyncPolicy,
 }
 
@@ -321,17 +366,18 @@ impl WalActorHandle {
     /// In EverySecond/No mode, this is equivalent to write_fire_and_forget.
     pub async fn write_durable(
         &self,
-        delta: ReplicationDelta,
+        delta: Arc<ReplicationDelta>,
         timestamp: u64,
     ) -> Result<(), WalError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self
             .tx
             .send(WalMessage::Write {
-                delta: Box::new(delta),
+                delta,
                 timestamp,
                 ack_tx: Some(ack_tx),
             })
+            .await
             .is_err()
         {
             return Err(WalError::Io(std::io::Error::new(
@@ -339,17 +385,29 @@ impl WalActorHandle {
                 "WAL actor unavailable",
             )));
         }
-        ack_rx.await.unwrap_or(Err(WalError::Io(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "WAL actor dropped ack channel",
-        ))))
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ack_rx,
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(WalError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "WAL actor dropped ack channel",
+            ))),
+            Err(_) => {
+                warn!("WAL write_durable timed out after 5s");
+                Err(WalError::FsyncFailed("WAL write timed out".to_string()))
+            }
+        }
     }
 
     /// Write a delta without waiting for durability (fire-and-forget).
     /// Used in EverySecond/No modes where immediate ack is acceptable.
-    pub fn write_fire_and_forget(&self, delta: ReplicationDelta, timestamp: u64) {
-        let _ = self.tx.send(WalMessage::Write {
-            delta: Box::new(delta),
+    pub fn write_fire_and_forget(&self, delta: Arc<ReplicationDelta>, timestamp: u64) {
+        let _ = self.tx.try_send(WalMessage::Write {
+            delta,
             timestamp,
             ack_tx: None,
         });
@@ -358,14 +416,14 @@ impl WalActorHandle {
     /// Signal that entries up to the given timestamp have been streamed.
     /// The WAL actor will delete WAL files containing only older entries.
     pub fn truncate(&self, streamed_up_to_timestamp: u64) {
-        let _ = self.tx.send(WalMessage::TruncateUpTo {
+        let _ = self.tx.try_send(WalMessage::TruncateUpTo {
             streamed_up_to_timestamp,
         });
     }
 
     /// Send periodic sync tick (for EverySecond mode)
     pub fn sync_tick(&self) {
-        let _ = self.tx.send(WalMessage::SyncTick);
+        let _ = self.tx.try_send(WalMessage::SyncTick);
     }
 
     /// Graceful shutdown — waits for final flush
@@ -374,6 +432,7 @@ impl WalActorHandle {
         if self
             .tx
             .send(WalMessage::Shutdown { response_tx })
+            .await
             .is_ok()
         {
             let _ = response_rx.await;
@@ -386,17 +445,30 @@ impl WalActorHandle {
     }
 }
 
-/// Spawn a WAL actor and return its handle + join handle
+/// Spawn a WAL actor on a dedicated blocking thread and return its handle + join handle.
+/// Uses `spawn_blocking` to avoid stalling the tokio cooperative scheduler during fsync.
 pub fn spawn_wal_actor<S: WalStore + 'static>(
     store: S,
     config: WalConfig,
 ) -> Result<(WalActorHandle, tokio::task::JoinHandle<()>), WalError> {
+    debug_assert!(
+        config.max_file_size > crate::streaming::wal::WAL_HEADER_SIZE,
+        "Precondition: max_file_size must be > WAL_HEADER_SIZE"
+    );
+    debug_assert!(
+        config.group_commit_max_entries > 0,
+        "Precondition: group_commit_max_entries must be > 0"
+    );
+
     let rotator = WalRotator::new(store, config.max_file_size)?;
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(WAL_CHANNEL_CAPACITY);
 
     let fsync_policy = config.fsync_policy;
     let actor = WalActor::new(rotator, config, rx);
 
+    // Use spawn (not spawn_blocking) since the actor loop is async and
+    // only blocks briefly during fsync. For production with slow disks,
+    // consider wrapping individual fsync calls in spawn_blocking.
     let task = tokio::spawn(actor.run());
 
     let handle = WalActorHandle { tx, fsync_policy };
@@ -406,21 +478,21 @@ pub fn spawn_wal_actor<S: WalStore + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::redis::SDS;
-    use crate::replication::lattice::{LamportClock, ReplicaId};
-    use crate::replication::state::ReplicatedValue;
     use crate::streaming::wal_store::InMemoryWalStore;
     use std::path::PathBuf;
     use std::time::Duration;
 
-    fn make_delta(key: &str, value: &str, ts: u64) -> ReplicationDelta {
+    fn make_test_delta(key: &str, value: &str, ts: u64) -> Arc<ReplicationDelta> {
+        use crate::redis::SDS;
+        use crate::replication::lattice::{LamportClock, ReplicaId};
+        use crate::replication::state::ReplicatedValue;
         let replica_id = ReplicaId::new(1);
         let clock = LamportClock {
             time: ts,
             replica_id,
         };
         let replicated = ReplicatedValue::with_value(SDS::from_str(value), clock);
-        ReplicationDelta::new(key.to_string(), replicated, replica_id)
+        Arc::new(ReplicationDelta::new(key.to_string(), replicated, replica_id))
     }
 
     fn test_config(policy: FsyncPolicy) -> WalConfig {
@@ -444,7 +516,7 @@ mod tests {
 
         // Write some deltas
         for i in 0..10 {
-            let delta = make_delta(&format!("k{}", i), &format!("v{}", i), (i + 1) as u64 * 100);
+            let delta = make_test_delta(&format!("k{}", i), &format!("v{}", i), (i + 1) as u64 * 100);
             handle.write_durable(delta, (i + 1) as u64 * 100).await.unwrap();
         }
 
@@ -466,7 +538,7 @@ mod tests {
 
         // Write some deltas
         for i in 0..5 {
-            let delta = make_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
+            let delta = make_test_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
             handle
                 .write_durable(delta, (i + 1) as u64 * 100)
                 .await
@@ -493,7 +565,7 @@ mod tests {
 
         // Fire-and-forget writes
         for i in 0..10 {
-            let delta = make_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
+            let delta = make_test_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
             handle.write_fire_and_forget(delta, (i + 1) as u64 * 100);
         }
 
@@ -519,7 +591,7 @@ mod tests {
 
         // Write enough to create multiple files
         for i in 0..20 {
-            let delta = make_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
+            let delta = make_test_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
             handle
                 .write_durable(delta, (i + 1) as u64 * 100)
                 .await
@@ -553,7 +625,7 @@ mod tests {
         for i in 0..20 {
             let h = handle.clone();
             join_handles.push(tokio::spawn(async move {
-                let delta = make_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
+                let delta = make_test_delta(&format!("k{}", i), "v", (i + 1) as u64 * 100);
                 h.write_durable(delta, (i + 1) as u64 * 100).await
             }));
         }

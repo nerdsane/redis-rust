@@ -190,12 +190,15 @@ fn test_wal_dst_truncation_correctness() {
             );
         }
 
-        // Entries 51-100 should also still be present (they were in files with ts > 50)
-        // (Some entries 1-50 may or may not be present depending on file boundaries)
+        // Entries 51-100 should still be present: they're in files that also contain
+        // entries > 50, so conservative truncation (whole-file granularity) keeps them.
         for ts in 51..=100u64 {
-            // These entries are in files that also contain entries > 50,
-            // so they should NOT have been deleted
-            // (Conservative truncation: only delete files where ALL entries <= threshold)
+            assert!(
+                recovered_ts.contains(&ts),
+                "Seed {}: entry {} (51-100 range) missing — truncation was too aggressive",
+                seed,
+                ts
+            );
         }
     }
 }
