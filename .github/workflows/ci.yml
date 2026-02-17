@@ -32,14 +32,11 @@ jobs:
       - name: Build
         run: cargo build --release --bin redis-server-optimized --bin maelstrom-kv-replicated
 
-      - name: Unit tests
-        run: cargo test --lib
+      - name: All tests (unit + all DST integration tests)
+        run: cargo test --release
 
-      - name: Unit tests (with ACL feature)
-        run: cargo test --lib --features acl
-
-      - name: WAL DST integration tests (multi-seed)
-        run: cargo test --release --test wal_dst_test
+      - name: All tests (with ACL feature)
+        run: cargo test --release --features acl
 
       - name: Tcl compat - incr
         run: ./scripts/run-redis-compat.sh unit/type/incr
