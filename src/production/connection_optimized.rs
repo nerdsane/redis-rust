@@ -496,27 +496,28 @@ where
                                             .as_ref()
                                             .map(|u| u.name.as_str())
                                             .unwrap_or("default");
-                                        let (reason, object) =
-                                            if acl_err.contains("no permissions to run") {
-                                                (
-                                                    crate::security::acl::AclLogReason::Command,
-                                                    cmd.name().to_string(),
-                                                )
-                                            } else if acl_err.contains("no permissions to access")
-                                            {
-                                                (
-                                                    crate::security::acl::AclLogReason::Key,
-                                                    cmd.get_keys()
-                                                        .first()
-                                                        .cloned()
-                                                        .unwrap_or_default(),
-                                                )
-                                            } else {
-                                                (
-                                                    crate::security::acl::AclLogReason::Command,
-                                                    cmd.name().to_string(),
-                                                )
-                                            };
+                                        // Classify reason by checking the error prefix
+                                        // NOPERM errors from CommandNotPermitted start with
+                                        // "NOPERM this user has no permissions to run",
+                                        // KeyNotPermitted starts with "NOPERM this user has
+                                        // no permissions to access"
+                                        let is_key_denial =
+                                            acl_err.starts_with("NOPERM") &&
+                                            acl_err.contains("access");
+                                        let (reason, object) = if is_key_denial {
+                                            (
+                                                crate::security::acl::AclLogReason::Key,
+                                                cmd.get_keys()
+                                                    .first()
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            )
+                                        } else {
+                                            (
+                                                crate::security::acl::AclLogReason::Command,
+                                                cmd.name().to_string(),
+                                            )
+                                        };
                                         let mut manager = self.acl_manager.write();
                                         manager.acl_log.record_denial(
                                             username,
@@ -925,7 +926,7 @@ where
             let entries = AclCommandHandler::handle_log(&manager, count);
             let mut result = Vec::with_capacity(entries.len());
             for entry in &entries {
-                let mut fields = Vec::with_capacity(18);
+                let mut fields = Vec::with_capacity(20);
 
                 fields.push(RespValue::BulkString(Some(b"count".to_vec())));
                 fields.push(RespValue::Integer(entry.count as i64));
@@ -1094,11 +1095,6 @@ where
             name if name.starts_with("ACL ") => {
                 let sub = &name[4..];
                 match sub {
-                    "LOG" => {
-                        // Return empty log
-                        RespValue::Array(Some(Vec::new()))
-                    }
-                    "DRYRUN" => RespValue::simple("OK"),
                     "HELP" => RespValue::Array(Some(vec![
                         RespValue::BulkString(Some(b"ACL <subcommand>".to_vec())),
                     ])),

@@ -178,6 +178,9 @@ impl AclCommandHandler {
         command: &str,
         args: &[String],
     ) -> Result<(), String> {
+        debug_assert!(!username.is_empty(), "Precondition: username must not be empty");
+        debug_assert!(!command.is_empty(), "Precondition: command must not be empty");
+
         // Look up user
         let user = manager.get_user(username).ok_or_else(|| {
             format!("ERR User '{}' not found", username)
@@ -200,16 +203,18 @@ impl AclCommandHandler {
             ));
         }
 
-        // Check key permissions — the first arg is typically the key for most commands.
-        // For commands with known key positions, extract appropriately.
-        // This covers GET, SET, HGET, etc. where args[0] is the key.
+        // Check key permissions for all keys the command touches.
+        // Key extraction is command-aware: MSET has keys at even positions,
+        // most other commands have all args as keys (DEL, MGET) or first arg only.
         if !args.is_empty() && !user.keys.allow_all {
-            let key = &args[0];
-            if !user.keys.is_key_permitted(key) {
-                return Err(format!(
-                    "This user has no permissions to access the '{}' key",
-                    key
-                ));
+            let keys = extract_dryrun_keys(&cmd_upper, args);
+            for key in &keys {
+                if !user.keys.is_key_permitted(key) {
+                    return Err(format!(
+                        "This user has no permissions to access the '{}' key",
+                        key
+                    ));
+                }
             }
         }
 
@@ -410,6 +415,37 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
     }
 
     Ok(())
+}
+
+/// Extract key arguments from a DRYRUN command invocation.
+/// Command-aware: handles multi-key commands like MSET, DEL, MGET, RENAME.
+fn extract_dryrun_keys<'a>(command: &str, args: &'a [String]) -> Vec<&'a str> {
+    match command {
+        // MSET key val key val ... — keys at even indices (0, 2, 4, ...)
+        "MSET" | "MSETNX" => args
+            .iter()
+            .step_by(2)
+            .map(|s| s.as_str())
+            .collect(),
+        // All args are keys
+        "DEL" | "UNLINK" | "EXISTS" | "MGET" | "WATCH" => {
+            args.iter().map(|s| s.as_str()).collect()
+        }
+        // Two-key commands: source + dest
+        "RENAME" | "RENAMENX" | "RPOPLPUSH" => {
+            args.iter().take(2).map(|s| s.as_str()).collect()
+        }
+        // LMOVE source dest wherefrom whereto — first 2 args are keys
+        "LMOVE" => args.iter().take(2).map(|s| s.as_str()).collect(),
+        // Default: first arg is the key (GET, SET, HSET, LPUSH, ZADD, etc.)
+        _ => {
+            if args.is_empty() {
+                vec![]
+            } else {
+                vec![args[0].as_str()]
+            }
+        }
+    }
 }
 
 fn format_flags(user: &AclUser) -> String {

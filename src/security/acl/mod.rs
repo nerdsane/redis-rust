@@ -83,7 +83,7 @@ impl std::fmt::Display for AclError {
 impl std::error::Error for AclError {}
 
 /// Reason for an ACL denial
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AclLogReason {
     /// Command not permitted
     Command,
@@ -233,6 +233,9 @@ impl AclLogStore {
             self.agg_index.insert(key, idx);
             self.entries.push(entry);
         }
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
     }
 
     /// Get log entries (most recent first). If count is None, return all.
@@ -249,7 +252,43 @@ impl AclLogStore {
         self.entries.clear();
         self.agg_index.clear();
         // Don't reset next_entry_id — keep monotonic
+
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.entries.is_empty(), "Postcondition: entries must be empty after reset");
+            debug_assert!(self.agg_index.is_empty(), "Postcondition: agg_index must be empty after reset");
+            self.verify_invariants();
+        }
     }
+
+    /// Verify structural invariants. Called after mutations in debug builds.
+    #[cfg(debug_assertions)]
+    pub fn verify_invariants(&self) {
+        debug_assert!(
+            self.entries.len() <= self.max_entries,
+            "Invariant: entries.len() ({}) must be <= max_entries ({})",
+            self.entries.len(),
+            self.max_entries
+        );
+        debug_assert!(
+            self.agg_index.len() <= self.entries.len(),
+            "Invariant: agg_index.len() ({}) must be <= entries.len() ({})",
+            self.agg_index.len(),
+            self.entries.len()
+        );
+        for (key, &idx) in &self.agg_index {
+            debug_assert!(
+                idx < self.entries.len(),
+                "Invariant: agg_index value {} must be < entries.len() {} (key: {:?})",
+                idx,
+                self.entries.len(),
+                key
+            );
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub fn verify_invariants(&self) {}
 }
 
 impl Default for AclLogStore {
