@@ -807,6 +807,11 @@ impl CommandExecutor {
                 RespValue::Array(Some(Vec::new()))
             }
 
+            // ACL commands handled at connection level, not executor
+            Command::AclDryrun { .. } | Command::AclLog { .. } | Command::AclLogReset => {
+                RespValue::err("ERR ACL commands are handled at the connection level")
+            }
+
             // Unknown
             Command::Unknown(cmd) => RespValue::err(format!("ERR unknown command '{}'", cmd)),
         }

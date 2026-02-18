@@ -169,6 +169,71 @@ impl AclCommandHandler {
         }
     }
 
+    /// Handle ACL DRYRUN command
+    /// Simulates running a command as the given user without executing it.
+    /// Returns Ok(()) if permitted, or an error string matching Redis format.
+    pub fn handle_dryrun(
+        manager: &AclManager,
+        username: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<(), String> {
+        debug_assert!(!username.is_empty(), "Precondition: username must not be empty");
+        debug_assert!(!command.is_empty(), "Precondition: command must not be empty");
+
+        // Look up user
+        let user = manager.get_user(username).ok_or_else(|| {
+            format!("ERR User '{}' not found", username)
+        })?;
+
+        // Check if user is enabled
+        if !user.enabled {
+            return Err(format!(
+                "This user has no permissions to run the '{}' command",
+                command.to_lowercase()
+            ));
+        }
+
+        // Check command permission
+        let cmd_upper = command.to_uppercase();
+        if !user.commands.is_command_permitted(&cmd_upper) {
+            return Err(format!(
+                "This user has no permissions to run the '{}' command",
+                command.to_lowercase()
+            ));
+        }
+
+        // Check key permissions for all keys the command touches.
+        // Key extraction is command-aware: MSET has keys at even positions,
+        // most other commands have all args as keys (DEL, MGET) or first arg only.
+        if !args.is_empty() && !user.keys.allow_all {
+            let keys = extract_dryrun_keys(&cmd_upper, args);
+            for key in &keys {
+                if !user.keys.is_key_permitted(key) {
+                    return Err(format!(
+                        "This user has no permissions to access the '{}' key",
+                        key
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle ACL LOG command — return log entries as structured data
+    pub fn handle_log(
+        manager: &AclManager,
+        count: Option<usize>,
+    ) -> Vec<super::AclLogEntry> {
+        manager.acl_log.get_log(count).into_iter().cloned().collect()
+    }
+
+    /// Handle ACL LOG RESET command
+    pub fn handle_log_reset(manager: &mut AclManager) {
+        manager.acl_log.reset();
+    }
+
     /// Handle ACL GENPASS command
     pub fn handle_genpass(bits: Option<u32>) -> Result<String, String> {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -350,6 +415,37 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), AclError> {
     }
 
     Ok(())
+}
+
+/// Extract key arguments from a DRYRUN command invocation.
+/// Command-aware: handles multi-key commands like MSET, DEL, MGET, RENAME.
+fn extract_dryrun_keys<'a>(command: &str, args: &'a [String]) -> Vec<&'a str> {
+    match command {
+        // MSET key val key val ... — keys at even indices (0, 2, 4, ...)
+        "MSET" | "MSETNX" => args
+            .iter()
+            .step_by(2)
+            .map(|s| s.as_str())
+            .collect(),
+        // All args are keys
+        "DEL" | "UNLINK" | "EXISTS" | "MGET" | "WATCH" => {
+            args.iter().map(|s| s.as_str()).collect()
+        }
+        // Two-key commands: source + dest
+        "RENAME" | "RENAMENX" | "RPOPLPUSH" => {
+            args.iter().take(2).map(|s| s.as_str()).collect()
+        }
+        // LMOVE source dest wherefrom whereto — first 2 args are keys
+        "LMOVE" => args.iter().take(2).map(|s| s.as_str()).collect(),
+        // Default: first arg is the key (GET, SET, HSET, LPUSH, ZADD, etc.)
+        _ => {
+            if args.is_empty() {
+                vec![]
+            } else {
+                vec![args[0].as_str()]
+            }
+        }
+    }
 }
 
 fn format_flags(user: &AclUser) -> String {

@@ -474,6 +474,13 @@ where
                                 self.handle_acl_cat(category.as_deref())
                             }
                             Command::AclGenPass { bits } => self.handle_acl_genpass(*bits),
+                            Command::AclDryrun {
+                                username,
+                                command,
+                                args,
+                            } => self.handle_acl_dryrun(username, command, args),
+                            Command::AclLog { count } => self.handle_acl_log(*count),
+                            Command::AclLogReset => self.handle_acl_log_reset(),
                             // Stub commands (PubSub, HELLO, etc.) — skip ACL check
                             Command::Unknown(ref name) if Self::is_stub_command(name) => {
                                 Self::handle_stub_command(name)
@@ -481,6 +488,45 @@ where
                             _ => {
                                 // Check ACL permissions for regular commands
                                 if let Err(acl_err) = self.check_acl_permission(&cmd) {
+                                    // Record ACL denial in log
+                                    #[cfg(feature = "acl")]
+                                    {
+                                        let username = self
+                                            .authenticated_user
+                                            .as_ref()
+                                            .map(|u| u.name.as_str())
+                                            .unwrap_or("default");
+                                        // Classify reason by checking the error prefix
+                                        // NOPERM errors from CommandNotPermitted start with
+                                        // "NOPERM this user has no permissions to run",
+                                        // KeyNotPermitted starts with "NOPERM this user has
+                                        // no permissions to access"
+                                        let is_key_denial =
+                                            acl_err.starts_with("NOPERM") &&
+                                            acl_err.contains("access");
+                                        let (reason, object) = if is_key_denial {
+                                            (
+                                                crate::security::acl::AclLogReason::Key,
+                                                cmd.get_keys()
+                                                    .first()
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            )
+                                        } else {
+                                            (
+                                                crate::security::acl::AclLogReason::Command,
+                                                cmd.name().to_string(),
+                                            )
+                                        };
+                                        let mut manager = self.acl_manager.write();
+                                        manager.acl_log.record_denial(
+                                            username,
+                                            reason,
+                                            &object,
+                                            "toplevel",
+                                            &self.client_addr,
+                                        );
+                                    }
                                     RespValue::err(acl_err)
                                 } else {
                                     self.state.execute(&cmd).await
@@ -680,48 +726,30 @@ where
             let manager = self.acl_manager.read();
             match AclCommandHandler::handle_getuser(&manager, username) {
                 Some(info) => {
-                    let mut result = Vec::new();
-
-                    // flags: nested array of strings
-                    result.push(RespValue::BulkString(Some("flags".as_bytes().to_vec())));
-                    result.push(RespValue::Array(Some(
-                        info.flags
-                            .into_iter()
-                            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
-                            .collect(),
-                    )));
-
-                    // passwords: nested array of strings
-                    result.push(RespValue::BulkString(Some(
-                        "passwords".as_bytes().to_vec(),
-                    )));
-                    result.push(RespValue::Array(Some(
-                        info.passwords
-                            .into_iter()
-                            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
-                            .collect(),
-                    )));
-
-                    // commands: bulk string
-                    result.push(RespValue::BulkString(Some(
-                        "commands".as_bytes().to_vec(),
-                    )));
-                    result.push(RespValue::BulkString(Some(info.commands.into_bytes())));
-
-                    // keys: bulk string
-                    result.push(RespValue::BulkString(Some("keys".as_bytes().to_vec())));
-                    result.push(RespValue::BulkString(Some(info.keys.into_bytes())));
-
-                    // channels: bulk string
-                    result.push(RespValue::BulkString(Some(
-                        "channels".as_bytes().to_vec(),
-                    )));
-                    result.push(RespValue::BulkString(Some(info.channels.into_bytes())));
-
-                    // selectors: empty array
-                    result
-                        .push(RespValue::BulkString(Some("selectors".as_bytes().to_vec())));
-                    result.push(RespValue::Array(Some(Vec::new())));
+                    let result = vec![
+                        RespValue::BulkString(Some(b"flags".to_vec())),
+                        RespValue::Array(Some(
+                            info.flags
+                                .into_iter()
+                                .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                                .collect(),
+                        )),
+                        RespValue::BulkString(Some(b"passwords".to_vec())),
+                        RespValue::Array(Some(
+                            info.passwords
+                                .into_iter()
+                                .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                                .collect(),
+                        )),
+                        RespValue::BulkString(Some(b"commands".to_vec())),
+                        RespValue::BulkString(Some(info.commands.into_bytes())),
+                        RespValue::BulkString(Some(b"keys".to_vec())),
+                        RespValue::BulkString(Some(info.keys.into_bytes())),
+                        RespValue::BulkString(Some(b"channels".to_vec())),
+                        RespValue::BulkString(Some(info.channels.into_bytes())),
+                        RespValue::BulkString(Some(b"selectors".to_vec())),
+                        RespValue::Array(Some(Vec::new())),
+                    ];
 
                     RespValue::Array(Some(result))
                 }
@@ -865,6 +893,124 @@ where
         }
     }
 
+    /// Handle ACL DRYRUN command
+    fn handle_acl_dryrun(
+        &self,
+        username: &str,
+        command: &str,
+        args: &[String],
+    ) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let manager = self.acl_manager.read();
+            match AclCommandHandler::handle_dryrun(&manager, username, command, args) {
+                Ok(()) => RespValue::simple("OK"),
+                Err(e) => RespValue::err(e),
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = (username, command, args);
+            // Without ACL feature, everything is permitted
+            RespValue::simple("OK")
+        }
+    }
+
+    /// Handle ACL LOG [count] command
+    fn handle_acl_log(&self, count: Option<usize>) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            use crate::security::acl::AclCommandHandler;
+            let manager = self.acl_manager.read();
+            let entries = AclCommandHandler::handle_log(&manager, count);
+            let mut result = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                let mut fields = Vec::with_capacity(20);
+
+                fields.push(RespValue::BulkString(Some(b"count".to_vec())));
+                fields.push(RespValue::Integer(entry.count as i64));
+
+                fields.push(RespValue::BulkString(Some(b"reason".to_vec())));
+                fields.push(RespValue::BulkString(Some(
+                    entry.reason.as_str().as_bytes().to_vec(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(b"context".to_vec())));
+                fields.push(RespValue::BulkString(Some(
+                    entry.context.as_bytes().to_vec(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(b"object".to_vec())));
+                fields.push(RespValue::BulkString(Some(
+                    entry.object.as_bytes().to_vec(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(b"username".to_vec())));
+                fields.push(RespValue::BulkString(Some(
+                    entry.username.as_bytes().to_vec(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(
+                    b"age-seconds".to_vec(),
+                )));
+                let age = crate::security::acl::AclLogStore::now_epoch_secs()
+                    - entry.timestamp_created;
+                fields.push(RespValue::BulkString(Some(
+                    format!("{:.3}", age).into_bytes(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(
+                    b"client-info".to_vec(),
+                )));
+                fields.push(RespValue::BulkString(Some(
+                    entry.client_info.as_bytes().to_vec(),
+                )));
+
+                fields.push(RespValue::BulkString(Some(
+                    b"entry-id".to_vec(),
+                )));
+                fields.push(RespValue::Integer(entry.entry_id as i64));
+
+                fields.push(RespValue::BulkString(Some(
+                    b"timestamp-created".to_vec(),
+                )));
+                fields.push(RespValue::Integer(
+                    (entry.timestamp_created * 1000.0) as i64,
+                ));
+
+                fields.push(RespValue::BulkString(Some(
+                    b"timestamp-last-updated".to_vec(),
+                )));
+                fields.push(RespValue::Integer(
+                    (entry.timestamp_last_updated * 1000.0) as i64,
+                ));
+
+                result.push(RespValue::Array(Some(fields)));
+            }
+            RespValue::Array(Some(result))
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            let _ = count;
+            RespValue::Array(Some(Vec::new()))
+        }
+    }
+
+    /// Handle ACL LOG RESET command
+    fn handle_acl_log_reset(&self) -> RespValue {
+        #[cfg(feature = "acl")]
+        {
+            let mut manager = self.acl_manager.write();
+            crate::security::acl::AclCommandHandler::handle_log_reset(&mut manager);
+            RespValue::simple("OK")
+        }
+        #[cfg(not(feature = "acl"))]
+        {
+            RespValue::simple("OK")
+        }
+    }
+
     /// Check if a command name is a stub command (PubSub, HELLO, CLIENT subcommands, etc.)
     fn is_stub_command(name: &str) -> bool {
         let upper = name.to_uppercase();
@@ -949,11 +1095,6 @@ where
             name if name.starts_with("ACL ") => {
                 let sub = &name[4..];
                 match sub {
-                    "LOG" => {
-                        // Return empty log
-                        RespValue::Array(Some(Vec::new()))
-                    }
-                    "DRYRUN" => RespValue::simple("OK"),
                     "HELP" => RespValue::Array(Some(vec![
                         RespValue::BulkString(Some(b"ACL <subcommand>".to_vec())),
                     ])),

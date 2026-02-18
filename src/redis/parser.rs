@@ -171,6 +171,48 @@ impl Command {
                                 };
                                 Ok(Command::AclGenPass { bits })
                             }
+                            "DRYRUN" => {
+                                if elements.len() < 4 {
+                                    return Err(
+                                        "ERR wrong number of arguments for 'acl|dryrun' command"
+                                            .to_string(),
+                                    );
+                                }
+                                let username = Self::extract_string(&elements[2])?;
+                                let command =
+                                    Self::extract_string(&elements[3])?.to_uppercase();
+                                let args: Vec<String> = elements[4..]
+                                    .iter()
+                                    .map(Self::extract_string)
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok(Command::AclDryrun {
+                                    username,
+                                    command,
+                                    args,
+                                })
+                            }
+                            "LOG" => {
+                                if elements.len() == 2 {
+                                    Ok(Command::AclLog { count: None })
+                                } else if elements.len() == 3 {
+                                    let arg =
+                                        Self::extract_string(&elements[2])?.to_uppercase();
+                                    if arg == "RESET" {
+                                        Ok(Command::AclLogReset)
+                                    } else {
+                                        let count = arg.parse::<usize>().map_err(|_| {
+                                            "ERR value is not an integer or out of range"
+                                                .to_string()
+                                        })?;
+                                        Ok(Command::AclLog { count: Some(count) })
+                                    }
+                                } else {
+                                    Err(
+                                        "ERR wrong number of arguments for 'acl|log' command"
+                                            .to_string(),
+                                    )
+                                }
+                            }
                             _ => Err(format!("Unknown ACL subcommand '{}'", subcommand)),
                         }
                     }

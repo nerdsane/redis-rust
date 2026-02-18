@@ -261,6 +261,18 @@ pub enum Command {
     AclGenPass {
         bits: Option<u32>,
     },
+    /// ACL DRYRUN username command [args...]
+    AclDryrun {
+        username: String,
+        command: String,
+        args: Vec<String>,
+    },
+    /// ACL LOG [count | RESET]
+    AclLog {
+        count: Option<usize>,
+    },
+    /// ACL LOG RESET
+    AclLogReset,
     // CONFIG commands
     ConfigGet(String),
     ConfigSet(String, String),
@@ -417,6 +429,8 @@ impl Command {
                 | Command::DbSize
                 | Command::Wait(_, _)
                 | Command::Time
+                | Command::AclDryrun { .. }
+                | Command::AclLog { .. }
         )
     }
 
@@ -523,6 +537,9 @@ impl Command {
             | Command::AclDelUser { .. }
             | Command::AclCat { .. }
             | Command::AclGenPass { .. }
+            | Command::AclDryrun { .. }
+            | Command::AclLog { .. }
+            | Command::AclLogReset
             | Command::ConfigGet(_)
             | Command::ConfigSet(_, _)
             | Command::ConfigResetStat
@@ -658,6 +675,9 @@ impl Command {
             | Command::AclDelUser { .. }
             | Command::AclCat { .. }
             | Command::AclGenPass { .. }
+            | Command::AclDryrun { .. }
+            | Command::AclLog { .. }
+            | Command::AclLogReset
             | Command::ConfigGet(_)
             | Command::ConfigSet(_, _)
             | Command::ConfigResetStat
@@ -799,6 +819,9 @@ impl Command {
             Command::AclDelUser { .. } => "ACL",
             Command::AclCat { .. } => "ACL",
             Command::AclGenPass { .. } => "ACL",
+            Command::AclDryrun { .. } => "ACL",
+            Command::AclLog { .. } => "ACL",
+            Command::AclLogReset => "ACL",
             Command::ConfigGet(_) => "CONFIG",
             Command::ConfigSet(_, _) => "CONFIG",
             Command::ConfigResetStat => "CONFIG",
