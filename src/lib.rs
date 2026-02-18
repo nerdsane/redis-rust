@@ -56,7 +56,6 @@
 
 pub mod buggify;
 pub mod io;
-pub mod metrics;
 pub mod production;
 pub mod redis;
 pub mod replication;
