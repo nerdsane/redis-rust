@@ -19,6 +19,7 @@ pub use user::{AclUser, CommandCategory, CommandPermissions};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// ACL-related errors
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +82,182 @@ impl std::fmt::Display for AclError {
 
 impl std::error::Error for AclError {}
 
+/// Reason for an ACL denial
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AclLogReason {
+    /// Command not permitted
+    Command,
+    /// Key access denied
+    Key,
+    /// Channel access denied
+    Channel,
+    /// Authentication failure
+    Auth,
+}
+
+impl AclLogReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AclLogReason::Command => "command",
+            AclLogReason::Key => "key",
+            AclLogReason::Channel => "channel",
+            AclLogReason::Auth => "auth",
+        }
+    }
+}
+
+impl std::fmt::Display for AclLogReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// An entry in the ACL log
+#[derive(Debug, Clone)]
+pub struct AclLogEntry {
+    /// Monotonic entry ID
+    pub entry_id: u64,
+    /// Number of times this denial was seen (aggregated)
+    pub count: u64,
+    /// Reason for denial
+    pub reason: AclLogReason,
+    /// Context (toplevel or multi)
+    pub context: String,
+    /// Object: the command name or key that was denied
+    pub object: String,
+    /// Username that was denied
+    pub username: String,
+    /// Client info string
+    pub client_info: String,
+    /// Timestamp when this entry was first created (epoch seconds with fractional)
+    pub timestamp_created: f64,
+    /// Timestamp when this entry was last updated (epoch seconds with fractional)
+    pub timestamp_last_updated: f64,
+}
+
+/// Aggregation key for ACL log entries
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AclLogAggKey {
+    username: String,
+    reason: AclLogReason,
+    object: String,
+    context: String,
+}
+
+/// ACL log store with aggregation
+#[derive(Debug)]
+pub struct AclLogStore {
+    /// All log entries in insertion order
+    entries: Vec<AclLogEntry>,
+    /// Aggregation index: key -> index in entries vec
+    agg_index: HashMap<AclLogAggKey, usize>,
+    /// Next monotonic entry ID
+    next_entry_id: u64,
+    /// Maximum log entries (Redis default: 128)
+    max_entries: usize,
+}
+
+impl AclLogStore {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            agg_index: HashMap::new(),
+            next_entry_id: 0,
+            max_entries: 128,
+        }
+    }
+
+    pub fn now_epoch_secs() -> f64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+    }
+
+    /// Record an ACL denial
+    pub fn record_denial(
+        &mut self,
+        username: &str,
+        reason: AclLogReason,
+        object: &str,
+        context: &str,
+        client_info: &str,
+    ) {
+        let now = Self::now_epoch_secs();
+        let key = AclLogAggKey {
+            username: username.to_string(),
+            reason: reason.clone(),
+            object: object.to_string(),
+            context: context.to_string(),
+        };
+
+        if let Some(&idx) = self.agg_index.get(&key) {
+            // Aggregate: increment count, update timestamp
+            if let Some(entry) = self.entries.get_mut(idx) {
+                entry.count = entry.count.saturating_add(1);
+                entry.timestamp_last_updated = now;
+            }
+        } else {
+            // New entry
+            let entry = AclLogEntry {
+                entry_id: self.next_entry_id,
+                count: 1,
+                reason,
+                context: context.to_string(),
+                object: object.to_string(),
+                username: username.to_string(),
+                client_info: client_info.to_string(),
+                timestamp_created: now,
+                timestamp_last_updated: now,
+            };
+            self.next_entry_id = self.next_entry_id.saturating_add(1);
+
+            // Evict oldest if at capacity
+            if self.entries.len() >= self.max_entries {
+                // Remove the oldest entry and its index
+                let removed = self.entries.remove(0);
+                let removed_key = AclLogAggKey {
+                    username: removed.username,
+                    reason: removed.reason,
+                    object: removed.object,
+                    context: removed.context,
+                };
+                self.agg_index.remove(&removed_key);
+                // Update all indices (shifted down by 1)
+                for val in self.agg_index.values_mut() {
+                    *val = val.saturating_sub(1);
+                }
+            }
+
+            let idx = self.entries.len();
+            self.agg_index.insert(key, idx);
+            self.entries.push(entry);
+        }
+    }
+
+    /// Get log entries (most recent first). If count is None, return all.
+    pub fn get_log(&self, count: Option<usize>) -> Vec<&AclLogEntry> {
+        let entries: Vec<&AclLogEntry> = self.entries.iter().rev().collect();
+        match count {
+            Some(n) => entries.into_iter().take(n).collect(),
+            None => entries,
+        }
+    }
+
+    /// Reset (clear) the log
+    pub fn reset(&mut self) {
+        self.entries.clear();
+        self.agg_index.clear();
+        // Don't reset next_entry_id — keep monotonic
+    }
+}
+
+impl Default for AclLogStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// ACL Manager - manages users and authorization
 #[derive(Debug)]
 pub struct AclManager {
@@ -88,6 +265,8 @@ pub struct AclManager {
     users: HashMap<String, Arc<AclUser>>,
     /// Whether authentication is required for new connections
     require_auth: bool,
+    /// ACL denial log
+    pub acl_log: AclLogStore,
 }
 
 impl AclManager {
@@ -100,6 +279,7 @@ impl AclManager {
         Self {
             users,
             require_auth: false,
+            acl_log: AclLogStore::new(),
         }
     }
 
@@ -358,5 +538,97 @@ mod tests {
         // SET should be denied (write command)
         let result = manager.check_command(Some(&user), "SET", &["mykey"]);
         assert!(matches!(result, Err(AclError::CommandNotPermitted { .. })));
+    }
+
+    #[test]
+    fn test_acl_log_store_basic() {
+        let mut store = AclLogStore::new();
+
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "127.0.0.1:1234");
+        let entries = store.get_log(None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].count, 1);
+        assert_eq!(entries[0].username, "alice");
+        assert_eq!(entries[0].object, "SET");
+        assert_eq!(entries[0].reason, AclLogReason::Command);
+    }
+
+    #[test]
+    fn test_acl_log_store_aggregation() {
+        let mut store = AclLogStore::new();
+
+        // Same denial aggregates
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "127.0.0.1:1234");
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "127.0.0.1:1234");
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "127.0.0.1:1234");
+
+        let entries = store.get_log(None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].count, 3);
+
+        // Different denial creates new entry
+        store.record_denial("bob", AclLogReason::Key, "mykey", "toplevel", "127.0.0.1:5678");
+        let entries = store.get_log(None);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_acl_log_store_count() {
+        let mut store = AclLogStore::new();
+
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "addr1");
+        store.record_denial("bob", AclLogReason::Command, "DEL", "toplevel", "addr2");
+        store.record_denial("charlie", AclLogReason::Key, "secret", "toplevel", "addr3");
+
+        // Get only 2 most recent
+        let entries = store.get_log(Some(2));
+        assert_eq!(entries.len(), 2);
+        // Most recent first
+        assert_eq!(entries[0].username, "charlie");
+        assert_eq!(entries[1].username, "bob");
+    }
+
+    #[test]
+    fn test_acl_log_store_reset() {
+        let mut store = AclLogStore::new();
+
+        store.record_denial("alice", AclLogReason::Command, "SET", "toplevel", "addr");
+        assert_eq!(store.get_log(None).len(), 1);
+
+        store.reset();
+        assert_eq!(store.get_log(None).len(), 0);
+
+        // After reset, new entries still work
+        store.record_denial("bob", AclLogReason::Command, "GET", "toplevel", "addr2");
+        assert_eq!(store.get_log(None).len(), 1);
+    }
+
+    #[test]
+    fn test_acl_dryrun() {
+        use super::commands::AclCommandHandler;
+
+        let mut manager = AclManager::new();
+
+        // Create a read-only user
+        let mut user = AclUser::new("reader".to_string());
+        user.commands.allow_all = false;
+        user.commands.add_category(CommandCategory::Read);
+        user.keys = KeyPatterns::allow_all();
+        user.enabled = true;
+        manager.set_user(user);
+
+        // GET should be permitted
+        let result = AclCommandHandler::handle_dryrun(&manager, "reader", "GET", &["mykey".to_string()]);
+        assert!(result.is_ok());
+
+        // SET should be denied
+        let result = AclCommandHandler::handle_dryrun(&manager, "reader", "SET", &["mykey".to_string(), "val".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no permissions to run"));
+
+        // Non-existent user should error
+        let result = AclCommandHandler::handle_dryrun(&manager, "ghost", "GET", &["key".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 }

@@ -169,6 +169,66 @@ impl AclCommandHandler {
         }
     }
 
+    /// Handle ACL DRYRUN command
+    /// Simulates running a command as the given user without executing it.
+    /// Returns Ok(()) if permitted, or an error string matching Redis format.
+    pub fn handle_dryrun(
+        manager: &AclManager,
+        username: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<(), String> {
+        // Look up user
+        let user = manager.get_user(username).ok_or_else(|| {
+            format!("ERR User '{}' not found", username)
+        })?;
+
+        // Check if user is enabled
+        if !user.enabled {
+            return Err(format!(
+                "This user has no permissions to run the '{}' command",
+                command.to_lowercase()
+            ));
+        }
+
+        // Check command permission
+        let cmd_upper = command.to_uppercase();
+        if !user.commands.is_command_permitted(&cmd_upper) {
+            return Err(format!(
+                "This user has no permissions to run the '{}' command",
+                command.to_lowercase()
+            ));
+        }
+
+        // Check key permissions — the first arg is typically the key for most commands.
+        // For commands with known key positions, extract appropriately.
+        // This covers GET, SET, HGET, etc. where args[0] is the key.
+        if !args.is_empty() && !user.keys.allow_all {
+            let key = &args[0];
+            if !user.keys.is_key_permitted(key) {
+                return Err(format!(
+                    "This user has no permissions to access the '{}' key",
+                    key
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle ACL LOG command — return log entries as structured data
+    pub fn handle_log(
+        manager: &AclManager,
+        count: Option<usize>,
+    ) -> Vec<super::AclLogEntry> {
+        manager.acl_log.get_log(count).into_iter().cloned().collect()
+    }
+
+    /// Handle ACL LOG RESET command
+    pub fn handle_log_reset(manager: &mut AclManager) {
+        manager.acl_log.reset();
+    }
+
     /// Handle ACL GENPASS command
     pub fn handle_genpass(bits: Option<u32>) -> Result<String, String> {
         use std::time::{SystemTime, UNIX_EPOCH};
