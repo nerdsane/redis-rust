@@ -2,7 +2,7 @@
 
 **Authors:** Sesh Nalla and Claude Code (Anthropic, Opus 4.5 → Opus 4.6)
 
-**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: could human-Claude collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements Redis commands across strings, lists, sets, hashes, sorted sets, bitmaps, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. A hybrid persistence layer combines a local Write-Ahead Log (WAL) with group commit for zero-RPO durability and cloud-native streaming to object storage (S3/local) for long-term backup. Correctness is established through a multi-layer verification pyramid: deterministic simulation testing with fault injection, the official Redis Tcl test suite, Maelstrom/Jepsen linearizability checking, Stateright exhaustive model checking, TLA+ specifications, and Docker-based performance benchmarking. Each verification method was chosen because it has objective, mechanical pass/fail criteria that do not depend on who wrote the code or the tests. On equivalent hardware, throughput reaches 77--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
+**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: could human-Claude collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements Redis commands across strings, lists, sets, hashes, sorted sets, bitmaps, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. A hybrid persistence layer combines a local Write-Ahead Log (WAL) with group commit for zero-RPO durability and cloud-native streaming to object storage (S3/local) for long-term backup. Correctness is established through a multi-layer verification pyramid: deterministic simulation testing with fault injection, the official Redis Tcl test suite, Maelstrom/Jepsen linearizability checking, Stateright exhaustive model checking, TLA+ specifications, and Docker-based performance benchmarking. Each verification method was chosen because it has objective, mechanical pass/fail criteria that do not depend on who wrote the code or the tests. On equivalent hardware, throughput reaches 77--99% of Redis 7.4. It is a case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
 
 ---
 
@@ -30,11 +30,9 @@ Redis was chosen as the implementation target for several pragmatic reasons:
 
 ### 1.3 Why This Paper
 
-This paper is not a product announcement. redis-rust is explicitly not production software, and we say so in the first line of its documentation.
-
 What we think is worth sharing is the *process*: how we structured verification to keep Claude honest, what kinds of bugs Claude introduced and how they were caught, where human judgment was irreplaceable, and where the acceleration was genuine. The verification pyramid is a methodology that could be applied to any AI-assisted systems project.
 
-We also want to be straightforward about the limitations. The multi-node replication is eventually consistent by design, not linearizable. WAL persistence covers string and hash types but not yet lists, sets, or sorted sets. The Tcl test suite crashes on unimplemented commands rather than gracefully skipping them, so our "pass rate" reflects command coverage as much as correctness.
+The multi-node replication is eventually consistent by design, not linearizable. WAL persistence covers string and hash types but not yet lists, sets, or sorted sets. The Tcl test suite crashes on unimplemented commands rather than gracefully skipping them, so our "pass rate" reflects command coverage as much as correctness.
 
 ### 1.4 Contributions
 
@@ -367,7 +365,7 @@ As model-generated code becomes more common, the bottleneck shifts from writing 
 
 ## 6. Conclusion and Future Work
 
-This project is a case study in human-Claude systems programming with rigorous verification, not a production Redis replacement. It demonstrates that Claude can co-author a functional, reasonably performant Redis-compatible server -- with 77--99% of Redis 7.4 throughput, passing the official test suite for implemented commands, with DST-verified durable persistence -- when paired with a human engineer who provides architectural direction and a verification harness that catches Claude's mistakes.
+This project is a case study in human-Claude systems programming with rigorous verification. It demonstrates that Claude can co-author a functional, reasonably performant Redis-compatible server -- with 77--99% of Redis 7.4 throughput, passing the official test suite for implemented commands, with DST-verified durable persistence -- when paired with a human engineer who provides architectural direction and a verification harness that catches Claude's mistakes.
 
 The verification methodology is the main contribution. The multi-layer pyramid forms a pipeline that makes model-generated systems code auditable. The six bugs caught by DST (Section 5.1) are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
 
@@ -377,7 +375,7 @@ Future work includes expanding Tcl suite coverage (LCS, blocking operations are 
 
 On the verification side, the open question is whether this methodology scales: as model capabilities improve and the generated code grows more complex, does the current verification pyramid remain sufficient, or does the harness itself need to evolve?
 
-We do not yet have an answer, and we are skeptical of anyone who claims to.
+We do not yet have an answer.
 
 ---
 
