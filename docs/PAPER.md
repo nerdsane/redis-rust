@@ -2,7 +2,7 @@
 
 **Authors:** Sesh Nalla and Claude Code (Anthropic, Opus 4.5 → Opus 4.6)
 
-**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: could human-Claude collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements Redis commands across strings, lists, sets, hashes, sorted sets, bitmaps, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. A hybrid persistence layer combines a local Write-Ahead Log (WAL) with group commit for zero-RPO durability and cloud-native streaming to object storage (S3/local) for long-term backup. Correctness is established through a multi-layer verification pyramid: deterministic simulation testing with fault injection, the official Redis Tcl test suite, Maelstrom/Jepsen linearizability checking, Stateright exhaustive model checking, TLA+ specifications, and Docker-based performance benchmarking. Each verification method was chosen because it has objective, mechanical pass/fail criteria that do not depend on who wrote the code or the tests. On equivalent hardware, throughput reaches 80--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
+**Abstract:** We describe redis-rust, an experimental Redis-compatible in-memory data store written in Rust and co-authored by a human systems engineer and Claude Code (Anthropic, Opus 4.5 → Opus 4.6). The project began as a deliberate test: could human-Claude collaboration produce a distributed systems implementation that is not merely plausible but verifiably correct? The system implements Redis commands across strings, lists, sets, hashes, sorted sets, bitmaps, transactions, Lua scripting, and key expiration, with CRDT-based multi-node replication using gossip and anti-entropy protocols. A hybrid persistence layer combines a local Write-Ahead Log (WAL) with group commit for zero-RPO durability and cloud-native streaming to object storage (S3/local) for long-term backup. Correctness is established through a multi-layer verification pyramid: deterministic simulation testing with fault injection, the official Redis Tcl test suite, Maelstrom/Jepsen linearizability checking, Stateright exhaustive model checking, TLA+ specifications, and Docker-based performance benchmarking. Each verification method was chosen because it has objective, mechanical pass/fail criteria that do not depend on who wrote the code or the tests. On equivalent hardware, throughput reaches 77--99% of Redis 7.4. This is not a production Redis replacement. It is an honest case study in what AI-assisted systems programming can and cannot do today, with a reusable verification methodology as its primary artifact.
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### 1.1 Genesis
 
-In late 2025, a step-change in AI code generation capability made a project like this feasible. Models had been generating code for years -- from simple completions to multi-file scaffolding -- but the quality and coherence improved rapidly across 2024-2025. By late 2025, with Anthropic's Claude Opus 4.5 (the first model to break 80% on SWE-bench Verified), Claude Code could sustain coherent implementations across thousands of lines, maintain internal consistency across module boundaries, hold architectural context across an entire codebase, and reason about subtle correctness properties like memory safety, concurrent access, and distributed protocol invariants. Claude could read a TLA+ spec and produce a Rust implementation that preserved the spec's invariants. It could be asked to "add WATCH support to MULTI/EXEC across a sharded architecture" and produce a design that correctly identified the value-snapshot approach as the only option that avoids shared mutable state -- then implement it.
+In late 2025, a step-change in AI code generation capability made a project like this feasible. Models had been generating code for years -- from simple completions to multi-file scaffolding -- but the quality and coherence improved rapidly across 2024-2025. By late 2025, with Anthropic's Claude Opus 4.5 (the first model to exceed 80% on SWE-bench Verified, scoring 80.9%), Claude Code could sustain coherent implementations across thousands of lines, maintain internal consistency across module boundaries, hold architectural context across an entire codebase, and reason about subtle correctness properties like memory safety, concurrent access, and distributed protocol invariants. Claude could read a TLA+ spec and produce a Rust implementation that preserved the spec's invariants. It could be asked to "add WATCH support to MULTI/EXEC across a sharded architecture" and produce a design that correctly identified the value-snapshot approach as the only option that avoids shared mutable state -- then implement it.
 
 We wanted to test this in the hardest way we could think of that was still tractable for two people (one human, one AI). Distributed systems are notoriously difficult. They require reasoning about concurrency, partial failure, network nondeterminism, and subtle invariants that hold across multiple machines. They are also notoriously difficult to *test* -- the interesting bugs only appear under specific timing conditions that unit tests rarely exercise. If AI-assisted development could produce a verifiably correct distributed system, that would be a meaningful data point. If it could not, understanding *where* it failed would be equally valuable.
 
@@ -44,7 +44,7 @@ This paper makes three contributions:
 
 2. **An architecture case study.** The actor-per-shard design, CRDT-based replication with gossip protocol, and Lua scripting integration demonstrate how a human-Claude team navigated real systems design decisions -- lock-free concurrency via message passing, connection-level vs. shard-level transaction state, virtual time for deterministic simulation. We document the trade-offs explicitly, including the ones we got wrong on the first attempt.
 
-3. **An honest accounting of results.** Hundreds of passing tests across multiple suites, fully passing Tcl compatibility for implemented commands, 5-node Maelstrom validation, and 80--99% of Redis 7.4 throughput. Also: several Tcl suites not attempted, no pub/sub, no linearizable replication. Six production-grade bugs caught by DST that would have shipped in a less-tested implementation (detailed in Section 5.1). We report what works, what does not, and what we learned from each failure.
+3. **An honest accounting of results.** Hundreds of passing tests across multiple suites, fully passing Tcl compatibility for implemented commands, 5-node Maelstrom validation, and 77--99% of Redis 7.4 throughput. Also: several Tcl suites not attempted, no pub/sub, no linearizable replication. Six production-grade bugs caught by DST that would have shipped in a less-tested implementation (detailed in Section 5.1). We report what works, what does not, and what we learned from each failure.
 
 ---
 
@@ -52,7 +52,7 @@ This paper makes three contributions:
 
 ### 2.1 Actor-per-Shard Design
 
-The server partitions keyspace across N shards, where each shard is a tokio task that exclusively owns a `CommandExecutor`. The number of shards is configurable at startup via `perf_config.toml` and defaults to the number of available CPU cores. Shard actors communicate only through bounded mpsc channels -- there are no mutexes, no reader-writer locks, and no shared mutable state within the data path.
+The server partitions keyspace across N shards, where each shard is a tokio task that exclusively owns a `CommandExecutor`. The number of shards is configurable at startup via `perf_config.toml` (default: 16). Shard actors communicate through unbounded mpsc channels and exclusively own their data -- there are no locks within the per-shard data storage. The connection handler acquires a `parking_lot::RwLock` for ACL permission checks, bypassed on the GET/SET fast path.
 
 ```
                         ┌───────────────────────────────────┐
@@ -75,7 +75,7 @@ The server partitions keyspace across N shards, where each shard is a tokio task
                  └──────────┘ └──────────┘ └──────────┘
                       ▲            ▲            ▲
                       └──── mpsc channels ──────┘
-                           (no locks)
+                        (no locks on shard data)
 ```
 
 Multi-key commands (MGET, MSET, DEL, EXISTS) are decomposed at the `ShardedActorState` layer: keys are grouped by target shard, dispatched concurrently via `join_all`, and results are reassembled in the original key order. Commands that require global visibility -- DBSIZE, SCAN, KEYS, FLUSHDB -- fan out to all shards and aggregate.
@@ -125,7 +125,7 @@ This is an intentional divergence from Redis, which tracks per-key dirty flags. 
 
 ### 2.3 CRDT Replication
 
-The replication layer draws from Anna KVS [Wu et al., 2019]. Each key-value pair is wrapped in a `ReplicatedValue` containing a last-writer-wins register timestamped with a Lamport clock. The CRDT library also includes `GCounter`, `PNCounter`, `ORSet`, `GSet`, and `VectorClock` types, each with merge functions proven commutative and idempotent via Stateright model checking.
+The replication layer draws from Anna KVS [Wu et al., IEEE ICDE 2018]. Each key-value pair is wrapped in a `ReplicatedValue` containing a last-writer-wins register timestamped with a Lamport clock. The CRDT library also includes `GCounter`, `PNCounter`, `ORSet`, `GSet`, and `VectorClock` types, with merge commutativity and idempotence verified through Kani bounded proofs (LWW, GCounter, PNCounter, VectorClock) and exhaustive unit tests.
 
 ```
   Node 1                      Node 2                      Node 3
@@ -276,7 +276,7 @@ The first layer draws directly from FoundationDB's simulation testing philosophy
 
 **The executor DST harness** maintains a shadow state -- a reference model implemented as a simple HashMap -- alongside the real `CommandExecutor`. After every operation, the harness compares the executor's RESP response against the expected value computed from the shadow.
 
-**The connection-level transaction DST** operates one layer higher. It instantiates two simulated connections sharing a single `ShardedActorState` and exercises the MULTI/EXEC/WATCH state machine -- the exact code path used in production.
+**The connection-level transaction DST** operates on a single `CommandExecutor`, interleaving commands from two simulated client perspectives to exercise WATCH conflict detection, MULTI/EXEC queuing, and DISCARD error handling.
 
 **The CRDT convergence DST** tests four data structures -- GCounter, PNCounter, ORSet, and VectorClock -- under partition injection and message loss. Each harness creates multiple replicas, applies random operations, runs pairwise sync rounds (with configurable message drop probability), and asserts that all replicas converge to identical state.
 
@@ -292,15 +292,15 @@ A critical property: error message strings must match Redis's exact format, sinc
 
 ### 3.4 Layer 3: Maelstrom/Jepsen Linearizability
 
-The third layer uses Kyle Kingsbury's Maelstrom workbench -- the same framework underlying Jepsen -- run unmodified with the Knossos linearizability checker. The CI pipeline runs 1-node baseline and 5-node stress configurations.
+The third layer uses Kyle Kingsbury's Maelstrom workbench -- a teaching tool built on the Jepsen testing library that reuses the Knossos linearizability checker. The CI pipeline runs 1-node baseline and 5-node stress configurations.
 
 What this proves: under Maelstrom's simulated network (reliable, near-instant delivery), the gossip protocol converges fast enough that no linearizability violation is observable at the workload level. What it does not prove: linearizability under real network conditions. The system uses eventual consistency by design; under sustained partitions, reads may return stale values.
 
 ### 3.5 Layer 4: Formal Methods
 
-**Stateright model checking** enumerates all possible interleavings of operations across replicas and persistence states, verifying that properties hold in *every* reachable state. Three models are checked exhaustively: `CrdtMergeModel` (commutativity, associativity, idempotence of LWW merge), `WriteBufferModel` (buffer bounds, segment ID monotonicity, crash durability), and `WalDurabilityModel` (truncation safety, recovery completeness, group commit atomicity, high-water mark consistency). The WAL model explores partial streaming intermediate states (one entry streamed per action, not all-at-once), ensuring that truncation bugs hiding in partial-streaming states are caught.
+**Stateright model checking** enumerates all possible interleavings of operations across replicas and persistence states, verifying that properties hold in *every* reachable state. Three models are checked exhaustively: `CrdtMergeModel` (Lamport clock monotonicity, tombstone consistency, timestamp validity under concurrent operations), `WriteBufferModel` (buffer bounds, segment ID monotonicity, manifest consistency), and `WalDurabilityModel` (truncation safety, recovery completeness, buffer-not-acknowledged before sync, high-water mark consistency). The WAL model explores partial streaming intermediate states (one entry streamed per action, not all-at-once), ensuring that truncation bugs hiding in partial-streaming states are caught.
 
-**TLA+ specifications** formalize the distributed protocols: `ReplicationConvergence.tla` (LWW merge under partitions), `GossipProtocol.tla` (delta dissemination), `AntiEntropy.tla` (Merkle-tree sync), `StreamingPersistence.tla` (write buffer durability), and `WalDurability.tla` (WAL group commit, fsync policies, truncation safety, crash recovery with object store high-water mark). Each TLA+ invariant maps to a concrete Stateright property and a runtime assertion in the Rust code.
+**TLA+ specifications** formalize the distributed protocols: `ReplicationConvergence.tla` (LWW merge under partitions), `GossipProtocol.tla` (delta dissemination), `AntiEntropy.tla` (Merkle-tree sync), `StreamingPersistence.tla` (write buffer durability), and `WalDurability.tla` (WAL group commit, fsync policies, truncation safety, crash recovery with object store high-water mark). Key TLA+ invariants map to concrete Stateright properties and runtime assertions, particularly for persistence and WAL durability.
 
 ### 3.6 CI Integration
 
@@ -316,20 +316,22 @@ Every test that runs against an implemented command passes. Fully passing suites
 
 ### 4.2 Performance
 
-**Throughput Comparison (Docker, 2 CPUs, 1 GB RAM, 50 clients)**
+**Throughput Comparison (Docker, 2 CPUs, 1 GB RAM, 50 clients, `redis-benchmark`)**
 
-| | Redis 7.4 | redis-rust | Relative |
+Results vary across runs due to Docker scheduling and host load. The table below shows representative numbers from a single run; we observed 2x variance across repeated runs on the same hardware. The ranges in the Relative column reflect the spread across multiple runs.
+
+| | Redis 7.4 | redis-rust | Relative (range) |
 |---|-----------|------------|----------|
-| SET P=1 | 148K rps | 147K rps | 99% |
-| GET P=1 | 154K rps | 119K rps | 77% |
-| SET P=16 | 1.02M rps | 813K rps | 80% |
-| GET P=16 | 840K rps | 709K rps | 84% |
+| SET P=1 | 154--197K rps | 146--186K rps | 81--99% |
+| GET P=1 | 152--188K rps | 140--183K rps | 77--97% |
+| SET P=16 | 1.0--1.4M rps | 775K--1.1M rps | 75--87% |
+| GET P=16 | 917K--1.5M rps | 709K--1.2M rps | 73--101% |
 
-At pipeline depth 1, SET throughput is within noise of Redis 7.4. GET lags at 77%, likely due to response serialization overhead. Under pipelining (P=16), the gap narrows for GET (84%) but widens slightly for SET (80%), suggesting the batch-processing path has room for optimization.
+At pipeline depth 1, SET throughput is typically within 5--10% of Redis 7.4. GET lags by up to 23%, likely due to response serialization overhead. Under pipelining (P=16), both operations show wider variance, with some runs showing redis-rust matching or exceeding Redis depending on host scheduling.
 
 ### 4.3 Correctness
 
-Maelstrom/Knossos found valid linearizable orderings at all scales (1, 3, and 5 nodes) under simulated network conditions. The high CAS failure rate at multi-node scales is expected -- CRDT gossip means compare-and-swap frequently reads stale values. As noted in Section 3.4, linearizability violations under higher load are correct behavior for an eventually consistent system. The CI pipeline tolerates these but fails on exceptions, crashes, or protocol errors.
+Maelstrom/Knossos found valid linearizable orderings at 1-node and 5-node scales under simulated network conditions. The high CAS failure rate at multi-node scales is expected -- CRDT gossip means compare-and-swap frequently reads stale values. As noted in Section 3.4, linearizability violations under higher load are correct behavior for an eventually consistent system. The CI pipeline tolerates these but fails on exceptions, crashes, or protocol errors.
 
 ---
 
@@ -365,11 +367,11 @@ As model-generated code becomes more common, the bottleneck shifts from writing 
 
 ## 6. Conclusion and Future Work
 
-This project is a case study in human-Claude systems programming with rigorous verification, not a production Redis replacement. It demonstrates that Claude can co-author a functional, reasonably performant Redis-compatible server -- with 80--99% of Redis 7.4 throughput, passing the official test suite for implemented commands, with DST-verified durable persistence -- when paired with a human engineer who provides architectural direction and a verification harness that catches Claude's mistakes.
+This project is a case study in human-Claude systems programming with rigorous verification, not a production Redis replacement. It demonstrates that Claude can co-author a functional, reasonably performant Redis-compatible server -- with 77--99% of Redis 7.4 throughput, passing the official test suite for implemented commands, with DST-verified durable persistence -- when paired with a human engineer who provides architectural direction and a verification harness that catches Claude's mistakes.
 
 The verification methodology is the main contribution. The multi-layer pyramid forms a pipeline that makes model-generated systems code auditable. The six bugs caught by DST (Section 5.1) are the kinds of subtle correctness issues that pass code review and unit tests but fail under adversarial workloads.
 
-The WAL hybrid persistence layer demonstrates the methodology applied to a durability subsystem. The key invariant -- every acknowledged write survives crash+recovery in `Always` fsync mode -- is verified at multiple levels: TLA+ proves the protocol correct, Stateright exhaustively checks state interleavings, and DST runs hundreds of seeds with simulated disk faults and crash injection. Docker integration tests confirm zero data loss across multiple SIGKILL crashes.
+The WAL hybrid persistence layer demonstrates the methodology applied to a durability subsystem. The key invariant -- every acknowledged write survives crash+recovery in `Always` fsync mode -- is verified at multiple levels: TLA+ proves the protocol correct, Stateright exhaustively checks state interleavings, and DST runs 150+ seeds with simulated disk faults and crash injection (plus a 1000-seed stress test available for manual runs). Docker integration tests confirm zero data loss across multiple SIGKILL crashes.
 
 Future work includes expanding Tcl suite coverage (LCS, blocking operations are the next frontier), extending WAL persistence to cover lists, sets, and sorted sets (currently only string and hash types produce replication deltas), and exploring cluster-mode sharding across multiple machines. A particularly interesting direction is closing the loop between verification and production: connecting the server to observability systems like Datadog to feed real-world performance data, error rates, and latency distributions back into the development cycle. The project already includes optional Datadog integration (metrics, tracing, and logging via feature flag). The vision is a feedback loop where production telemetry informs which commands to optimize, which edge cases to harden, and which verification layers need strengthening -- turning observability into an additional verification layer that operates on real traffic rather than synthetic workloads.
 
