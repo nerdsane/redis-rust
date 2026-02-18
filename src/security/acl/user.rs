@@ -93,6 +93,7 @@ impl CommandCategory {
             CommandCategory::Write => &[
                 "SET",
                 "SETEX",
+                "PSETEX",
                 "SETNX",
                 "MSET",
                 "APPEND",
@@ -118,6 +119,7 @@ impl CommandCategory {
                 "ZREM",
                 "DEL",
                 "EXPIRE",
+                "PEXPIRE",
                 "EXPIREAT",
                 "PEXPIREAT",
                 "PERSIST",
@@ -143,6 +145,7 @@ impl CommandCategory {
                 "EXISTS",
                 "TYPE",
                 "EXPIRE",
+                "PEXPIRE",
                 "EXPIREAT",
                 "PEXPIREAT",
                 "TTL",
@@ -150,8 +153,8 @@ impl CommandCategory {
                 "PERSIST",
             ],
             CommandCategory::String => &[
-                "GET", "SET", "SETEX", "SETNX", "MGET", "MSET", "APPEND", "GETSET", "STRLEN",
-                "GETRANGE", "INCR", "DECR", "INCRBY", "DECRBY",
+                "GET", "SET", "SETEX", "PSETEX", "SETNX", "MGET", "MSET", "APPEND", "GETSET",
+                "STRLEN", "GETRANGE", "INCR", "DECR", "INCRBY", "DECRBY",
             ],
             CommandCategory::List => &[
                 "LPUSH",
@@ -183,7 +186,7 @@ impl CommandCategory {
                 "ZRANGEBYSCORE",
                 "ZSCAN",
             ],
-            CommandCategory::Connection => &["AUTH", "PING", "ECHO", "SELECT", "QUIT"],
+            CommandCategory::Connection => &["AUTH", "PING", "ECHO", "SELECT", "QUIT", "CLIENT"],
             CommandCategory::Server => &["INFO", "DBSIZE", "TIME", "COMMAND"],
             CommandCategory::Scripting => &["EVAL", "EVALSHA", "SCRIPT"],
             CommandCategory::Transaction => &["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"],
