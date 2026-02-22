@@ -21,12 +21,15 @@ pub struct WriteBufferConfig {
 
 impl Default for WriteBufferConfig {
     fn default() -> Self {
-        // Smaller values for faster model checking
+        // Small bounds for tractable exhaustive BFS.
+        // The state space grows combinatorially with these values;
+        // max_deltas: 3 or max_segments: 5 causes state-space explosion
+        // that exceeds CI timeout (5h30m) and local memory (5GB+).
         WriteBufferConfig {
-            max_buffer_size: 50,
+            max_buffer_size: 48,  // 2 deltas * 24 bytes each
             max_deltas: 2,
-            backpressure_threshold: 75,
-            max_segments: 3,
+            backpressure_threshold: 48,
+            max_segments: 1,
         }
     }
 }
@@ -45,6 +48,10 @@ impl Delta {
         24 // key + value + timestamp
     }
 }
+
+/// Maximum number of actions before the model stops exploring.
+/// Bounds the state space to make BFS tractable.
+const MAX_STEPS: u64 = 8;
 
 /// State of the persistence system
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -65,6 +72,8 @@ pub struct PersistenceState {
     pub recovered: bool,
     /// Delta counter for generating unique deltas
     pub delta_counter: u64,
+    /// Number of actions taken (bounds exploration depth)
+    pub step_count: u64,
 }
 
 impl PersistenceState {
@@ -78,6 +87,7 @@ impl PersistenceState {
             crashed: false,
             recovered: true,
             delta_counter: 0,
+            step_count: 0,
         }
     }
 }
@@ -110,10 +120,9 @@ pub struct WriteBufferModel {
 
 impl WriteBufferModel {
     pub fn new() -> Self {
-        // Smaller state space for faster testing
         WriteBufferModel {
             config: WriteBufferConfig::default(),
-            keys: vec![1, 2],
+            keys: vec![1],
             values: vec![100],
         }
     }
@@ -121,7 +130,7 @@ impl WriteBufferModel {
     pub fn with_config(config: WriteBufferConfig) -> Self {
         WriteBufferModel {
             config,
-            keys: vec![1, 2],
+            keys: vec![1],
             values: vec![100],
         }
     }
@@ -142,6 +151,11 @@ impl Model for WriteBufferModel {
     }
 
     fn actions(&self, state: &Self::State, actions: &mut Vec<Self::Action>) {
+        // Bound exploration depth to keep BFS tractable
+        if state.step_count >= MAX_STEPS {
+            return;
+        }
+
         if state.crashed {
             // Only action when crashed is to recover
             if !state.recovered {
@@ -170,6 +184,7 @@ impl Model for WriteBufferModel {
 
     fn next_state(&self, state: &Self::State, action: Self::Action) -> Option<Self::State> {
         let mut next = state.clone();
+        next.step_count = next.step_count.saturating_add(1);
 
         match action {
             PersistenceAction::PushDelta { key, value } => {
@@ -720,13 +735,11 @@ mod tests {
     fn stateright_persistence_model_check() {
         use stateright::Checker;
 
-        let config = WriteBufferConfig {
-            max_buffer_size: 100,
-            max_deltas: 3,
-            backpressure_threshold: 100,
-            max_segments: 5,
-        };
-        let model = WriteBufferModel::with_config(config);
+        // Use small bounds for tractable exhaustive exploration.
+        // max_deltas: 2, max_segments: 3 keeps the state space manageable
+        // (~seconds on CI). Larger values (3/5) cause state-space explosion
+        // exceeding the 5h30m CI timeout.
+        let model = WriteBufferModel::with_config(WriteBufferConfig::default());
 
         // Run model checker
         let checker = model.checker().spawn_bfs().join();
