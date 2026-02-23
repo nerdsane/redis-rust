@@ -269,3 +269,87 @@ fn test_crdt_dst_determinism_all_types() {
 
     assert_eq!(ops1, ops2, "ORSet: Same seed should produce same results");
 }
+
+// =============================================================================
+// GEPA Optimizer Entry Point
+// =============================================================================
+
+/// Test using BUGGIFY_CONFIG env var for CRDT replication fault configuration.
+/// This is a GEPA DST optimizer target.
+///
+/// Run with: BUGGIFY_CONFIG="global_multiplier=2.0,..." cargo test --release --test crdt_dst_test test_env_config -- --nocapture
+#[test]
+fn test_env_config_crdt() {
+    let num_seeds: usize = 20;
+    let ops_per_seed: usize = 200;
+
+    let mut total_ops: u64 = 0;
+    let mut total_message_drops: u64 = 0;
+    let mut total_convergence_failures: u64 = 0;
+    let mut total_invariant_violations: u64 = 0;
+
+    // GCounter
+    let gc_results = run_gcounter_batch(
+        50000,
+        num_seeds,
+        ops_per_seed,
+        CRDTDSTConfig::from_env_or_default,
+    );
+    for r in &gc_results {
+        total_ops += r.total_operations;
+        total_message_drops += r.messages_dropped;
+        if !r.converged {
+            total_convergence_failures += 1;
+        }
+        total_invariant_violations += r.invariant_violations.len() as u64;
+    }
+
+    // PNCounter
+    let pn_results = run_pncounter_batch(
+        60000,
+        num_seeds,
+        ops_per_seed,
+        CRDTDSTConfig::from_env_or_default,
+    );
+    for r in &pn_results {
+        total_ops += r.total_operations;
+        total_message_drops += r.messages_dropped;
+        if !r.converged {
+            total_convergence_failures += 1;
+        }
+        total_invariant_violations += r.invariant_violations.len() as u64;
+    }
+
+    // ORSet
+    let or_results = run_orset_batch(
+        70000,
+        num_seeds,
+        ops_per_seed,
+        CRDTDSTConfig::from_env_or_default,
+    );
+    for r in &or_results {
+        total_ops += r.total_operations;
+        total_message_drops += r.messages_dropped;
+        if !r.converged {
+            total_convergence_failures += 1;
+        }
+        total_invariant_violations += r.invariant_violations.len() as u64;
+    }
+
+    // Structured output for GEPA optimizer parsing
+    println!("\n=== GEPA CRDT Evaluation ===");
+    println!("GCounter: {}", summarize_batch(&gc_results));
+    println!("PNCounter: {}", summarize_batch(&pn_results));
+    println!("ORSet: {}", summarize_batch(&or_results));
+    println!("GEPA_CRDT_SEEDS={}", num_seeds * 3);
+    println!("GEPA_CRDT_TOTAL_OPS={}", total_ops);
+    println!("GEPA_CRDT_MESSAGE_DROPS={}", total_message_drops);
+    println!(
+        "GEPA_CRDT_CONVERGENCE_FAILURES={}",
+        total_convergence_failures
+    );
+    println!(
+        "GEPA_CRDT_INVARIANT_VIOLATIONS={}",
+        total_invariant_violations
+    );
+}

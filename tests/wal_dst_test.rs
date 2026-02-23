@@ -203,6 +203,51 @@ fn test_wal_dst_truncation_correctness() {
     }
 }
 
+// =============================================================================
+// GEPA Optimizer Entry Point
+// =============================================================================
+
+/// Test using BUGGIFY_CONFIG env var for WAL disk fault configuration.
+/// This is a GEPA DST optimizer target.
+///
+/// Run with: BUGGIFY_CONFIG="global_multiplier=2.0,..." cargo test --release --test wal_dst_test test_env_config -- --nocapture
+#[test]
+fn test_env_config_wal() {
+    let store_config = SimulatedWalStoreConfig::from_env_or_default();
+
+    let num_seeds: u64 = 30;
+    let config = WalDSTConfig {
+        num_writes: 100,
+        max_file_size: 512,
+        store_config,
+        simulate_crash: true,
+        fsync_after_write: true,
+    };
+
+    let results = run_wal_dst_batch(0..num_seeds, config);
+    let summary = summarize_wal_dst_batch(&results);
+
+    let total_writes: usize = results.iter().map(|r| r.total_writes).sum();
+    let total_acked: usize = results.iter().map(|r| r.acknowledged_writes).sum();
+    let total_missing: usize = results.iter().map(|r| r.missing_after_recovery).sum();
+    let total_write_failures: u64 = results.iter().map(|r| r.store_stats.write_failures).sum();
+    let total_sync_failures: u64 = results.iter().map(|r| r.store_stats.sync_failures).sum();
+    let total_disk_full: u64 = results.iter().map(|r| r.store_stats.disk_full_errors).sum();
+    let failures: usize = results.iter().filter(|r| !r.passed).count();
+
+    // Structured output for GEPA optimizer parsing
+    println!("\n=== GEPA WAL Evaluation ===");
+    println!("{}", summary);
+    println!("GEPA_WAL_SEEDS={}", num_seeds);
+    println!("GEPA_WAL_TOTAL_WRITES={}", total_writes);
+    println!("GEPA_WAL_ACKNOWLEDGED={}", total_acked);
+    println!("GEPA_WAL_MISSING_AFTER_RECOVERY={}", total_missing);
+    println!("GEPA_WAL_WRITE_FAILURES={}", total_write_failures);
+    println!("GEPA_WAL_SYNC_FAILURES={}", total_sync_failures);
+    println!("GEPA_WAL_DISK_FULL={}", total_disk_full);
+    println!("GEPA_WAL_INVARIANT_FAILURES={}", failures);
+}
+
 #[test]
 #[ignore] // Stress test — run manually with `cargo test --release -- --ignored`
 fn test_wal_dst_1000_seeds_chaos() {

@@ -17,7 +17,7 @@
 //! - **Chaos tests**: Many faults, stress test
 
 use redis_sim::streaming::{
-    run_dst_batch, summarize_batch, StreamingDSTConfig, StreamingDSTHarness,
+    run_dst_batch, summarize_batch, SimulatedStoreConfig, StreamingDSTConfig, StreamingDSTHarness,
 };
 
 // =============================================================================
@@ -262,4 +262,62 @@ async fn test_streaming_dst_rapid_crash_recovery() {
 
     // Should handle rapid crashes gracefully
     assert!(result.total_operations >= 200);
+}
+
+// =============================================================================
+// GEPA Optimizer Entry Point
+// =============================================================================
+
+/// Test using BUGGIFY_CONFIG env var for object store fault configuration.
+/// This is a GEPA DST optimizer target.
+///
+/// Run with: BUGGIFY_CONFIG="global_multiplier=2.0,..." cargo test --release --test streaming_dst_test test_env_config -- --nocapture
+#[tokio::test]
+async fn test_env_config_streaming() {
+    let store_config = SimulatedStoreConfig::from_env_or_default();
+
+    let num_seeds: u64 = 20;
+    let ops_per_seed: usize = 100;
+
+    let mut total_ops: u64 = 0;
+    let mut total_put_failures: u64 = 0;
+    let mut total_get_failures: u64 = 0;
+    let mut total_invariant_violations: u64 = 0;
+    let mut total_flushes: u64 = 0;
+    let mut total_crashes: u64 = 0;
+
+    for seed in 0..num_seeds {
+        let config = StreamingDSTConfig {
+            seed,
+            store_config: store_config.clone(),
+            flush_probability: 0.15,
+            crash_probability: 0.03,
+            ..StreamingDSTConfig::default()
+        };
+
+        let mut harness = StreamingDSTHarness::new(config).await;
+        harness.run(ops_per_seed).await;
+        harness.check_invariants().await;
+
+        let result = harness.result();
+        total_ops += result.total_operations;
+        total_put_failures += result.store_stats.put_failures;
+        total_get_failures += result.store_stats.get_failures;
+        total_invariant_violations += result.invariant_violations.len() as u64;
+        total_flushes += result.flushes;
+        total_crashes += result.crashes;
+    }
+
+    // Structured output for GEPA optimizer parsing
+    println!("\n=== GEPA Streaming Evaluation ===");
+    println!("GEPA_STREAMING_SEEDS={}", num_seeds);
+    println!("GEPA_STREAMING_OPS={}", total_ops);
+    println!("GEPA_STREAMING_PUT_FAILURES={}", total_put_failures);
+    println!("GEPA_STREAMING_GET_FAILURES={}", total_get_failures);
+    println!("GEPA_STREAMING_FLUSHES={}", total_flushes);
+    println!("GEPA_STREAMING_CRASHES={}", total_crashes);
+    println!(
+        "GEPA_STREAMING_INVARIANT_VIOLATIONS={}",
+        total_invariant_violations
+    );
 }
