@@ -25,7 +25,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::List(RedisList::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
         match list {
             Value::List(l) => {
                 #[cfg(debug_assertions)]
@@ -61,7 +60,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::List(RedisList::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
         match list {
             Value::List(l) => {
                 #[cfg(debug_assertions)]
@@ -103,7 +101,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         #[cfg(debug_assertions)]
         if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
@@ -127,7 +124,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         #[cfg(debug_assertions)]
         if matches!(self.data.get(key), Some(Value::List(l)) if l.is_empty()) {
@@ -216,7 +212,6 @@ impl CommandExecutor {
         match self.data.get_mut(key) {
             Some(Value::List(list)) => match list.set(index, value.clone()) {
                 Ok(()) => {
-                    self.access_times.insert(key.to_string(), self.current_time);
                     let resp = RespValue::simple("OK");
                     debug_assert!(matches!(&resp, RespValue::SimpleString(s) if s == "OK"), "Postcondition: LSET success must return OK");
                     resp
@@ -238,11 +233,9 @@ impl CommandExecutor {
         match self.data.get_mut(key) {
             Some(Value::List(list)) => {
                 list.trim(start, stop);
-                self.access_times.insert(key.to_string(), self.current_time);
                 // Remove key if list becomes empty
                 if list.is_empty() {
                     self.data.remove(key);
-                    self.access_times.remove(key);
                     self.expirations.remove(key);
                 }
                 #[cfg(debug_assertions)]
@@ -280,7 +273,6 @@ impl CommandExecutor {
                 if let Some(Value::List(list)) = self.data.get(source) {
                     if list.is_empty() {
                         self.data.remove(source);
-                        self.access_times.remove(source);
                         self.expirations.remove(source);
                     }
                 }
@@ -297,8 +289,6 @@ impl CommandExecutor {
                 match dest_list {
                     Value::List(list) => {
                         list.lpush(value.clone());
-                        self.access_times
-                            .insert(dest.to_string(), self.current_time);
                         #[cfg(debug_assertions)]
                         debug_assert!(self.data.contains_key(dest), "Postcondition: RPOPLPUSH dest must exist after push");
                         RespValue::BulkString(Some(value.as_bytes().to_vec()))
@@ -346,7 +336,6 @@ impl CommandExecutor {
                 if let Some(Value::List(list)) = self.data.get(source) {
                     if list.is_empty() {
                         self.data.remove(source);
-                        self.access_times.remove(source);
                         self.expirations.remove(source);
                     }
                 }
@@ -367,8 +356,6 @@ impl CommandExecutor {
                         } else {
                             list.rpush(value.clone());
                         }
-                        self.access_times
-                            .insert(dest.to_string(), self.current_time);
                         #[cfg(debug_assertions)]
                         debug_assert!(self.data.contains_key(dest), "Postcondition: LMOVE dest must exist after push");
                         RespValue::BulkString(Some(value.as_bytes().to_vec()))

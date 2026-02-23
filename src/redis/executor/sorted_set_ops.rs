@@ -25,7 +25,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::SortedSet(RedisSortedSet::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
         match zset {
             Value::SortedSet(zs) => {
                 let mut added = 0i64;
@@ -141,7 +140,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::SortedSet(zs)) if zs.len() == 0) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         result
     }

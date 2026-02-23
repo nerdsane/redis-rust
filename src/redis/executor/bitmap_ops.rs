@@ -47,8 +47,6 @@ impl CommandExecutor {
         if need_create {
             let sds = SDS::new(vec![0u8; required_len]);
             self.data.insert(key.to_string(), Value::String(sds));
-            self.access_times
-                .insert(key.to_string(), self.current_time);
         }
 
         // Get mutable reference to the string
