@@ -191,17 +191,20 @@ impl CommandExecutor {
 
         self.current_time = current_time;
 
-        let expired_keys: Vec<String> = self
-            .expirations
-            .iter()
-            .filter(|(_, &exp_time)| exp_time <= self.current_time)
-            .map(|(k, _)| k.clone())
-            .collect();
+        // Single-pass: retain unexpired keys, collect expired ones for data removal
+        let mut expired_keys = Vec::new();
+        self.expirations.retain(|k, &mut exp_time| {
+            if exp_time <= self.current_time {
+                expired_keys.push(k.clone());
+                false
+            } else {
+                true
+            }
+        });
 
         let count = expired_keys.len();
-        for key in expired_keys {
-            self.data.remove(&key);
-            self.expirations.remove(&key);
+        for key in &expired_keys {
+            self.data.remove(key);
         }
 
         #[cfg(debug_assertions)]
@@ -222,16 +225,18 @@ impl CommandExecutor {
     }
 
     pub(crate) fn evict_expired_keys(&mut self) {
-        let expired_keys: Vec<String> = self
-            .expirations
-            .iter()
-            .filter(|(_, &exp_time)| exp_time <= self.current_time)
-            .map(|(k, _)| k.clone())
-            .collect();
+        let mut expired_keys = Vec::new();
+        self.expirations.retain(|k, &mut exp_time| {
+            if exp_time <= self.current_time {
+                expired_keys.push(k.clone());
+                false
+            } else {
+                true
+            }
+        });
 
-        for key in expired_keys {
-            self.data.remove(&key);
-            self.expirations.remove(&key);
+        for key in &expired_keys {
+            self.data.remove(key);
         }
     }
 
