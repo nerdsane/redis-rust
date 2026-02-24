@@ -183,78 +183,90 @@ impl ShardActor {
 
     async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                ShardMessage::Command {
-                    cmd,
-                    virtual_time,
-                    response_tx,
-                } => {
-                    self.executor.set_time(virtual_time);
-                    let response = self.executor.execute(&cmd);
-                    let _ = response_tx.send(response);
-                }
-                ShardMessage::BatchCommand { cmd, virtual_time } => {
-                    // Fire-and-forget: execute without sending response
-                    self.executor.set_time(virtual_time);
-                    let _ = self.executor.execute(&cmd);
-                }
-                ShardMessage::EvictExpired {
-                    virtual_time,
-                    response_tx,
-                } => {
-                    let evicted = self.executor.evict_expired_direct(virtual_time);
-                    let _ = response_tx.send(evicted);
-                }
-                ShardMessage::FastGet { key, response_tx } => {
-                    // Fast path: direct GET without Command enum overhead
+            self.process_message(msg);
+            // FoundationDB actor loop pattern: drain all pending messages without
+            // yielding back to the tokio scheduler. This reduces context switches
+            // (24% of CPU in profiling) by batching work within a single scheduler turn.
+            while let Ok(msg) = self.rx.try_recv() {
+                self.process_message(msg);
+            }
+        }
+    }
+
+    /// Process a single shard message. Extracted to support the try_recv drain pattern.
+    #[inline]
+    fn process_message(&mut self, msg: ShardMessage) {
+        match msg {
+            ShardMessage::Command {
+                cmd,
+                virtual_time,
+                response_tx,
+            } => {
+                self.executor.set_time(virtual_time);
+                let response = self.executor.execute(&cmd);
+                let _ = response_tx.send(response);
+            }
+            ShardMessage::BatchCommand { cmd, virtual_time } => {
+                // Fire-and-forget: execute without sending response
+                self.executor.set_time(virtual_time);
+                let _ = self.executor.execute(&cmd);
+            }
+            ShardMessage::EvictExpired {
+                virtual_time,
+                response_tx,
+            } => {
+                let evicted = self.executor.evict_expired_direct(virtual_time);
+                let _ = response_tx.send(evicted);
+            }
+            ShardMessage::FastGet { key, response_tx } => {
+                // Fast path: direct GET without Command enum overhead
+                let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                let response = self.executor.get_direct(key_str);
+                let _ = response_tx.send(response);
+            }
+            ShardMessage::FastSet {
+                key,
+                value,
+                response_tx,
+            } => {
+                // Fast path: direct SET without Command enum overhead
+                let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                let response = self.executor.set_direct(key_str, &value);
+                let _ = response_tx.send(response);
+            }
+            ShardMessage::FastBatchGet { keys, response_tx } => {
+                // Batch GET: process multiple keys in single message
+                let mut results = Vec::with_capacity(keys.len());
+                for key in keys {
                     let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                    let response = self.executor.get_direct(key_str);
-                    let _ = response_tx.send(response);
+                    results.push(self.executor.get_direct(key_str));
                 }
-                ShardMessage::FastSet {
-                    key,
-                    value,
-                    response_tx,
-                } => {
-                    // Fast path: direct SET without Command enum overhead
+                let _ = response_tx.send(results);
+            }
+            ShardMessage::FastBatchSet { pairs, response_tx } => {
+                // Batch SET: process multiple key-value pairs in single message
+                let mut results = Vec::with_capacity(pairs.len());
+                for (key, value) in pairs {
                     let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                    let response = self.executor.set_direct(key_str, &value);
-                    let _ = response_tx.send(response);
+                    results.push(self.executor.set_direct(key_str, &value));
                 }
-                ShardMessage::FastBatchGet { keys, response_tx } => {
-                    // Batch GET: process multiple keys in single message
-                    let mut results = Vec::with_capacity(keys.len());
-                    for key in keys {
-                        let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                        results.push(self.executor.get_direct(key_str));
-                    }
-                    let _ = response_tx.send(results);
-                }
-                ShardMessage::FastBatchSet { pairs, response_tx } => {
-                    // Batch SET: process multiple key-value pairs in single message
-                    let mut results = Vec::with_capacity(pairs.len());
-                    for (key, value) in pairs {
-                        let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                        results.push(self.executor.set_direct(key_str, &value));
-                    }
-                    let _ = response_tx.send(results);
-                }
-                ShardMessage::PooledFastGet { key, response_slot } => {
-                    // Pooled fast GET: uses response slot instead of oneshot
-                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                    let response = self.executor.get_direct(key_str);
-                    response_slot.send(response);
-                }
-                ShardMessage::PooledFastSet {
-                    key,
-                    value,
-                    response_slot,
-                } => {
-                    // Pooled fast SET: uses response slot instead of oneshot
-                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
-                    let response = self.executor.set_direct(key_str, &value);
-                    response_slot.send(response);
-                }
+                let _ = response_tx.send(results);
+            }
+            ShardMessage::PooledFastGet { key, response_slot } => {
+                // Pooled fast GET: uses response slot instead of oneshot
+                let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                let response = self.executor.get_direct(key_str);
+                response_slot.send(response);
+            }
+            ShardMessage::PooledFastSet {
+                key,
+                value,
+                response_slot,
+            } => {
+                // Pooled fast SET: uses response slot instead of oneshot
+                let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                let response = self.executor.set_direct(key_str, &value);
+                response_slot.send(response);
             }
         }
     }
