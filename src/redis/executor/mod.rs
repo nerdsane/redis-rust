@@ -45,7 +45,6 @@ pub struct CommandExecutor {
     pub(crate) data: AHashMap<String, Value>,
     pub(crate) expirations: AHashMap<String, VirtualTime>,
     pub(crate) current_time: VirtualTime,
-    pub(crate) access_times: AHashMap<String, VirtualTime>,
     #[allow(dead_code)]
     pub(crate) key_count: usize,
     pub(crate) commands_processed: usize,
@@ -70,7 +69,6 @@ impl CommandExecutor {
             data: AHashMap::new(),
             expirations: AHashMap::new(),
             current_time: VirtualTime::from_millis(0),
-            access_times: AHashMap::new(),
             key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
@@ -90,7 +88,6 @@ impl CommandExecutor {
             data: AHashMap::new(),
             expirations: AHashMap::new(),
             current_time: VirtualTime::from_millis(0),
-            access_times: AHashMap::new(),
             key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
@@ -167,7 +164,6 @@ impl CommandExecutor {
             self.data
                 .insert(key_owned.clone(), Value::String(SDS::new(value.to_vec())));
             self.expirations.remove(key);
-            self.access_times.insert(key_owned, self.current_time);
         }
 
         #[cfg(not(feature = "opt-single-key-alloc"))]
@@ -175,7 +171,6 @@ impl CommandExecutor {
             self.data
                 .insert(key.to_string(), Value::String(SDS::new(value.to_vec())));
             self.expirations.remove(key);
-            self.access_times.insert(key.to_string(), self.current_time);
         }
 
         #[cfg(debug_assertions)]
@@ -196,18 +191,19 @@ impl CommandExecutor {
 
         self.current_time = current_time;
 
-        let expired_keys: Vec<String> = self
-            .expirations
-            .iter()
-            .filter(|(_, &exp_time)| exp_time <= self.current_time)
-            .map(|(k, _)| k.clone())
-            .collect();
+        let mut expired_keys = Vec::new();
+        self.expirations.retain(|k, exp_time| {
+            if *exp_time <= self.current_time {
+                expired_keys.push(k.clone());
+                false
+            } else {
+                true
+            }
+        });
 
         let count = expired_keys.len();
-        for key in expired_keys {
-            self.data.remove(&key);
-            self.expirations.remove(&key);
-            self.access_times.remove(&key);
+        for key in &expired_keys {
+            self.data.remove(key);
         }
 
         #[cfg(debug_assertions)]
@@ -228,17 +224,18 @@ impl CommandExecutor {
     }
 
     pub(crate) fn evict_expired_keys(&mut self) {
-        let expired_keys: Vec<String> = self
-            .expirations
-            .iter()
-            .filter(|(_, &exp_time)| exp_time <= self.current_time)
-            .map(|(k, _)| k.clone())
-            .collect();
+        let mut expired_keys = Vec::new();
+        self.expirations.retain(|k, exp_time| {
+            if *exp_time <= self.current_time {
+                expired_keys.push(k.clone());
+                false
+            } else {
+                true
+            }
+        });
 
-        for key in expired_keys {
-            self.data.remove(&key);
-            self.expirations.remove(&key);
-            self.access_times.remove(&key);
+        for key in &expired_keys {
+            self.data.remove(key);
         }
     }
 
@@ -246,10 +243,8 @@ impl CommandExecutor {
         if self.is_expired(key) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
             None
         } else {
-            self.access_times.insert(key.to_string(), self.current_time);
             self.data.get(key)
         }
     }
@@ -258,10 +253,8 @@ impl CommandExecutor {
         if self.is_expired(key) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
             None
         } else {
-            self.access_times.insert(key.to_string(), self.current_time);
             self.data.get_mut(key)
         }
     }
@@ -721,8 +714,6 @@ impl CommandExecutor {
                 } else {
                     self.expirations.remove(dst);
                 }
-                self.access_times.remove(src);
-                self.access_times.insert(dst.clone(), self.current_time);
                 #[cfg(debug_assertions)]
                 {
                     debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAME dst must exist");
@@ -745,8 +736,6 @@ impl CommandExecutor {
                 } else {
                     self.expirations.remove(dst);
                 }
-                self.access_times.remove(src);
-                self.access_times.insert(dst.clone(), self.current_time);
                 #[cfg(debug_assertions)]
                 {
                     debug_assert!(self.data.contains_key(dst.as_str()), "Postcondition: RENAMENX dst must exist");

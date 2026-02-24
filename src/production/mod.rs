@@ -27,7 +27,7 @@ pub use hotkey::{AccessMetrics, HotKeyConfig, HotKeyDetector};
 pub use load_balancer::{
     LoadBalancerConfig, LoadBalancerStats, ScalingDecision, ShardLoadBalancer, ShardMetrics,
 };
-pub use perf_config::{BatchingConfig, BufferConfig, PerformanceConfig, ResponsePoolConfig};
+pub use perf_config::{BatchingConfig, BufferConfig, ConnectionPoolConfig, PerformanceConfig, ResponsePoolConfig};
 pub use replicated_shard_actor::{
     ReplicatedShardActor, ReplicatedShardHandle, ReplicatedShardMessage,
 };

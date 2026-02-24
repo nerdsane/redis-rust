@@ -27,7 +27,6 @@ impl CommandExecutor {
         // Key doesn't exist - insert and return 1
         self.data
             .insert(key.to_string(), Value::String(value.clone()));
-        self.access_times.insert(key.to_string(), self.current_time);
         self.expirations.remove(key);
         #[cfg(debug_assertions)]
         debug_assert!(
@@ -108,7 +107,6 @@ impl CommandExecutor {
         // Set the value
         self.data
             .insert(key.to_string(), Value::String(value.clone()));
-        self.access_times.insert(key.to_string(), self.current_time);
 
         // Handle expiration
         if let Some(seconds) = ex {
@@ -126,7 +124,6 @@ impl CommandExecutor {
             if simulation_relative_ms <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
             } else {
                 let expiration = crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
                 self.expirations.insert(key.to_string(), expiration);
@@ -137,7 +134,6 @@ impl CommandExecutor {
             if simulation_relative_ms <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
             } else {
                 let expiration =
                     crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
@@ -183,7 +179,6 @@ impl CommandExecutor {
                 let len = value.len();
                 self.data
                     .insert(key.to_string(), Value::String(value.clone()));
-                self.access_times.insert(key.to_string(), self.current_time);
                 RespValue::Integer(len as i64)
             }
         }
@@ -201,7 +196,6 @@ impl CommandExecutor {
         };
         self.data
             .insert(key.to_string(), Value::String(value.clone()));
-        self.access_times.insert(key.to_string(), self.current_time);
         #[cfg(debug_assertions)]
         debug_assert!(
             matches!(self.data.get(key), Some(Value::String(v)) if v == value),
@@ -250,7 +244,6 @@ impl CommandExecutor {
     pub(super) fn execute_mset(&mut self, pairs: &[(String, SDS)]) -> RespValue {
         for (key, value) in pairs {
             self.data.insert(key.clone(), Value::String(value.clone()));
-            self.access_times.insert(key.clone(), self.current_time);
         }
 
         // TigerStyle: Postcondition - last value for each key is stored
@@ -284,7 +277,6 @@ impl CommandExecutor {
         // All keys are new — set them all
         for (key, value) in pairs {
             self.data.insert(key.clone(), Value::String(value.clone()));
-            self.access_times.insert(key.clone(), self.current_time);
         }
         #[cfg(debug_assertions)]
         {
@@ -302,7 +294,6 @@ impl CommandExecutor {
         // Optimized batch set - all keys are guaranteed to be on this shard
         for (key, value) in pairs {
             self.data.insert(key.clone(), Value::String(value.clone()));
-            self.access_times.insert(key.clone(), self.current_time);
         }
         #[cfg(debug_assertions)]
         {
@@ -407,7 +398,6 @@ impl CommandExecutor {
                 bytes[offset..needed].copy_from_slice(val_bytes);
                 let new_len = bytes.len() as i64;
                 self.data.insert(key.to_string(), Value::String(SDS::new(bytes)));
-                self.access_times.insert(key.to_string(), self.current_time);
                 #[cfg(debug_assertions)]
                 debug_assert!(
                     self.data.contains_key(key),
@@ -460,7 +450,6 @@ impl CommandExecutor {
             if simulation_relative_ms <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 return result;
             }
             let expiration = crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
@@ -470,7 +459,6 @@ impl CommandExecutor {
             if simulation_relative_ms <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 return result;
             }
             let expiration = crate::simulator::VirtualTime::from_millis(simulation_relative_ms as u64);
@@ -488,7 +476,6 @@ impl CommandExecutor {
                 let result = RespValue::BulkString(Some(s.as_bytes().to_vec()));
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 #[cfg(debug_assertions)]
                 {
                     debug_assert!(!self.data.contains_key(key), "Postcondition: GETDEL must remove key");
@@ -541,7 +528,6 @@ impl CommandExecutor {
                 let new_str = format_float(new_value);
                 let sds = SDS::from_str(&new_str);
                 self.data.insert(key.to_string(), Value::String(sds));
-                self.access_times.insert(key.to_string(), self.current_time);
                 #[cfg(debug_assertions)]
                 if let Some(Value::String(s)) = self.data.get(key) {
                     debug_assert!(
@@ -580,7 +566,6 @@ impl CommandExecutor {
                     key.to_string(),
                     Value::String(SDS::from_str(&increment.to_string())),
                 );
-                self.access_times.insert(key.to_string(), self.current_time);
                 RespValue::Integer(increment)
             }
         };

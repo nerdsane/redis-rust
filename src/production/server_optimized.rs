@@ -31,12 +31,14 @@ impl OptimizedRedisServer {
         }
 
         info!(
-            "Performance config: shards={}, pool_capacity={}, pool_prewarm={}, read_buffer={}, min_pipeline={}",
+            "Performance config: shards={}, pool_capacity={}, pool_prewarm={}, read_buffer={}, min_pipeline={}, max_conns={}, buffer_pool={}",
             perf_config.num_shards,
             perf_config.response_pool.capacity,
             perf_config.response_pool.prewarm,
             perf_config.buffers.read_size,
             perf_config.batching.min_pipeline_buffer,
+            perf_config.connection_pool.max_connections,
+            perf_config.connection_pool.buffer_pool_size,
         );
 
         // Load security configuration
@@ -78,7 +80,10 @@ impl OptimizedRedisServer {
         let acl_manager = Arc::new(RwLock::new(acl_manager));
 
         let state = ShardedActorState::with_perf_config(&perf_config);
-        let connection_pool = Arc::new(ConnectionPool::new(10000, 512));
+        let connection_pool = Arc::new(ConnectionPool::new(
+            perf_config.connection_pool.max_connections,
+            perf_config.connection_pool.buffer_pool_size,
+        ));
 
         // Create connection config from performance config
         let conn_config =

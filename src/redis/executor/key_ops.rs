@@ -5,7 +5,7 @@
 //!
 //! # TigerStyle Invariants
 //!
-//! - DEL removes keys from data, expirations, AND access_times
+//! - DEL removes keys from data, expirations
 //! - EXISTS count is always in range [0, keys.len()]
 //! - TTL/PTTL returns -2 (not exists), -1 (no expiry), or >= 0 (remaining)
 //! - FLUSH clears all three maps completely
@@ -27,7 +27,6 @@ impl CommandExecutor {
                 count += 1;
             }
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
 
         // TigerStyle: Postconditions
@@ -97,7 +96,6 @@ impl CommandExecutor {
     pub(super) fn execute_flush(&mut self) -> RespValue {
         self.data.clear();
         self.expirations.clear();
-        self.access_times.clear();
 
         // TigerStyle: Postconditions - all state must be cleared
         debug_assert!(
@@ -107,10 +105,6 @@ impl CommandExecutor {
         debug_assert!(
             self.expirations.is_empty(),
             "Postcondition violated: expirations must be empty after FLUSH"
-        );
-        debug_assert!(
-            self.access_times.is_empty(),
-            "Postcondition violated: access_times must be empty after FLUSH"
         );
 
         RespValue::simple("OK")
@@ -145,7 +139,6 @@ impl CommandExecutor {
             // Negative/zero TTL means delete immediately (skip flag checks for delete)
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
             return RespValue::Integer(1);
         }
 
@@ -215,7 +208,6 @@ impl CommandExecutor {
         if milliseconds <= 0 {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
             return RespValue::Integer(1);
         }
 
@@ -294,12 +286,10 @@ impl CommandExecutor {
             if simulation_relative_ms <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 RespValue::Integer(1)
             } else if (simulation_relative_ms as u64) <= self.current_time.as_millis() {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 RespValue::Integer(1)
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_ms as u64);
@@ -319,12 +309,10 @@ impl CommandExecutor {
             if simulation_relative_millis <= 0 {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 RespValue::Integer(1)
             } else if (simulation_relative_millis as u64) <= self.current_time.as_millis() {
                 self.data.remove(key);
                 self.expirations.remove(key);
-                self.access_times.remove(key);
                 RespValue::Integer(1)
             } else {
                 let expiration = VirtualTime::from_millis(simulation_relative_millis as u64);

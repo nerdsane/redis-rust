@@ -92,6 +92,6 @@ impl BufferPoolAsync {
 
 impl Default for ConnectionPool {
     fn default() -> Self {
-        Self::new(10000, 512)
+        Self::new(10000, 64)
     }
 }

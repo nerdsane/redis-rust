@@ -16,7 +16,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::Set(RedisSet::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
         match set {
             Value::Set(s) => {
                 let mut added = 0;
@@ -78,7 +77,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         result
     }
@@ -166,7 +164,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         #[cfg(debug_assertions)]
         if matches!(self.data.get(key), Some(Value::Set(s)) if s.is_empty()) {
