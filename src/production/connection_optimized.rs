@@ -1159,12 +1159,10 @@ where
                 break; // Need more data
             }
 
-            // Extract key
-            let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_start + key_len]);
+            // Zero-copy: split consumed bytes from buffer, freeze to Bytes, then slice the key
+            let consumed = self.buffer.split_to(total_needed).freeze();
+            let key = consumed.slice(key_start..key_start + key_len);
             keys.push(key);
-
-            // Consume this GET from buffer
-            let _ = self.buffer.split_to(total_needed);
         }
 
         let count = keys.len();
@@ -1245,13 +1243,11 @@ where
                 break; // Need more data
             }
 
-            // Extract key and value
-            let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
-            let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
+            // Zero-copy: split consumed bytes, freeze, then slice key and value
+            let consumed = self.buffer.split_to(total_needed).freeze();
+            let key = consumed.slice(key_start..key_end);
+            let value = consumed.slice(val_start..val_start + val_len);
             pairs.push((key, value));
-
-            // Consume this SET from buffer
-            let _ = self.buffer.split_to(total_needed);
         }
 
         let count = pairs.len();
@@ -1323,11 +1319,9 @@ where
             return FastPathResult::NeedMoreData;
         }
 
-        // Extract key as bytes::Bytes (zero-copy from buffer)
-        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_start + key_len]);
-
-        // Consume the parsed bytes from buffer
-        let _ = self.buffer.split_to(total_needed);
+        // Zero-copy: split consumed bytes, freeze, then slice key
+        let consumed = self.buffer.split_to(total_needed).freeze();
+        let key = consumed.slice(key_start..key_start + key_len);
 
         // Execute fast GET using pooled response slot (avoids oneshot allocation)
         let response = self.state.pooled_fast_get(key).await;
@@ -1400,12 +1394,10 @@ where
             return FastPathResult::NeedMoreData;
         }
 
-        // Extract key and value as bytes::Bytes
-        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
-        let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
-
-        // Consume the parsed bytes
-        let _ = self.buffer.split_to(total_needed);
+        // Zero-copy: split consumed bytes, freeze, then slice key and value
+        let consumed = self.buffer.split_to(total_needed).freeze();
+        let key = consumed.slice(key_start..key_end);
+        let value = consumed.slice(val_start..val_start + val_len);
 
         // Execute fast SET using pooled response slot (avoids oneshot allocation)
         let response = self.state.pooled_fast_set(key, value).await;
