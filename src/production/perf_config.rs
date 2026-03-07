@@ -25,6 +25,10 @@ pub struct PerformanceConfig {
     /// Batching configuration
     #[serde(default)]
     pub batching: BatchingConfig,
+
+    /// Connection pool configuration
+    #[serde(default)]
+    pub connection_pool: ConnectionPoolConfig,
 }
 
 /// Response pool parameters for reducing channel allocation overhead
@@ -63,6 +67,18 @@ pub struct BatchingConfig {
     pub batch_threshold: usize,
 }
 
+/// Connection pool parameters
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConnectionPoolConfig {
+    /// Maximum concurrent connections (default: 10000)
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+
+    /// Number of pre-allocated I/O buffers in the pool (default: 64)
+    #[serde(default = "default_buffer_pool_size")]
+    pub buffer_pool_size: usize,
+}
+
 // Default value functions for serde
 fn default_num_shards() -> usize {
     16
@@ -85,6 +101,12 @@ fn default_min_pipeline_buffer() -> usize {
 fn default_batch_threshold() -> usize {
     2
 }
+fn default_max_connections() -> usize {
+    10000
+}
+fn default_buffer_pool_size() -> usize {
+    64
+}
 
 impl Default for PerformanceConfig {
     fn default() -> Self {
@@ -93,6 +115,16 @@ impl Default for PerformanceConfig {
             response_pool: ResponsePoolConfig::default(),
             buffers: BufferConfig::default(),
             batching: BatchingConfig::default(),
+            connection_pool: ConnectionPoolConfig::default(),
+        }
+    }
+}
+
+impl Default for ConnectionPoolConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_max_connections(),
+            buffer_pool_size: default_buffer_pool_size(),
         }
     }
 }

@@ -16,7 +16,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::Hash(RedisHash::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
         match hash {
             Value::Hash(h) => {
                 let mut new_fields = 0i64;
@@ -92,7 +91,6 @@ impl CommandExecutor {
         if matches!(self.data.get(key), Some(Value::Hash(h)) if h.is_empty()) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
         result
     }
@@ -205,7 +203,6 @@ impl CommandExecutor {
         if self.is_expired(key) {
             self.data.remove(key);
             self.expirations.remove(key);
-            self.access_times.remove(key);
         }
 
         // Check if key exists and is wrong type before inserting
@@ -221,7 +218,6 @@ impl CommandExecutor {
             .data
             .entry(key.to_string())
             .or_insert_with(|| Value::Hash(RedisHash::new()));
-        self.access_times.insert(key.to_string(), self.current_time);
 
         match hash {
             Value::Hash(h) => {
