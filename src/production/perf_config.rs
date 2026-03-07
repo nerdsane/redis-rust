@@ -218,6 +218,12 @@ impl PerformanceConfig {
         if self.buffers.max_size < self.buffers.read_size {
             return Err("buffers.max_size must be >= read_size".to_string());
         }
+        if self.connection_pool.max_connections == 0 {
+            return Err("connection_pool.max_connections must be > 0".to_string());
+        }
+        if self.connection_pool.buffer_pool_size == 0 {
+            return Err("connection_pool.buffer_pool_size must be > 0".to_string());
+        }
         Ok(())
     }
 }
@@ -234,6 +240,8 @@ mod tests {
         assert_eq!(config.response_pool.prewarm, 64);
         assert_eq!(config.buffers.read_size, 8192);
         assert_eq!(config.batching.min_pipeline_buffer, 60);
+        assert_eq!(config.connection_pool.max_connections, 10000);
+        assert_eq!(config.connection_pool.buffer_pool_size, 64);
     }
 
     #[test]
@@ -293,5 +301,47 @@ mod tests {
         assert_eq!(config.num_shards, 8);
         assert_eq!(config.response_pool.capacity, 256); // default
         assert_eq!(config.buffers.read_size, 8192); // default
+        assert_eq!(config.connection_pool.max_connections, 10000); // default
+        assert_eq!(config.connection_pool.buffer_pool_size, 64); // default
+    }
+
+    #[test]
+    fn test_connection_pool_toml() {
+        let toml_str = r#"
+            num_shards = 16
+
+            [connection_pool]
+            max_connections = 5000
+            buffer_pool_size = 256
+        "#;
+
+        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.connection_pool.max_connections, 5000);
+        assert_eq!(config.connection_pool.buffer_pool_size, 256);
+    }
+
+    #[test]
+    fn test_connection_pool_partial_toml() {
+        let toml_str = r#"
+            num_shards = 16
+
+            [connection_pool]
+            max_connections = 2000
+        "#;
+
+        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.connection_pool.max_connections, 2000);
+        assert_eq!(config.connection_pool.buffer_pool_size, 64); // default
+    }
+
+    #[test]
+    fn test_validate_invalid_connection_pool() {
+        let mut config = PerformanceConfig::default();
+        config.connection_pool.max_connections = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = PerformanceConfig::default();
+        config.connection_pool.buffer_pool_size = 0;
+        assert!(config.validate().is_err());
     }
 }

@@ -45,8 +45,6 @@ pub struct CommandExecutor {
     pub(crate) data: AHashMap<String, Value>,
     pub(crate) expirations: AHashMap<String, VirtualTime>,
     pub(crate) current_time: VirtualTime,
-    #[allow(dead_code)]
-    pub(crate) key_count: usize,
     pub(crate) commands_processed: usize,
     pub(crate) simulation_start_epoch: i64,
     /// Exact server start time in milliseconds (for precise PEXPIREAT/PXAT)
@@ -69,7 +67,6 @@ impl CommandExecutor {
             data: AHashMap::new(),
             expirations: AHashMap::new(),
             current_time: VirtualTime::from_millis(0),
-            key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
             simulation_start_epoch_ms: 0,
@@ -88,7 +85,6 @@ impl CommandExecutor {
             data: AHashMap::new(),
             expirations: AHashMap::new(),
             current_time: VirtualTime::from_millis(0),
-            key_count: 0,
             commands_processed: 0,
             simulation_start_epoch: 0,
             simulation_start_epoch_ms: 0,
@@ -192,7 +188,7 @@ impl CommandExecutor {
         self.current_time = current_time;
 
         // Single-pass: retain unexpired keys, collect expired ones for data removal
-        let mut expired_keys = Vec::new();
+        let mut expired_keys = Vec::with_capacity(self.expirations.len() / 4);
         self.expirations.retain(|k, &mut exp_time| {
             if exp_time <= self.current_time {
                 expired_keys.push(k.clone());
@@ -219,13 +215,14 @@ impl CommandExecutor {
                 pre_exp_len.saturating_sub(count),
                 "Postcondition: expirations size must decrease by evicted count"
             );
+            self.verify_invariants();
         }
 
         count
     }
 
     pub(crate) fn evict_expired_keys(&mut self) {
-        let mut expired_keys = Vec::new();
+        let mut expired_keys = Vec::with_capacity(self.expirations.len() / 4);
         self.expirations.retain(|k, &mut exp_time| {
             if exp_time <= self.current_time {
                 expired_keys.push(k.clone());
@@ -237,6 +234,61 @@ impl CommandExecutor {
 
         for key in &expired_keys {
             self.data.remove(key);
+        }
+
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
+    }
+
+    /// Verify all CommandExecutor invariants hold.
+    /// Call in debug builds after mutations to catch consistency bugs early.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_invariants(&self) {
+        // Invariant 1: Every key in expirations must exist in data
+        for key in self.expirations.keys() {
+            debug_assert!(
+                self.data.contains_key(key),
+                "Invariant violated: expiration key '{}' has no corresponding data entry",
+                key
+            );
+        }
+
+        // Invariant 2: No expired keys should remain in expirations after eviction
+        for (key, &exp_time) in &self.expirations {
+            debug_assert!(
+                exp_time > self.current_time,
+                "Invariant violated: expired key '{}' (exp={}, now={}) still in expirations",
+                key,
+                exp_time.as_millis(),
+                self.current_time.as_millis()
+            );
+        }
+
+        // Invariant 3: No empty collections in data
+        for (key, value) in &self.data {
+            match value {
+                Value::List(l) => debug_assert!(
+                    !l.is_empty(),
+                    "Invariant violated: empty list for key '{}'",
+                    key
+                ),
+                Value::Set(s) => debug_assert!(
+                    !s.is_empty(),
+                    "Invariant violated: empty set for key '{}'",
+                    key
+                ),
+                Value::Hash(h) => debug_assert!(
+                    !h.is_empty(),
+                    "Invariant violated: empty hash for key '{}'",
+                    key
+                ),
+                Value::SortedSet(z) => debug_assert!(
+                    z.len() > 0,
+                    "Invariant violated: empty sorted set for key '{}'",
+                    key
+                ),
+                _ => {}
+            }
         }
     }
 
