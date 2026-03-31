@@ -25,9 +25,10 @@
 //! | POD_NAME | - | StatefulSet pod name (e.g., redis-rust-0) |
 //! | POD_NAMESPACE | default | Kubernetes namespace |
 //! | REPLICATION_ENABLED | false | Enable gossip-based replication |
+//! | REPLICATION_PEERS | - | Explicit peer list (comma-separated host:port). Overrides DNS discovery. |
 //! | GOSSIP_PORT | 7000 | Port for gossip protocol |
 //! | CLUSTER_SIZE | 3 | Number of replicas in StatefulSet |
-//! | SERVICE_NAME | redis-rust-headless | Headless service name |
+//! | SERVICE_NAME | redis-rust-headless | Headless service name (used only if REPLICATION_PEERS unset) |
 //!
 //! ## WAL (Write-Ahead Log)
 //!
@@ -140,11 +141,19 @@ impl ClusterConfig {
         // Parse replica ID from POD_NAME (e.g., "redis-rust-0" -> 0)
         let replica_id = Self::parse_replica_id_from_env().min(REPLICA_ID_MAX);
 
-        // Build peer list from Kubernetes DNS
+        // Build peer list: prefer REPLICATION_PEERS env var, fall back to Kubernetes DNS
         let peers = if enabled {
-            Self::build_peer_list(replica_id, cluster_size, gossip_port)
+            Self::resolve_peers(replica_id, cluster_size, gossip_port)
         } else {
             vec![]
+        };
+
+        // When REPLICATION_PEERS overrides peer discovery, cluster_size must
+        // reflect the actual peer count (peers + self) to keep invariants valid.
+        let cluster_size = if enabled && std::env::var("REPLICATION_PEERS").is_ok() {
+            peers.len() + 1
+        } else {
+            cluster_size
         };
 
         let config = ClusterConfig {
@@ -228,6 +237,32 @@ impl ClusterConfig {
                 }
             })
             .unwrap_or(DEFAULT_REPLICA_ID)
+    }
+
+    /// Resolve peer addresses for gossip replication.
+    ///
+    /// Priority:
+    /// 1. REPLICATION_PEERS env var (comma-separated host:port pairs) — used by the
+    ///    libstream WASM provisioner to inject correct addresses per tenant.
+    /// 2. Fall back to Kubernetes headless service DNS construction (legacy).
+    fn resolve_peers(my_replica_id: u64, cluster_size: usize, gossip_port: u16) -> Vec<String> {
+        if let Ok(peers_env) = std::env::var("REPLICATION_PEERS") {
+            let peers: Vec<String> = peers_env
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !peers.is_empty() {
+                info!(
+                    "Using REPLICATION_PEERS env var: {} peers configured",
+                    peers.len()
+                );
+                return peers;
+            }
+            warn!("REPLICATION_PEERS env var is set but empty, falling back to DNS discovery");
+        }
+
+        Self::build_peer_list(my_replica_id, cluster_size, gossip_port)
     }
 
     /// Build peer list from Kubernetes headless service DNS
@@ -1041,5 +1076,59 @@ mod tests {
             "Replication factor should match cluster size"
         );
         assert_eq!(repl.gossip_interval_ms, 100, "Gossip interval should match");
+    }
+
+    /// Test REPLICATION_PEERS env var overrides DNS discovery
+    #[test]
+    fn test_resolve_peers_from_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Clean up any leftover env vars
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("REPLICATION_PEERS");
+
+        let explicit_peers = "redis-kv-0.redis-kv-headless.libstream.svc.cluster.local:7000,redis-kv-2.redis-kv-headless.libstream.svc.cluster.local:7000";
+        std::env::set_var("REPLICATION_PEERS", explicit_peers);
+
+        let peers = ClusterConfig::resolve_peers(1, 3, 7000);
+
+        assert_eq!(peers.len(), 2, "Should have 2 peers from env var");
+        assert!(
+            peers[0].contains("redis-kv-0"),
+            "First peer should be redis-kv-0"
+        );
+        assert!(
+            peers[1].contains("redis-kv-2"),
+            "Second peer should be redis-kv-2"
+        );
+
+        // Clean up
+        std::env::remove_var("REPLICATION_PEERS");
+    }
+
+    /// Test REPLICATION_PEERS falls back to DNS when empty
+    #[test]
+    fn test_resolve_peers_fallback_when_empty() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REPLICATION_PEERS", "");
+        std::env::set_var("POD_NAME", "redis-rust-0");
+        std::env::set_var("POD_NAMESPACE", "default");
+        std::env::set_var("SERVICE_NAME", "redis-rust-headless");
+
+        let peers = ClusterConfig::resolve_peers(0, 3, 7000);
+
+        // Should fall back to DNS-based peer list
+        assert_eq!(peers.len(), 2, "Should fall back to DNS with 2 peers");
+        assert!(
+            peers[0].contains("redis-rust-headless"),
+            "Should use DNS format on fallback"
+        );
+
+        // Clean up
+        std::env::remove_var("REPLICATION_PEERS");
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("POD_NAMESPACE");
+        std::env::remove_var("SERVICE_NAME");
     }
 }
