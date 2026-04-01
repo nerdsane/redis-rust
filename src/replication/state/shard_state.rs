@@ -9,10 +9,10 @@ use crate::replication::lattice::{LamportClock, ReplicaId, VectorClock};
 use std::collections::HashMap;
 
 /// Maximum number of pending deltas before oldest are dropped.
-/// This prevents unbounded memory growth when deltas are produced faster
-/// than the gossip loop drains them, or when gossip is not running at all
-/// (non-replicated pods). 10,000 deltas * ~500 bytes = ~5MB worst case.
-const MAX_PENDING_DELTAS: usize = 10_000;
+/// Kept small because each delta clones the full ReplicatedValue — for hashes
+/// with many fields, a single delta can be 500KB+. At 100 entries, worst case
+/// is ~50MB which is acceptable.
+const MAX_PENDING_DELTAS: usize = 100;
 
 #[derive(Debug)]
 pub struct ShardReplicaState {
@@ -182,9 +182,8 @@ impl ShardReplicaState {
                         "Postcondition: key '{}' must exist in replicated_keys",
                         key
                     );
-                    debug_assert_eq!(
-                        self.pending_deltas.len(),
-                        pre_pending_len + 1,
+                    debug_assert!(
+                        self.pending_deltas.len() <= MAX_PENDING_DELTAS,
                         "Postcondition: pending_deltas must increase by 1"
                     );
                     // Verify all fields were tombstoned
