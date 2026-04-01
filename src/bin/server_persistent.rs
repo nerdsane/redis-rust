@@ -328,24 +328,55 @@ async fn start_gossip_listener(
     state: Arc<ReplicatedShardedState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::AsyncReadExt;
+    use tokio::task::JoinHandle;
+    use std::collections::HashMap;
+    use std::net::IpAddr;
 
-    // TigerStyle: Explicit limit
+    // TigerStyle: Explicit limits
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
+    const MAX_PEERS: usize = 64; // Safety bound on tracked peers
 
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).await?;
     info!("Gossip listener started on {}", addr);
 
+    // Track one active connection per peer IP to prevent unbounded task spawning.
+    // When a peer reconnects, abort the old handler before spawning a replacement.
+    let mut active_peers: HashMap<IpAddr, JoinHandle<()>> = HashMap::new();
+
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-        info!("Gossip connection from {}", peer_addr);
+        let peer_ip = peer_addr.ip();
+
+        // Clean up finished tasks
+        active_peers.retain(|_, handle| !handle.is_finished());
+
+        // If this peer already has an active connection, abort it
+        if let Some(old_handle) = active_peers.remove(&peer_ip) {
+            if !old_handle.is_finished() {
+                old_handle.abort();
+                debug!("Aborted previous gossip handler for peer {}", peer_ip);
+            }
+        }
+
+        debug!("Gossip connection from {} (active peers: {})", peer_addr, active_peers.len());
 
         let state_clone = state.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             if let Err(e) = handle_gossip_connection(stream, state_clone, MAX_MESSAGE_SIZE).await {
                 warn!("Gossip connection error from {}: {}", peer_addr, e);
             }
         });
+
+        // Track this peer's handler (with safety bound)
+        if active_peers.len() < MAX_PEERS {
+            active_peers.insert(peer_ip, handle);
+        }
+
+        debug_assert!(
+            active_peers.len() <= MAX_PEERS,
+            "Active peer count must not exceed MAX_PEERS"
+        );
     }
 }
 
