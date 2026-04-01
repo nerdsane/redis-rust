@@ -247,14 +247,29 @@ impl ClusterConfig {
     /// 2. Fall back to Kubernetes headless service DNS construction (legacy).
     fn resolve_peers(my_replica_id: u64, cluster_size: usize, gossip_port: u16) -> Vec<String> {
         if let Ok(peers_env) = std::env::var("REPLICATION_PEERS") {
+            // Filter out self from the peer list. The WASM provisioner includes
+            // ALL nodes in REPLICATION_PEERS; we must exclude our own address
+            // to prevent self-gossip (node connecting to itself in a feedback loop
+            // that causes unbounded memory growth on node-0).
+            let my_pod_name = std::env::var("POD_NAME").unwrap_or_default();
             let peers: Vec<String> = peers_env
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
+                .filter(|s| {
+                    // Exclude entries that contain our pod name as a prefix
+                    // e.g., "redis-replicated-kv-v2-0.redis-..." matches POD_NAME="redis-replicated-kv-v2-0"
+                    if !my_pod_name.is_empty() && s.starts_with(&my_pod_name) {
+                        info!("Excluding self from peer list: {}", s);
+                        false
+                    } else {
+                        true
+                    }
+                })
                 .collect();
             if !peers.is_empty() {
                 info!(
-                    "Using REPLICATION_PEERS env var: {} peers configured",
+                    "Using REPLICATION_PEERS env var: {} peers configured (excluded self)",
                     peers.len()
                 );
                 return peers;
