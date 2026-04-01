@@ -5,6 +5,13 @@ use super::state::ReplicationDelta;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tracing::warn;
+
+/// Maximum number of messages allowed in the outbound queue.
+/// If the queue exceeds this limit, the oldest messages are dropped to prevent
+/// unbounded memory growth under sustained high write load.
+/// 10,000 messages * ~1KB avg = ~10MB worst case, well within safe limits.
+pub const MAX_OUTBOUND_QUEUE: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipMessage {
@@ -209,10 +216,38 @@ impl GossipState {
     }
 
     pub fn advance_epoch(&mut self) {
-        self.epoch += 1;
+        self.epoch = self.epoch.saturating_add(1);
     }
 
-    /// Queue deltas for gossip - uses selective routing if router is configured
+    /// Enforce the outbound queue capacity limit.
+    /// If the queue exceeds `MAX_OUTBOUND_QUEUE`, drop the oldest messages
+    /// (front of the Vec) to bring it back within bounds.
+    ///
+    /// ## Postcondition
+    /// `self.outbound_queue.len() <= MAX_OUTBOUND_QUEUE`
+    fn enforce_outbound_capacity(&mut self) {
+        if self.outbound_queue.len() > MAX_OUTBOUND_QUEUE {
+            let overflow = self.outbound_queue.len().saturating_sub(MAX_OUTBOUND_QUEUE);
+            warn!(
+                "Outbound gossip queue exceeded capacity ({} > {}), dropping {} oldest messages",
+                self.outbound_queue.len(),
+                MAX_OUTBOUND_QUEUE,
+                overflow
+            );
+            // Drop oldest messages from the front
+            self.outbound_queue.drain(..overflow);
+
+            debug_assert!(
+                self.outbound_queue.len() <= MAX_OUTBOUND_QUEUE,
+                "Postcondition: outbound queue must be within capacity after truncation"
+            );
+        }
+    }
+
+    /// Queue deltas for gossip - uses selective routing if router is configured.
+    ///
+    /// Enforces `MAX_OUTBOUND_QUEUE` capacity after queueing. If the queue is
+    /// already at capacity, oldest messages are dropped to make room.
     pub fn queue_deltas(&mut self, deltas: Vec<ReplicationDelta>) {
         if deltas.is_empty() {
             return;
@@ -234,6 +269,7 @@ impl GossipState {
                             .push(RoutedMessage::targeted(target_replica, msg));
                     }
                 }
+                self.enforce_outbound_capacity();
                 return;
             }
         }
@@ -241,19 +277,23 @@ impl GossipState {
         // Fallback: broadcast to all peers
         let msg = GossipMessage::new_delta_batch(self.replica_id, deltas, self.epoch);
         self.outbound_queue.push(RoutedMessage::broadcast(msg));
+        self.enforce_outbound_capacity();
     }
 
-    /// Queue deltas using broadcast (ignore router)
+    /// Queue deltas using broadcast (ignore router).
+    /// Enforces `MAX_OUTBOUND_QUEUE` capacity after queueing.
     pub fn queue_deltas_broadcast(&mut self, deltas: Vec<ReplicationDelta>) {
         if !deltas.is_empty() {
             let msg = GossipMessage::new_delta_batch(self.replica_id, deltas, self.epoch);
             self.outbound_queue.push(RoutedMessage::broadcast(msg));
+            self.enforce_outbound_capacity();
         }
     }
 
     pub fn queue_heartbeat(&mut self) {
         let msg = GossipMessage::new_heartbeat(self.replica_id, self.epoch);
         self.outbound_queue.push(RoutedMessage::broadcast(msg));
+        self.enforce_outbound_capacity();
     }
 
     pub fn drain_outbound(&mut self) -> Vec<RoutedMessage> {
@@ -271,5 +311,199 @@ impl GossipState {
     /// Get reference to the gossip router (if configured)
     pub fn router(&self) -> Option<&GossipRouter> {
         self.gossip_router.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::redis::SDS;
+    use crate::replication::lattice::LamportClock;
+    use crate::replication::state::{ReplicatedValue, ReplicationDelta};
+
+    fn test_config() -> ReplicationConfig {
+        ReplicationConfig {
+            replica_id: 1,
+            peers: vec![],
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn make_delta(key: &str) -> ReplicationDelta {
+        let replica_id = ReplicaId::new(1);
+        let clock = LamportClock::new(replica_id);
+        let value = ReplicatedValue::with_value(SDS::from_str(key), clock);
+        ReplicationDelta::new(key.to_string(), value, replica_id)
+    }
+
+    #[test]
+    fn test_outbound_queue_bounded_at_max() {
+        let mut state = GossipState::new(test_config());
+
+        // Push MAX_OUTBOUND_QUEUE + 500 messages
+        let overflow_count = 500usize;
+        let total = MAX_OUTBOUND_QUEUE.checked_add(overflow_count).unwrap();
+        for i in 0..total {
+            let delta = make_delta(&format!("key-{}", i));
+            // Bypass enforce_outbound_capacity by pushing directly,
+            // then call it explicitly to test the truncation logic
+            let msg = GossipMessage::new_delta_batch(state.replica_id, vec![delta], state.epoch);
+            state.outbound_queue.push(RoutedMessage::broadcast(msg));
+        }
+
+        assert_eq!(state.outbound_queue.len(), total);
+
+        // Now enforce capacity
+        state.enforce_outbound_capacity();
+
+        assert_eq!(
+            state.outbound_queue.len(),
+            MAX_OUTBOUND_QUEUE,
+            "Queue must be truncated to MAX_OUTBOUND_QUEUE"
+        );
+    }
+
+    #[test]
+    fn test_queue_deltas_enforces_capacity() {
+        let mut state = GossipState::new(test_config());
+
+        // Fill to just under the limit by pushing directly
+        for i in 0..MAX_OUTBOUND_QUEUE {
+            let msg = GossipMessage::new_heartbeat(state.replica_id, state.epoch);
+            state.outbound_queue.push(RoutedMessage::broadcast(msg));
+            // Skip enforce to pre-fill
+            let _ = i;
+        }
+
+        assert_eq!(state.outbound_queue.len(), MAX_OUTBOUND_QUEUE);
+
+        // Now queue_deltas should push one more and then truncate
+        let delta = make_delta("overflow-key");
+        state.queue_deltas(vec![delta]);
+
+        assert!(
+            state.outbound_queue.len() <= MAX_OUTBOUND_QUEUE,
+            "queue_deltas must enforce capacity: got {}",
+            state.outbound_queue.len()
+        );
+    }
+
+    #[test]
+    fn test_queue_deltas_broadcast_enforces_capacity() {
+        let mut state = GossipState::new(test_config());
+
+        // Fill to the limit
+        for _ in 0..MAX_OUTBOUND_QUEUE {
+            let msg = GossipMessage::new_heartbeat(state.replica_id, state.epoch);
+            state.outbound_queue.push(RoutedMessage::broadcast(msg));
+        }
+
+        let delta = make_delta("overflow-broadcast");
+        state.queue_deltas_broadcast(vec![delta]);
+
+        assert!(
+            state.outbound_queue.len() <= MAX_OUTBOUND_QUEUE,
+            "queue_deltas_broadcast must enforce capacity: got {}",
+            state.outbound_queue.len()
+        );
+    }
+
+    #[test]
+    fn test_queue_heartbeat_enforces_capacity() {
+        let mut state = GossipState::new(test_config());
+
+        // Fill to the limit
+        for _ in 0..MAX_OUTBOUND_QUEUE {
+            let msg = GossipMessage::new_heartbeat(state.replica_id, state.epoch);
+            state.outbound_queue.push(RoutedMessage::broadcast(msg));
+        }
+
+        state.queue_heartbeat();
+
+        assert!(
+            state.outbound_queue.len() <= MAX_OUTBOUND_QUEUE,
+            "queue_heartbeat must enforce capacity: got {}",
+            state.outbound_queue.len()
+        );
+    }
+
+    #[test]
+    fn test_drain_outbound_clears_queue() {
+        let mut state = GossipState::new(test_config());
+        let delta = make_delta("drain-key");
+        state.queue_deltas(vec![delta]);
+
+        assert!(!state.outbound_queue.is_empty());
+
+        let messages = state.drain_outbound();
+        assert!(!messages.is_empty());
+        assert!(state.outbound_queue.is_empty(), "Queue must be empty after drain");
+    }
+
+    #[test]
+    fn test_advance_epoch_saturates() {
+        let mut state = GossipState::new(test_config());
+        state.epoch = u64::MAX;
+        state.advance_epoch();
+        assert_eq!(state.epoch, u64::MAX, "Epoch must saturate at u64::MAX, not wrap");
+    }
+
+    #[test]
+    fn test_empty_deltas_not_queued() {
+        let mut state = GossipState::new(test_config());
+        state.queue_deltas(vec![]);
+        assert!(
+            state.outbound_queue.is_empty(),
+            "Empty deltas should not produce outbound messages"
+        );
+    }
+
+    #[test]
+    fn test_capacity_drops_oldest_preserves_newest() {
+        let mut state = GossipState::new(test_config());
+
+        // Push MAX + 5 messages, each with a distinct epoch to identify ordering
+        let total = MAX_OUTBOUND_QUEUE.checked_add(5).unwrap();
+        for i in 0..total {
+            state.epoch = i as u64;
+            let msg = GossipMessage::new_heartbeat(state.replica_id, state.epoch);
+            state.outbound_queue.push(RoutedMessage::broadcast(msg));
+        }
+
+        state.enforce_outbound_capacity();
+
+        assert_eq!(state.outbound_queue.len(), MAX_OUTBOUND_QUEUE);
+
+        // The first message in the queue should be the one at index 5 (oldest 5 dropped)
+        if let GossipMessage::Heartbeat { epoch, .. } = &state.outbound_queue[0].message {
+            assert_eq!(
+                *epoch, 5,
+                "Oldest messages (epochs 0-4) should be dropped, first remaining should be epoch 5"
+            );
+        } else {
+            panic!("Expected Heartbeat message");
+        }
+
+        // The last message should be the newest
+        let last_idx = state.outbound_queue.len().checked_sub(1).unwrap();
+        if let GossipMessage::Heartbeat { epoch, .. } = &state.outbound_queue[last_idx].message {
+            let expected_last = total.checked_sub(1).unwrap() as u64;
+            assert_eq!(
+                *epoch, expected_last,
+                "Newest message should be preserved at the end"
+            );
+        } else {
+            panic!("Expected Heartbeat message");
+        }
+    }
+
+    #[test]
+    fn test_verify_invariants_on_gossip_state() {
+        let mut state = GossipState::new(test_config());
+        let delta = make_delta("invariant-test");
+        state.queue_deltas(vec![delta]);
+        // Should not panic in debug mode
+        state.verify_invariants();
     }
 }
