@@ -689,10 +689,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let (worker_handles, sender) = integration.start_workers().await?;
-
-    // Connect delta sink BEFORE wrapping state in Arc
-    state.set_delta_sink(sender);
+    // Only start persistence workers for non-memory store types.
+    // Memory-mode pods don't need persistence — the streaming pipeline would accumulate
+    // deltas in the InMemoryObjectStore's segment HashMap, growing unbounded (~300Mi/min).
+    let worker_handles = if config.store_type != "memory" {
+        let (handles, sender) = integration.start_workers().await?;
+        state.set_delta_sink(sender);
+        Some(handles)
+    } else {
+        info!("Skipping persistence pipeline for store_type=memory");
+        None
+    };
 
     // Start WAL actor if enabled
     let wal_task = if let Some(ref wc) = wal_config {
@@ -847,8 +854,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("WAL actor shutdown complete");
     }
 
-    info!("Shutting down streaming persistence workers...");
-    worker_handles.shutdown().await;
+    if let Some(handles) = worker_handles {
+        info!("Shutting down streaming persistence workers...");
+        handles.shutdown().await;
+    }
 
     // Shutdown observability (flush pending spans/metrics)
     shutdown();
