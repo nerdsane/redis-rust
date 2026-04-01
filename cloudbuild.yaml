@@ -1,0 +1,14 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.6'
+      - '-f'
+      - 'docker/Dockerfile'
+      - '.'
+images:
+  - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.6'
+options:
+  machineType: 'E2_HIGHCPU_32'
+timeout: '1800s'
