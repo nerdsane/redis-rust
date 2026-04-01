@@ -135,7 +135,7 @@ impl ClusterConfig {
         let gossip_interval_ms = std::env::var("GOSSIP_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(100)
+            .unwrap_or(1000) // Default 1s (was 100ms — 10Hz caused OTel span accumulation OOM)
             .clamp(GOSSIP_INTERVAL_MS_MIN, GOSSIP_INTERVAL_MS_MAX); // TigerStyle: Clamp to valid range
 
         // Parse replica ID from POD_NAME (e.g., "redis-rust-0" -> 0)

@@ -18,7 +18,12 @@ pub struct DatadogConfig {
     pub env: String,
     /// Service version (default: from Cargo.toml)
     pub version: String,
-    /// Sample rate for traces (0.0 - 1.0, default: 1.0)
+    /// Sample rate for traces (0.0 - 1.0, default: 0.1)
+    ///
+    /// 100% sampling (1.0) causes OOM when combined with high-frequency gossip
+    /// because the OTel batch exporter accumulates spans faster than the DD agent
+    /// can drain them. 10% sampling (0.1) provides sufficient visibility without
+    /// unbounded memory growth. Override with DD_TRACE_SAMPLE_RATE env var.
     pub trace_sample_rate: f64,
     /// Enable JSON logs with trace correlation
     pub logs_injection: bool,
@@ -51,7 +56,7 @@ impl DatadogConfig {
             trace_sample_rate: std::env::var("DD_TRACE_SAMPLE_RATE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0),
+                .unwrap_or(0.1),
             logs_injection: std::env::var("DD_LOGS_INJECTION")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
@@ -103,7 +108,7 @@ mod tests {
         let config = DatadogConfig::from_env();
         assert_eq!(config.service_name, "redis-rust");
         assert_eq!(config.metric_prefix, "redis_rust");
-        assert!((config.trace_sample_rate - 1.0).abs() < f64::EPSILON);
+        assert!((config.trace_sample_rate - 0.1).abs() < f64::EPSILON);
     }
 
     #[test]
