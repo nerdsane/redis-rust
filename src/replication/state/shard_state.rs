@@ -8,6 +8,12 @@ use crate::replication::config::ConsistencyLevel;
 use crate::replication::lattice::{LamportClock, ReplicaId, VectorClock};
 use std::collections::HashMap;
 
+/// Maximum number of pending deltas before oldest are dropped.
+/// This prevents unbounded memory growth when deltas are produced faster
+/// than the gossip loop drains them, or when gossip is not running at all
+/// (non-replicated pods). 10,000 deltas * ~500 bytes = ~5MB worst case.
+const MAX_PENDING_DELTAS: usize = 10_000;
+
 #[derive(Debug)]
 pub struct ShardReplicaState {
     pub replica_id: ReplicaId,
@@ -53,6 +59,7 @@ impl ShardReplicaState {
         let delta = ReplicationDelta::new(key.clone(), replicated.clone(), self.replica_id);
         self.replicated_keys.insert(key, replicated);
         self.pending_deltas.push(delta.clone());
+        self.enforce_pending_capacity();
         delta
     }
 
@@ -62,6 +69,7 @@ impl ShardReplicaState {
             let delta = ReplicationDelta::new(key.clone(), replicated.clone(), self.replica_id);
             self.replicated_keys.insert(key, replicated);
             self.pending_deltas.push(delta.clone());
+            self.enforce_pending_capacity();
             Some(delta)
         } else {
             None
@@ -103,6 +111,7 @@ impl ShardReplicaState {
         let delta = ReplicationDelta::new(key.clone(), replicated.clone(), self.replica_id);
         self.replicated_keys.insert(key.clone(), replicated);
         self.pending_deltas.push(delta.clone());
+        self.enforce_pending_capacity();
 
         // TigerStyle: Postconditions
         #[cfg(debug_assertions)]
@@ -163,6 +172,7 @@ impl ShardReplicaState {
                 let delta = ReplicationDelta::new(key.clone(), replicated.clone(), self.replica_id);
                 self.replicated_keys.insert(key.clone(), replicated);
                 self.pending_deltas.push(delta.clone());
+                self.enforce_pending_capacity();
 
                 // TigerStyle: Postconditions
                 #[cfg(debug_assertions)]
@@ -211,6 +221,27 @@ impl ShardReplicaState {
 
     pub fn drain_pending_deltas(&mut self) -> Vec<ReplicationDelta> {
         std::mem::take(&mut self.pending_deltas)
+    }
+
+    /// Enforce capacity limit on pending_deltas to prevent unbounded memory growth.
+    ///
+    /// This is the critical fix for the base memory leak: every write operation
+    /// pushes a ReplicationDelta clone (~200-500 bytes) into pending_deltas.
+    /// If the gossip loop doesn't drain them (non-replicated pods, or collect_deltas
+    /// returns empty), memory grows at ~200-300Mi/min under load.
+    ///
+    /// When the limit is exceeded, oldest deltas are dropped (they would have been
+    /// superseded by newer writes anyway for the same keys).
+    fn enforce_pending_capacity(&mut self) {
+        if self.pending_deltas.len() > MAX_PENDING_DELTAS {
+            let overflow = self.pending_deltas.len().saturating_sub(MAX_PENDING_DELTAS);
+            self.pending_deltas.drain(..overflow);
+
+            debug_assert!(
+                self.pending_deltas.len() <= MAX_PENDING_DELTAS,
+                "Postcondition: pending_deltas must be within capacity"
+            );
+        }
     }
 
     pub fn get_replicated(&self, key: &str) -> Option<&ReplicatedValue> {
