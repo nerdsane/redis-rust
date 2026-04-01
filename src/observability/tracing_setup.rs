@@ -6,6 +6,8 @@ use opentelemetry_datadog::DatadogPropagator;
 use opentelemetry_sdk::trace::Sampler;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter;
 
 use super::config::DatadogConfig;
 
@@ -14,6 +16,8 @@ use super::config::DatadogConfig;
 /// Sets up:
 /// - OpenTelemetry with Datadog exporter for distributed tracing
 /// - tracing-subscriber with environment-based filtering
+/// - Gossip/replication spans are excluded from OTel to prevent unbounded
+///   memory growth from the batch exporter accumulating high-frequency spans
 pub fn init(config: &DatadogConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Set global propagator for distributed tracing context
     opentelemetry::global::set_text_map_propagator(DatadogPropagator::default());
@@ -33,17 +37,30 @@ pub fn init(config: &DatadogConfig) -> Result<(), Box<dyn std::error::Error + Se
         )
         .install_batch(opentelemetry_sdk::runtime::Tokio)?;
 
-    // Create OpenTelemetry tracing layer
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    // Create OpenTelemetry tracing layer with a target filter that excludes
+    // high-frequency gossip/replication modules. These produce spans at 1-10Hz
+    // per peer which the OTel batch exporter accumulates faster than the DD
+    // agent can drain, causing unbounded memory growth (200Mi/min).
+    let otel_layer = tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_filter(
+            filter::Targets::new()
+                .with_default(tracing::Level::INFO)
+                .with_target("redis_sim::production::gossip_manager", tracing::Level::ERROR)
+                .with_target("redis_sim::production::gossip_actor", tracing::Level::ERROR)
+                .with_target("redis_sim::replication::gossip", tracing::Level::ERROR)
+                .with_target("redis_sim::replication::anti_entropy", tracing::Level::ERROR)
+        );
 
-    // Environment filter for log levels
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    // Environment filter for log levels (applies to fmt layer — gossip still logs to stdout)
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
     // Build subscriber with all layers
-    // Note: fmt layer goes before otel layer so spans are logged before being exported
+    // fmt layer: logs everything per env_filter (including gossip — visible in kubectl logs)
+    // otel layer: excludes gossip targets (prevents span accumulation OOM)
     tracing_subscriber::registry()
-        .with(filter)
+        .with(env_filter)
         .with(tracing_subscriber::fmt::layer())
         .with(otel_layer)
         .init();
