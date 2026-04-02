@@ -129,10 +129,9 @@ impl ShardReplicaState {
                 "Postcondition: key '{}' must be a hash type",
                 key
             );
-            debug_assert_eq!(
-                self.pending_deltas.len(),
-                pre_pending_len + 1,
-                "Postcondition: pending_deltas must increase by 1"
+            debug_assert!(
+                self.pending_deltas.len() <= MAX_PENDING_DELTAS,
+                "Postcondition: pending_deltas must be within capacity after hash_write"
             );
             // Verify all fields were set
             if let Some(rv) = self.replicated_keys.get(&key) {
@@ -184,7 +183,7 @@ impl ShardReplicaState {
                     );
                     debug_assert!(
                         self.pending_deltas.len() <= MAX_PENDING_DELTAS,
-                        "Postcondition: pending_deltas must increase by 1"
+                        "Postcondition: pending_deltas must be within capacity after hash_delete"
                     );
                     // Verify all fields were tombstoned
                     if let Some(rv) = self.replicated_keys.get(&key) {

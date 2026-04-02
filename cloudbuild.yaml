@@ -3,12 +3,12 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.11'
+      - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.12'
       - '-f'
       - 'docker/Dockerfile'
       - '.'
 images:
-  - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.11'
+  - 'us-central1-docker.pkg.dev/datadog-sandbox/libstream/redis-rust:v0.1.12'
 options:
   machineType: 'E2_HIGHCPU_32'
 timeout: '1800s'

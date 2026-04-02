@@ -259,7 +259,8 @@ impl ClusterConfig {
                 .filter(|s| {
                     // Exclude entries that contain our pod name as a prefix
                     // e.g., "redis-replicated-kv-v2-0.redis-..." matches POD_NAME="redis-replicated-kv-v2-0"
-                    if !my_pod_name.is_empty() && s.starts_with(&my_pod_name) {
+                    let my_pod_prefix = format!("{}.", my_pod_name);
+                    if !my_pod_name.is_empty() && s.starts_with(&my_pod_prefix) {
                         info!("Excluding self from peer list: {}", s);
                         false
                     } else {
