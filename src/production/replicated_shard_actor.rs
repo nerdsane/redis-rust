@@ -526,6 +526,25 @@ impl ReplicatedShardActor {
             let cmd = Command::del(delta.key.clone());
             self.executor.execute(&cmd);
         }
+
+        // TigerStyle: Postcondition — executor must match merged replica_state
+        #[cfg(debug_assertions)]
+        {
+            if let Some(merged) = self.replica_state.replicated_keys.get(&delta.key) {
+                if let Some(expected) = merged.get() {
+                    if let Some(actual) = self.executor.get_data().get(&delta.key) {
+                        if let Some(sds) = actual.as_string() {
+                            debug_assert_eq!(
+                                sds.as_bytes(),
+                                expected.as_bytes(),
+                                "Postcondition: executor must match merged replica_state for key '{}'",
+                                delta.key
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Verify invariants (TigerStyle design-by-contract)
