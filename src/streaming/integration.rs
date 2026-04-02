@@ -464,16 +464,17 @@ pub enum PersistenceMessage {
     Shutdown { response_tx: oneshot::Sender<()> },
 }
 
-/// Actor that owns StreamingPersistence exclusively
+/// Actor that owns StreamingPersistence exclusively.
+/// Uses bounded channel (PERSISTENCE_CHANNEL_CAPACITY) to prevent unbounded memory growth.
 struct PersistenceActor<S: ObjectStore + Clone + 'static> {
     persistence: StreamingPersistence<S>,
-    rx: mpsc::UnboundedReceiver<PersistenceMessage>,
+    rx: mpsc::Receiver<PersistenceMessage>,
 }
 
 impl<S: ObjectStore + Clone + Send + Sync + 'static> PersistenceActor<S> {
     fn new(
         persistence: StreamingPersistence<S>,
-        rx: mpsc::UnboundedReceiver<PersistenceMessage>,
+        rx: mpsc::Receiver<PersistenceMessage>,
     ) -> Self {
         PersistenceActor { persistence, rx }
     }
@@ -539,23 +540,26 @@ impl<S: ObjectStore + Clone + Send + Sync + 'static> PersistenceActor<S> {
 }
 
 /// Handle for communicating with the persistence actor
+///
+/// Uses a bounded channel (PERSISTENCE_CHANNEL_CAPACITY) to prevent unbounded
+/// memory growth. When the channel is full, fire-and-forget sends silently drop.
 #[derive(Clone)]
 pub struct PersistenceActorHandle {
-    tx: mpsc::UnboundedSender<PersistenceMessage>,
+    tx: mpsc::Sender<PersistenceMessage>,
 }
 
 impl PersistenceActorHandle {
-    /// Push a delta (fire-and-forget)
+    /// Push a delta (fire-and-forget, drops if channel full)
     #[inline]
     pub fn push_delta(&self, delta: ReplicationDelta) {
-        let _ = self.tx.send(PersistenceMessage::PushDelta(delta));
+        let _ = self.tx.try_send(PersistenceMessage::PushDelta(delta));
     }
 
-    /// Push multiple deltas (fire-and-forget)
+    /// Push multiple deltas (fire-and-forget, drops if channel full)
     #[inline]
     pub fn push_deltas(&self, deltas: Vec<ReplicationDelta>) {
         if !deltas.is_empty() {
-            let _ = self.tx.send(PersistenceMessage::PushDeltas(deltas));
+            let _ = self.tx.try_send(PersistenceMessage::PushDeltas(deltas));
         }
     }
 
@@ -564,10 +568,10 @@ impl PersistenceActorHandle {
         let (response_tx, response_rx) = oneshot::channel();
         if self
             .tx
-            .send(PersistenceMessage::Flush { response_tx })
+            .try_send(PersistenceMessage::Flush { response_tx })
             .is_err()
         {
-            return Err("Persistence actor unavailable".to_string());
+            return Err("Persistence actor unavailable or channel full".to_string());
         }
         response_rx
             .await
@@ -577,7 +581,7 @@ impl PersistenceActorHandle {
     /// Send periodic tick (fire-and-forget)
     #[inline]
     pub fn tick(&self) {
-        let _ = self.tx.send(PersistenceMessage::Tick);
+        let _ = self.tx.try_send(PersistenceMessage::Tick);
     }
 
     /// Shutdown the actor gracefully
@@ -585,7 +589,7 @@ impl PersistenceActorHandle {
         let (response_tx, response_rx) = oneshot::channel();
         if self
             .tx
-            .send(PersistenceMessage::Shutdown { response_tx })
+            .try_send(PersistenceMessage::Shutdown { response_tx })
             .is_ok()
         {
             let _ = response_rx.await;
@@ -593,11 +597,21 @@ impl PersistenceActorHandle {
     }
 }
 
+/// Maximum number of messages in the persistence actor's channel.
+/// This prevents unbounded memory growth when the actor can't flush fast enough
+/// (slow disk, backpressure, or Permission denied errors). Each message is a
+/// PushDelta(s) containing ~500 bytes per delta. At 10K capacity: ~5MB worst case.
+///
+/// When the channel is full, new messages are silently dropped (fire-and-forget
+/// semantics). The data is still in the replicated state for reads — persistence
+/// is best-effort durability, not the source of truth.
+const PERSISTENCE_CHANNEL_CAPACITY: usize = 10_000;
+
 /// Spawn the persistence actor and return a handle
 fn spawn_persistence_actor<S: ObjectStore + Clone + Send + Sync + 'static>(
     persistence: StreamingPersistence<S>,
 ) -> (PersistenceActorHandle, JoinHandle<()>) {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
     let actor = PersistenceActor::new(persistence, rx);
     let task = tokio::spawn(actor.run());
     (PersistenceActorHandle { tx }, task)

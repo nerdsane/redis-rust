@@ -305,14 +305,89 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                 RespValue::Array(Some(all_keys))
             }
             Command::Info => {
+                let pid = std::process::id();
                 let info = format!(
-                    "# Replication\r\nrole:master\r\nreplica_id:{}\r\nconsistency_level:{:?}\r\nreplication_enabled:{}\r\nnum_shards:{}\r\narchitecture:actor_per_shard\r\n",
-                    self.config.replica_id,
-                    self.config.consistency_level,
-                    self.config.enabled,
-                    NUM_SHARDS
+                    "# Server\r\n\
+                     redis_version:7.0.0\r\n\
+                     redis_mode:standalone\r\n\
+                     os:Linux\r\n\
+                     arch_bits:64\r\n\
+                     tcp_port:6379\r\n\
+                     uptime_in_seconds:0\r\n\
+                     uptime_in_days:0\r\n\
+                     process_id:{pid}\r\n\
+                     \r\n\
+                     # Clients\r\n\
+                     connected_clients:1\r\n\
+                     blocked_clients:0\r\n\
+                     tracking_clients:0\r\n\
+                     \r\n\
+                     # Memory\r\n\
+                     used_memory:0\r\n\
+                     used_memory_human:0B\r\n\
+                     used_memory_rss:0\r\n\
+                     used_memory_rss_human:0B\r\n\
+                     used_memory_peak:0\r\n\
+                     used_memory_peak_human:0B\r\n\
+                     maxmemory:0\r\n\
+                     maxmemory_human:0B\r\n\
+                     maxmemory_policy:noeviction\r\n\
+                     mem_fragmentation_ratio:1.00\r\n\
+                     mem_allocator:jemalloc\r\n\
+                     \r\n\
+                     # Stats\r\n\
+                     total_connections_received:0\r\n\
+                     total_commands_processed:0\r\n\
+                     instantaneous_ops_per_sec:0\r\n\
+                     keyspace_hits:0\r\n\
+                     keyspace_misses:0\r\n\
+                     evicted_keys:0\r\n\
+                     expired_keys:0\r\n\
+                     \r\n\
+                     # Replication\r\n\
+                     role:master\r\n\
+                     connected_slaves:0\r\n\
+                     replica_id:{replica_id}\r\n\
+                     consistency_level:{consistency_level:?}\r\n\
+                     replication_enabled:{replication_enabled}\r\n\
+                     num_shards:{num_shards}\r\n\
+                     architecture:actor_per_shard\r\n\
+                     \r\n\
+                     # CPU\r\n\
+                     used_cpu_sys:0.000000\r\n\
+                     used_cpu_user:0.000000\r\n\
+                     used_cpu_sys_children:0.000000\r\n\
+                     used_cpu_user_children:0.000000\r\n\
+                     \r\n\
+                     # Keyspace\r\n",
+                    pid = pid,
+                    replica_id = self.config.replica_id,
+                    consistency_level = self.config.consistency_level,
+                    replication_enabled = self.config.enabled,
+                    num_shards = NUM_SHARDS,
                 );
                 RespValue::BulkString(Some(info.into_bytes()))
+            }
+            Command::DbSize => {
+                // Fan out DBSIZE to all shards, sum per-shard key counts
+                let futures: Vec<_> = self
+                    .shards
+                    .iter()
+                    .map(|shard| shard.execute_readonly(Command::DbSize))
+                    .collect();
+                let results = futures::future::join_all(futures).await;
+                let total: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                debug_assert!(total >= 0, "Postcondition: DBSIZE must be non-negative");
+                RespValue::Integer(total)
             }
             _ => RespValue::err("ERR unknown command"),
         }

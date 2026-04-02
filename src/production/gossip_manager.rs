@@ -4,12 +4,19 @@ use crate::replication::state::ReplicationDelta;
 use crate::replication::{ReplicaId, ReplicationConfig};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
+
+/// Maximum number of active inbound peer connections per unique IP.
+/// When a new connection arrives from an IP that already has an active handler,
+/// the old handler is aborted before spawning a new one.
+const MAX_CONNECTIONS_PER_PEER: usize = 1;
 
 pub type DeltaCallback = Arc<dyn Fn(Vec<ReplicationDelta>) + Send + Sync>;
 
@@ -46,24 +53,69 @@ impl GossipManager {
         let _ = self.outbound_tx.send(msg);
     }
 
+    /// Start the gossip TCP server with per-peer connection tracking.
+    ///
+    /// ## Invariants
+    /// - At most `MAX_CONNECTIONS_PER_PEER` (1) active handler task per peer IP.
+    /// - When a peer reconnects, the old handler is aborted before spawning a new one.
+    /// - This prevents unbounded task accumulation from peers that reconnect every gossip round.
     pub async fn start_server(
         config: ReplicationConfig,
         delta_callback: DeltaCallback,
     ) -> std::io::Result<()> {
-        let port = 3001 + config.replica_id as u16;
+        let port = 3001u16
+            .checked_add(config.replica_id as u16)
+            .expect("Precondition: replica_id must not overflow gossip port range");
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
         info!("Gossip server listening on port {}", port);
 
+        // Track active connections per peer IP. When a peer reconnects,
+        // we abort the old handler task to prevent unbounded task growth.
+        let mut active_peers: HashMap<IpAddr, JoinHandle<()>> = HashMap::new();
+
         loop {
             let (stream, addr) = listener.accept().await?;
-            info!("Gossip connection from {}", addr);
+            let peer_ip = addr.ip();
+
+            // If this peer already has an active connection, abort it first.
+            // This is the fix for the unbounded connection accept loop:
+            // each gossip round from a peer opens a new TCP connection, and
+            // without this cleanup, tasks accumulate (~20/sec with 2 peers).
+            if let Some(old_handle) = active_peers.remove(&peer_ip) {
+                if !old_handle.is_finished() {
+                    debug!(
+                        "Aborting stale gossip handler for peer {} (replaced by new connection)",
+                        peer_ip
+                    );
+                    old_handle.abort();
+                }
+            }
+
+            // Garbage-collect finished tasks to prevent the HashMap from growing
+            // unboundedly with IPs of peers that have since disconnected.
+            active_peers.retain(|_ip, handle| !handle.is_finished());
+
+            debug_assert!(
+                !active_peers.contains_key(&peer_ip),
+                "Postcondition: old peer handle must be removed before inserting new one"
+            );
+
+            info!("Gossip connection from {} (active peers: {})", addr, active_peers.len().checked_add(1).unwrap_or(usize::MAX));
             let callback = delta_callback.clone();
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 if let Err(e) = Self::handle_peer_connection(stream, callback).await {
-                    warn!("Gossip peer error: {}", e);
+                    warn!("Gossip peer {} error: {}", addr, e);
                 }
             });
+
+            active_peers.insert(peer_ip, handle);
+
+            debug_assert!(
+                active_peers.len() <= MAX_CONNECTIONS_PER_PEER * 100,
+                "Invariant: active_peers should not grow unboundedly (current: {})",
+                active_peers.len()
+            );
         }
     }
 
@@ -173,6 +225,12 @@ impl GossipManager {
             selective_mode
         );
 
+        // Persistent connection pool: reuse TCP connections across gossip rounds.
+        // This is the primary fix for the connection storm — previously each
+        // send_to_peer() opened a new TCP connection and dropped it after one message,
+        // causing ~20 new connections/sec with 2 peers at 100ms intervals.
+        let mut peer_connections: HashMap<String, TcpStream> = HashMap::new();
+
         loop {
             ticker.tick().await;
 
@@ -191,7 +249,7 @@ impl GossipManager {
                 continue;
             }
 
-            // Send each routed message
+            // Send each routed message using persistent connections
             for routed in routed_messages {
                 let data = match routed.message.serialize() {
                     Ok(d) => d,
@@ -206,7 +264,12 @@ impl GossipManager {
                     Some(target_replica) => {
                         // Targeted message: send to specific replica
                         if let Some(addr) = peer_map.get(&target_replica) {
-                            Self::send_to_peer(addr, &framed_data).await;
+                            Self::send_to_peer_persistent(
+                                &mut peer_connections,
+                                addr,
+                                &framed_data,
+                            )
+                            .await;
                         } else {
                             debug!("No address for target replica {}", target_replica.0);
                         }
@@ -214,7 +277,12 @@ impl GossipManager {
                     None => {
                         // Broadcast message: send to all peers
                         for peer_addr in &peers {
-                            Self::send_to_peer(peer_addr, &framed_data).await;
+                            Self::send_to_peer_persistent(
+                                &mut peer_connections,
+                                peer_addr,
+                                &framed_data,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -222,12 +290,47 @@ impl GossipManager {
         }
     }
 
-    /// Send framed data to a peer address
-    async fn send_to_peer(addr: &str, framed_data: &[u8]) {
+    /// Send framed data to a peer using a persistent connection pool.
+    ///
+    /// Reuses existing TCP connections across gossip rounds. If the connection
+    /// is broken (write fails), it is removed and a fresh connection is established.
+    /// This eliminates the ~20 new TCP connections/sec that caused OOM on node-0.
+    ///
+    /// ## Invariants
+    /// - `peer_connections` maps peer address strings to live TCP streams.
+    /// - A broken connection is always removed before attempting reconnection.
+    /// - At most one connection per peer address exists in the map at any time.
+    async fn send_to_peer_persistent(
+        peer_connections: &mut HashMap<String, TcpStream>,
+        addr: &str,
+        framed_data: &[u8],
+    ) {
+        debug_assert!(!addr.is_empty(), "Precondition: peer address must not be empty");
+        debug_assert!(!framed_data.is_empty(), "Precondition: framed data must not be empty");
+
+        // Try to reuse existing connection
+        if let Some(stream) = peer_connections.get_mut(addr) {
+            match stream.write_all(framed_data).await {
+                Ok(()) => return, // Success — connection reused
+                Err(e) => {
+                    debug!("Persistent connection to {} broken, reconnecting: {}", addr, e);
+                    peer_connections.remove(addr);
+                    // Fall through to reconnect below
+                }
+            }
+        }
+
+        // No existing connection or it was broken — establish a new one
         match TcpStream::connect(addr).await {
             Ok(mut stream) => {
-                if let Err(e) = stream.write_all(framed_data).await {
-                    warn!("Failed to send to peer {}: {}", addr, e);
+                match stream.write_all(framed_data).await {
+                    Ok(()) => {
+                        peer_connections.insert(addr.to_string(), stream);
+                    }
+                    Err(e) => {
+                        warn!("Failed to send to peer {} on fresh connection: {}", addr, e);
+                        // Don't insert a broken connection
+                    }
                 }
             }
             Err(e) => {
@@ -271,6 +374,9 @@ impl GossipManager {
             selective_mode
         );
 
+        // Persistent connection pool: reuse TCP connections across gossip rounds.
+        let mut peer_connections: HashMap<String, TcpStream> = HashMap::new();
+
         loop {
             ticker.tick().await;
 
@@ -285,7 +391,7 @@ impl GossipManager {
                 continue;
             }
 
-            // Send each routed message
+            // Send each routed message using persistent connections
             for routed in routed_messages {
                 let data = match routed.message.serialize() {
                     Ok(d) => d,
@@ -300,7 +406,12 @@ impl GossipManager {
                     Some(target_replica) => {
                         // Targeted message: send to specific replica
                         if let Some(addr) = peer_map.get(&target_replica) {
-                            Self::send_to_peer(addr, &framed_data).await;
+                            Self::send_to_peer_persistent(
+                                &mut peer_connections,
+                                addr,
+                                &framed_data,
+                            )
+                            .await;
                         } else {
                             debug!("No address for target replica {}", target_replica.0);
                         }
@@ -308,7 +419,12 @@ impl GossipManager {
                     None => {
                         // Broadcast message: send to all peers
                         for peer_addr in &peers {
-                            Self::send_to_peer(peer_addr, &framed_data).await;
+                            Self::send_to_peer_persistent(
+                                &mut peer_connections,
+                                peer_addr,
+                                &framed_data,
+                            )
+                            .await;
                         }
                     }
                 }

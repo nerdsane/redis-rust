@@ -1,0 +1,9 @@
+.git/
+target/
+.claude/
+tests/
+docs/
+docker-benchmark/
+maelstrom/
+*.md
+*.png

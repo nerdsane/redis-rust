@@ -775,6 +775,83 @@ impl<T: TimeSource> ShardedActorState<T> {
         self.adaptive_handle.as_ref()
     }
 
+    /// Get process memory usage (used_memory, used_memory_rss) in bytes.
+    /// On Linux reads from /proc/self/statm; returns (0, 0) on other platforms.
+    fn get_process_memory() -> (u64, u64) {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(contents) = std::fs::read_to_string("/proc/self/statm") {
+                let parts: Vec<&str> = contents.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let page_size: u64 = 4096;
+                    let rss_pages = parts[1].parse::<u64>().unwrap_or(0);
+                    let total_pages = parts[0].parse::<u64>().unwrap_or(0);
+                    let used_memory = total_pages.saturating_mul(page_size);
+                    let used_memory_rss = rss_pages.saturating_mul(page_size);
+                    return (used_memory, used_memory_rss);
+                }
+            }
+            (0, 0)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            (0, 0)
+        }
+    }
+
+    /// Format bytes as human-readable string (e.g. "1.50M", "256.00K")
+    fn format_bytes_human(bytes: u64) -> String {
+        if bytes >= 1024 * 1024 * 1024 {
+            format!("{:.2}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        } else if bytes >= 1024 * 1024 {
+            format!("{:.2}M", bytes as f64 / (1024.0 * 1024.0))
+        } else if bytes >= 1024 {
+            format!("{:.2}K", bytes as f64 / 1024.0)
+        } else {
+            format!("{}B", bytes)
+        }
+    }
+
+    /// Get system CPU time in seconds (for INFO cpu section)
+    fn get_cpu_time_sys() -> f64 {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(contents) = std::fs::read_to_string("/proc/self/stat") {
+                let parts: Vec<&str> = contents.split_whitespace().collect();
+                // Field 14 (0-indexed) = stime (kernel mode jiffies)
+                if parts.len() > 14 {
+                    let stime = parts[14].parse::<f64>().unwrap_or(0.0);
+                    return stime / 100.0; // jiffies to seconds (assuming HZ=100)
+                }
+            }
+            0.0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0.0
+        }
+    }
+
+    /// Get user CPU time in seconds (for INFO cpu section)
+    fn get_cpu_time_user() -> f64 {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(contents) = std::fs::read_to_string("/proc/self/stat") {
+                let parts: Vec<&str> = contents.split_whitespace().collect();
+                // Field 13 (0-indexed) = utime (user mode jiffies)
+                if parts.len() > 13 {
+                    let utime = parts[13].parse::<f64>().unwrap_or(0.0);
+                    return utime / 100.0; // jiffies to seconds (assuming HZ=100)
+                }
+            }
+            0.0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0.0
+        }
+    }
+
     /// Get current virtual time (elapsed since creation)
     ///
     /// Uses the configured TimeSource for zero-cost abstraction:
@@ -956,20 +1033,121 @@ impl<T: TimeSource> ShardedActorState<T> {
 
             Command::Info => {
                 let adaptive_info = self.get_adaptive_info().await;
+
+                // Compute uptime from start_millis
+                let now_millis = self.time_source.now_millis();
+                let uptime_secs = now_millis.saturating_sub(self.start_millis) / 1000;
+                let uptime_days = uptime_secs / 86400;
+
+                // Get total key count across all shards (same pattern as DbSize)
+                let mut dbsize_futures = Vec::with_capacity(self.num_shards);
+                for shard in self.shards.iter() {
+                    dbsize_futures.push(shard.execute(Command::DbSize, virtual_time));
+                }
+                let dbsize_results = futures::future::join_all(dbsize_futures).await;
+                let total_keys: i64 = dbsize_results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r { Some(n) } else { None }
+                    })
+                    .sum();
+
+                // Process memory info
+                let (used_memory, used_memory_rss) = Self::get_process_memory();
+                let mem_frag_ratio = if used_memory > 0 {
+                    used_memory_rss as f64 / used_memory as f64
+                } else {
+                    1.0
+                };
+
+                let pid = std::process::id();
+                let tcp_port = 6379; // Default Redis port (overridden by env in container)
+
                 let info = format!(
                     "# Server\r\n\
-                     redis_mode:tiger_style\r\n\
-                     num_shards:{}\r\n\
+                     redis_version:7.0.0\r\n\
+                     redis_git_sha1:00000000\r\n\
+                     redis_git_dirty:0\r\n\
+                     redis_build_id:0\r\n\
+                     redis_mode:standalone\r\n\
+                     os:Linux\r\n\
+                     arch_bits:64\r\n\
+                     tcp_port:{tcp_port}\r\n\
+                     uptime_in_seconds:{uptime_secs}\r\n\
+                     uptime_in_days:{uptime_days}\r\n\
+                     hz:10\r\n\
+                     configured_hz:10\r\n\
+                     executable:/usr/local/bin/redis-rust\r\n\
+                     process_id:{pid}\r\n\
+                     num_shards:{num_shards}\r\n\
                      architecture:actor_message_passing\r\n\
-                     allocator:jemalloc\r\n\
+                     \r\n\
+                     # Clients\r\n\
+                     connected_clients:1\r\n\
+                     blocked_clients:0\r\n\
+                     tracking_clients:0\r\n\
+                     clients_in_timeout_table:0\r\n\
+                     \r\n\
+                     # Memory\r\n\
+                     used_memory:{used_memory}\r\n\
+                     used_memory_human:{used_memory_human}\r\n\
+                     used_memory_rss:{used_memory_rss}\r\n\
+                     used_memory_rss_human:{used_memory_rss_human}\r\n\
+                     used_memory_peak:{used_memory_rss}\r\n\
+                     used_memory_peak_human:{used_memory_rss_human}\r\n\
+                     used_memory_lua:0\r\n\
+                     used_memory_scripts:0\r\n\
+                     maxmemory:0\r\n\
+                     maxmemory_human:0B\r\n\
+                     maxmemory_policy:noeviction\r\n\
+                     mem_fragmentation_ratio:{mem_frag_ratio:.2}\r\n\
+                     mem_allocator:jemalloc\r\n\
                      \r\n\
                      # Stats\r\n\
-                     current_time_ms:{}\r\n\
+                     total_connections_received:0\r\n\
+                     total_commands_processed:0\r\n\
+                     instantaneous_ops_per_sec:0\r\n\
+                     total_net_input_bytes:0\r\n\
+                     total_net_output_bytes:0\r\n\
+                     keyspace_hits:0\r\n\
+                     keyspace_misses:0\r\n\
+                     evicted_keys:0\r\n\
+                     expired_keys:0\r\n\
+                     current_time_ms:{current_time_ms}\r\n\
                      \r\n\
-                     {}",
-                    self.num_shards,
-                    virtual_time.as_millis(),
-                    adaptive_info
+                     # Replication\r\n\
+                     role:master\r\n\
+                     connected_slaves:0\r\n\
+                     \r\n\
+                     # CPU\r\n\
+                     used_cpu_sys:{cpu_sys:.6}\r\n\
+                     used_cpu_user:{cpu_user:.6}\r\n\
+                     used_cpu_sys_children:0.000000\r\n\
+                     used_cpu_user_children:0.000000\r\n\
+                     \r\n\
+                     # Keyspace\r\n\
+                     {keyspace}\
+                     \r\n\
+                     {adaptive}",
+                    tcp_port = tcp_port,
+                    uptime_secs = uptime_secs,
+                    uptime_days = uptime_days,
+                    pid = pid,
+                    num_shards = self.num_shards,
+                    used_memory = used_memory,
+                    used_memory_human = Self::format_bytes_human(used_memory),
+                    used_memory_rss = used_memory_rss,
+                    used_memory_rss_human = Self::format_bytes_human(used_memory_rss),
+                    mem_frag_ratio = mem_frag_ratio,
+                    current_time_ms = virtual_time.as_millis(),
+                    cpu_sys = Self::get_cpu_time_sys(),
+                    cpu_user = Self::get_cpu_time_user(),
+                    keyspace = if total_keys > 0 {
+                        format!("db0:keys={},expires=0,avg_ttl=0\r\n", total_keys)
+                    } else {
+                        String::new()
+                    },
+                    adaptive = adaptive_info,
                 );
                 RespValue::BulkString(Some(info.into_bytes()))
             }

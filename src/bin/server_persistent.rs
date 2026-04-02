@@ -25,9 +25,10 @@
 //! | POD_NAME | - | StatefulSet pod name (e.g., redis-rust-0) |
 //! | POD_NAMESPACE | default | Kubernetes namespace |
 //! | REPLICATION_ENABLED | false | Enable gossip-based replication |
+//! | REPLICATION_PEERS | - | Explicit peer list (comma-separated host:port). Overrides DNS discovery. |
 //! | GOSSIP_PORT | 7000 | Port for gossip protocol |
 //! | CLUSTER_SIZE | 3 | Number of replicas in StatefulSet |
-//! | SERVICE_NAME | redis-rust-headless | Headless service name |
+//! | SERVICE_NAME | redis-rust-headless | Headless service name (used only if REPLICATION_PEERS unset) |
 //!
 //! ## WAL (Write-Ahead Log)
 //!
@@ -134,17 +135,25 @@ impl ClusterConfig {
         let gossip_interval_ms = std::env::var("GOSSIP_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(100)
+            .unwrap_or(1000) // Default 1s (was 100ms — 10Hz caused OTel span accumulation OOM)
             .clamp(GOSSIP_INTERVAL_MS_MIN, GOSSIP_INTERVAL_MS_MAX); // TigerStyle: Clamp to valid range
 
         // Parse replica ID from POD_NAME (e.g., "redis-rust-0" -> 0)
         let replica_id = Self::parse_replica_id_from_env().min(REPLICA_ID_MAX);
 
-        // Build peer list from Kubernetes DNS
+        // Build peer list: prefer REPLICATION_PEERS env var, fall back to Kubernetes DNS
         let peers = if enabled {
-            Self::build_peer_list(replica_id, cluster_size, gossip_port)
+            Self::resolve_peers(replica_id, cluster_size, gossip_port)
         } else {
             vec![]
+        };
+
+        // When REPLICATION_PEERS overrides peer discovery, cluster_size must
+        // reflect the actual peer count (peers + self) to keep invariants valid.
+        let cluster_size = if enabled && std::env::var("REPLICATION_PEERS").is_ok() {
+            peers.len() + 1
+        } else {
+            cluster_size
         };
 
         let config = ClusterConfig {
@@ -230,6 +239,48 @@ impl ClusterConfig {
             .unwrap_or(DEFAULT_REPLICA_ID)
     }
 
+    /// Resolve peer addresses for gossip replication.
+    ///
+    /// Priority:
+    /// 1. REPLICATION_PEERS env var (comma-separated host:port pairs) — used by the
+    ///    libstream WASM provisioner to inject correct addresses per tenant.
+    /// 2. Fall back to Kubernetes headless service DNS construction (legacy).
+    fn resolve_peers(my_replica_id: u64, cluster_size: usize, gossip_port: u16) -> Vec<String> {
+        if let Ok(peers_env) = std::env::var("REPLICATION_PEERS") {
+            // Filter out self from the peer list. The WASM provisioner includes
+            // ALL nodes in REPLICATION_PEERS; we must exclude our own address
+            // to prevent self-gossip (node connecting to itself in a feedback loop
+            // that causes unbounded memory growth on node-0).
+            let my_pod_name = std::env::var("POD_NAME").unwrap_or_default();
+            let peers: Vec<String> = peers_env
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .filter(|s| {
+                    // Exclude entries that contain our pod name as a prefix
+                    // e.g., "redis-replicated-kv-v2-0.redis-..." matches POD_NAME="redis-replicated-kv-v2-0"
+                    let my_pod_prefix = format!("{}.", my_pod_name);
+                    if !my_pod_name.is_empty() && s.starts_with(&my_pod_prefix) {
+                        info!("Excluding self from peer list: {}", s);
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            if !peers.is_empty() {
+                info!(
+                    "Using REPLICATION_PEERS env var: {} peers configured (excluded self)",
+                    peers.len()
+                );
+                return peers;
+            }
+            warn!("REPLICATION_PEERS env var is set but empty, falling back to DNS discovery");
+        }
+
+        Self::build_peer_list(my_replica_id, cluster_size, gossip_port)
+    }
+
     /// Build peer list from Kubernetes headless service DNS
     /// DNS format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
     fn build_peer_list(my_replica_id: u64, cluster_size: usize, gossip_port: u16) -> Vec<String> {
@@ -293,24 +344,55 @@ async fn start_gossip_listener(
     state: Arc<ReplicatedShardedState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::AsyncReadExt;
+    use tokio::task::JoinHandle;
+    use std::collections::HashMap;
+    use std::net::IpAddr;
 
-    // TigerStyle: Explicit limit
+    // TigerStyle: Explicit limits
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
+    const MAX_PEERS: usize = 64; // Safety bound on tracked peers
 
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).await?;
     info!("Gossip listener started on {}", addr);
 
+    // Track one active connection per peer IP to prevent unbounded task spawning.
+    // When a peer reconnects, abort the old handler before spawning a replacement.
+    let mut active_peers: HashMap<IpAddr, JoinHandle<()>> = HashMap::new();
+
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-        info!("Gossip connection from {}", peer_addr);
+        let peer_ip = peer_addr.ip();
+
+        // Clean up finished tasks
+        active_peers.retain(|_, handle| !handle.is_finished());
+
+        // If this peer already has an active connection, abort it
+        if let Some(old_handle) = active_peers.remove(&peer_ip) {
+            if !old_handle.is_finished() {
+                old_handle.abort();
+                debug!("Aborted previous gossip handler for peer {}", peer_ip);
+            }
+        }
+
+        debug!("Gossip connection from {} (active peers: {})", peer_addr, active_peers.len());
 
         let state_clone = state.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             if let Err(e) = handle_gossip_connection(stream, state_clone, MAX_MESSAGE_SIZE).await {
                 warn!("Gossip connection error from {}: {}", peer_addr, e);
             }
         });
+
+        // Track this peer's handler (with safety bound)
+        if active_peers.len() < MAX_PEERS {
+            active_peers.insert(peer_ip, handle);
+        }
+
+        debug_assert!(
+            active_peers.len() <= MAX_PEERS,
+            "Active peer count must not exceed MAX_PEERS"
+        );
     }
 }
 
@@ -608,10 +690,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let (worker_handles, sender) = integration.start_workers().await?;
-
-    // Connect delta sink BEFORE wrapping state in Arc
-    state.set_delta_sink(sender);
+    // Only start persistence workers for non-memory store types.
+    // Memory-mode pods don't need persistence — the streaming pipeline would accumulate
+    // deltas in the InMemoryObjectStore's segment HashMap, growing unbounded (~300Mi/min).
+    let worker_handles = if config.store_type != "memory" {
+        let (handles, sender) = integration.start_workers().await?;
+        state.set_delta_sink(sender);
+        Some(handles)
+    } else {
+        info!("Skipping persistence pipeline for store_type=memory");
+        None
+    };
 
     // Start WAL actor if enabled
     let wal_task = if let Some(ref wc) = wal_config {
@@ -766,8 +855,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("WAL actor shutdown complete");
     }
 
-    info!("Shutting down streaming persistence workers...");
-    worker_handles.shutdown().await;
+    if let Some(handles) = worker_handles {
+        info!("Shutting down streaming persistence workers...");
+        handles.shutdown().await;
+    }
 
     // Shutdown observability (flush pending spans/metrics)
     shutdown();
@@ -1041,5 +1132,59 @@ mod tests {
             "Replication factor should match cluster size"
         );
         assert_eq!(repl.gossip_interval_ms, 100, "Gossip interval should match");
+    }
+
+    /// Test REPLICATION_PEERS env var overrides DNS discovery
+    #[test]
+    fn test_resolve_peers_from_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Clean up any leftover env vars
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("REPLICATION_PEERS");
+
+        let explicit_peers = "redis-kv-0.redis-kv-headless.libstream.svc.cluster.local:7000,redis-kv-2.redis-kv-headless.libstream.svc.cluster.local:7000";
+        std::env::set_var("REPLICATION_PEERS", explicit_peers);
+
+        let peers = ClusterConfig::resolve_peers(1, 3, 7000);
+
+        assert_eq!(peers.len(), 2, "Should have 2 peers from env var");
+        assert!(
+            peers[0].contains("redis-kv-0"),
+            "First peer should be redis-kv-0"
+        );
+        assert!(
+            peers[1].contains("redis-kv-2"),
+            "Second peer should be redis-kv-2"
+        );
+
+        // Clean up
+        std::env::remove_var("REPLICATION_PEERS");
+    }
+
+    /// Test REPLICATION_PEERS falls back to DNS when empty
+    #[test]
+    fn test_resolve_peers_fallback_when_empty() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REPLICATION_PEERS", "");
+        std::env::set_var("POD_NAME", "redis-rust-0");
+        std::env::set_var("POD_NAMESPACE", "default");
+        std::env::set_var("SERVICE_NAME", "redis-rust-headless");
+
+        let peers = ClusterConfig::resolve_peers(0, 3, 7000);
+
+        // Should fall back to DNS-based peer list
+        assert_eq!(peers.len(), 2, "Should fall back to DNS with 2 peers");
+        assert!(
+            peers[0].contains("redis-rust-headless"),
+            "Should use DNS format on fallback"
+        );
+
+        // Clean up
+        std::env::remove_var("REPLICATION_PEERS");
+        std::env::remove_var("POD_NAME");
+        std::env::remove_var("POD_NAMESPACE");
+        std::env::remove_var("SERVICE_NAME");
     }
 }
