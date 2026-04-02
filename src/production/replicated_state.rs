@@ -368,6 +368,27 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                 );
                 RespValue::BulkString(Some(info.into_bytes()))
             }
+            Command::DbSize => {
+                // Fan out DBSIZE to all shards, sum per-shard key counts
+                let futures: Vec<_> = self
+                    .shards
+                    .iter()
+                    .map(|shard| shard.execute_readonly(Command::DbSize))
+                    .collect();
+                let results = futures::future::join_all(futures).await;
+                let total: i64 = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        if let RespValue::Integer(n) = r {
+                            Some(n)
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                debug_assert!(total >= 0, "Postcondition: DBSIZE must be non-negative");
+                RespValue::Integer(total)
+            }
             _ => RespValue::err("ERR unknown command"),
         }
     }
