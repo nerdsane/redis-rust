@@ -106,20 +106,28 @@ impl SimulatedNode {
     }
 
     /// Apply remote deltas from another node
+    ///
+    /// Uses the CRDT-merged value from replica_state (not the incoming delta)
+    /// to update the executor. This prevents stale deltas from overwriting
+    /// newer local values in the executor.
     pub fn apply_remote_deltas(&mut self, deltas: Vec<ReplicationDelta>) {
         for delta in deltas {
-            // Apply to replica state
-            self.replica_state.apply_remote_delta(delta.clone());
+            let key = delta.key.clone();
 
-            // Also apply to command executor for GET to work
-            if !delta.value.is_tombstone() {
-                if let Some(value) = delta.value.get() {
-                    let _ = self
-                        .executor
-                        .execute(&Command::set(delta.key.clone(), value.clone()));
+            // Apply to replica state (CRDT merge)
+            self.replica_state.apply_remote_delta(delta);
+
+            // Read back the MERGED result to update executor
+            if let Some(merged) = self.replica_state.replicated_keys.get(&key) {
+                if !merged.is_tombstone() {
+                    if let Some(value) = merged.get() {
+                        let _ = self
+                            .executor
+                            .execute(&Command::set(key.clone(), value.clone()));
+                    }
+                } else {
+                    let _ = self.executor.execute(&Command::del(key.clone()));
                 }
-            } else {
-                let _ = self.executor.execute(&Command::del(delta.key.clone()));
             }
         }
     }
