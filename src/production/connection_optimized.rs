@@ -84,6 +84,9 @@ pub struct OptimizedConnectionHandler<S> {
     transaction_errors: bool,
     /// Watched keys with their values at WATCH time (for optimistic locking)
     watched_keys: Vec<(String, RespValue)>,
+    /// Timestamp for the current read batch — amortizes clock_gettime syscalls
+    /// across all commands in a pipeline batch instead of 2 syscalls per command.
+    batch_start: Instant,
 }
 
 impl<S> OptimizedConnectionHandler<S>
@@ -168,6 +171,7 @@ where
             transaction_queue: Vec::new(),
             transaction_errors: false,
             watched_keys: Vec::new(),
+            batch_start: Instant::now(),
         }
     }
 
@@ -191,6 +195,8 @@ where
                         break;
                     }
                     Ok(n) => {
+                        self.batch_start = Instant::now();
+
                         if self.buffer.len() + n > self.config.max_buffer_size {
                             error!(
                                 "Buffer overflow from {}, closing connection",
@@ -220,9 +226,8 @@ where
 
                             if get_count >= batch_threshold {
                                 // Batch execute multiple GETs concurrently
-                                let start = Instant::now();
                                 let results = self.state.fast_batch_get_pipeline(get_keys).await;
-                                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                let duration_ms = self.batch_start.elapsed().as_secs_f64() * 1000.0;
 
                                 for response in &results {
                                     let success = !matches!(response, RespValue::Error(_));
@@ -242,10 +247,9 @@ where
 
                                 if set_count >= batch_threshold {
                                     // Batch execute multiple SETs concurrently
-                                    let start = Instant::now();
                                     let results =
                                         self.state.fast_batch_set_pipeline(set_pairs).await;
-                                    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                    let duration_ms = self.batch_start.elapsed().as_secs_f64() * 1000.0;
 
                                     for response in &results {
                                         let success = !matches!(response, RespValue::Error(_));
@@ -337,7 +341,6 @@ where
             Ok(Some(resp_value)) => match Command::from_resp_zero_copy(&resp_value) {
                 Ok(cmd) => {
                     let cmd_name = cmd.name();
-                    let start = Instant::now();
 
                     // Handle connection-level transaction state
                     let response = if self.in_transaction {
@@ -535,7 +538,7 @@ where
                         }
                     };
 
-                    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    let duration_ms = self.batch_start.elapsed().as_secs_f64() * 1000.0;
                     let success = !matches!(&response, RespValue::Error(_));
                     self.metrics.record_command(cmd_name, duration_ms, success);
 
@@ -1156,12 +1159,10 @@ where
                 break; // Need more data
             }
 
-            // Extract key
-            let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_start + key_len]);
+            // Zero-copy: split consumed bytes from buffer, freeze to Bytes, then slice the key
+            let consumed = self.buffer.split_to(total_needed).freeze();
+            let key = consumed.slice(key_start..key_start + key_len);
             keys.push(key);
-
-            // Consume this GET from buffer
-            let _ = self.buffer.split_to(total_needed);
         }
 
         let count = keys.len();
@@ -1242,13 +1243,11 @@ where
                 break; // Need more data
             }
 
-            // Extract key and value
-            let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
-            let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
+            // Zero-copy: split consumed bytes, freeze, then slice key and value
+            let consumed = self.buffer.split_to(total_needed).freeze();
+            let key = consumed.slice(key_start..key_end);
+            let value = consumed.slice(val_start..val_start + val_len);
             pairs.push((key, value));
-
-            // Consume this SET from buffer
-            let _ = self.buffer.split_to(total_needed);
         }
 
         let count = pairs.len();
@@ -1320,16 +1319,13 @@ where
             return FastPathResult::NeedMoreData;
         }
 
-        // Extract key as bytes::Bytes (zero-copy from buffer)
-        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_start + key_len]);
-
-        // Consume the parsed bytes from buffer
-        let _ = self.buffer.split_to(total_needed);
+        // Zero-copy: split consumed bytes, freeze, then slice key
+        let consumed = self.buffer.split_to(total_needed).freeze();
+        let key = consumed.slice(key_start..key_start + key_len);
 
         // Execute fast GET using pooled response slot (avoids oneshot allocation)
-        let start = Instant::now();
         let response = self.state.pooled_fast_get(key).await;
-        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let duration_ms = self.batch_start.elapsed().as_secs_f64() * 1000.0;
         let success = !matches!(&response, RespValue::Error(_));
         self.metrics.record_command("GET", duration_ms, success);
 
@@ -1398,17 +1394,14 @@ where
             return FastPathResult::NeedMoreData;
         }
 
-        // Extract key and value as bytes::Bytes
-        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
-        let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
-
-        // Consume the parsed bytes
-        let _ = self.buffer.split_to(total_needed);
+        // Zero-copy: split consumed bytes, freeze, then slice key and value
+        let consumed = self.buffer.split_to(total_needed).freeze();
+        let key = consumed.slice(key_start..key_end);
+        let value = consumed.slice(val_start..val_start + val_len);
 
         // Execute fast SET using pooled response slot (avoids oneshot allocation)
-        let start = Instant::now();
         let response = self.state.pooled_fast_set(key, value).await;
-        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let duration_ms = self.batch_start.elapsed().as_secs_f64() * 1000.0;
         let success = !matches!(&response, RespValue::Error(_));
         self.metrics.record_command("SET", duration_ms, success);
 
