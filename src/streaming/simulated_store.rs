@@ -66,6 +66,37 @@ impl SimulatedStoreConfig {
         }
     }
 
+    /// Load from BUGGIFY_CONFIG env var, or fall back to default().
+    /// Maps `object_store.*` fault keys and applies `global_multiplier`.
+    pub fn from_env_or_default() -> Self {
+        use crate::buggify::faults;
+        use crate::buggify::FaultConfig;
+
+        let fc = FaultConfig::from_env_or_default();
+        let gm = fc.global_multiplier;
+        let base = Self::default();
+
+        SimulatedStoreConfig {
+            put_fail_prob: (fc.probabilities.get(faults::object_store::PUT_FAIL).copied()
+                .unwrap_or(base.put_fail_prob) * gm).clamp(0.0, 1.0),
+            get_fail_prob: (fc.probabilities.get(faults::object_store::GET_FAIL).copied()
+                .unwrap_or(base.get_fail_prob) * gm).clamp(0.0, 1.0),
+            get_corrupt_prob: (fc.probabilities.get(faults::object_store::GET_CORRUPT).copied()
+                .unwrap_or(base.get_corrupt_prob) * gm).clamp(0.0, 1.0),
+            timeout_prob: (fc.probabilities.get(faults::object_store::TIMEOUT).copied()
+                .unwrap_or(base.timeout_prob) * gm).clamp(0.0, 1.0),
+            partial_write_prob: (fc.probabilities.get(faults::object_store::PARTIAL_WRITE).copied()
+                .unwrap_or(base.partial_write_prob) * gm).clamp(0.0, 1.0),
+            delete_fail_prob: (fc.probabilities.get(faults::object_store::DELETE_FAIL).copied()
+                .unwrap_or(base.delete_fail_prob) * gm).clamp(0.0, 1.0),
+            list_incomplete_prob: (fc.probabilities.get(faults::object_store::LIST_INCOMPLETE).copied()
+                .unwrap_or(base.list_incomplete_prob) * gm).clamp(0.0, 1.0),
+            rename_fail_prob: (fc.probabilities.get(faults::object_store::RENAME_FAIL).copied()
+                .unwrap_or(base.rename_fail_prob) * gm).clamp(0.0, 1.0),
+            latency_range_us: base.latency_range_us,
+        }
+    }
+
     /// No faults - for baseline testing
     pub fn no_faults() -> Self {
         SimulatedStoreConfig {

@@ -413,6 +413,30 @@ impl Default for SimulatedWalStoreConfig {
 }
 
 impl SimulatedWalStoreConfig {
+    /// Load from BUGGIFY_CONFIG env var, or fall back to default().
+    /// Maps `disk.*` fault keys and applies `global_multiplier`.
+    pub fn from_env_or_default() -> Self {
+        use crate::buggify::faults;
+        use crate::buggify::FaultConfig;
+
+        let fc = FaultConfig::from_env_or_default();
+        let gm = fc.global_multiplier;
+        let base = Self::default();
+
+        SimulatedWalStoreConfig {
+            write_fail_prob: (fc.probabilities.get(faults::disk::WRITE_FAIL).copied()
+                .unwrap_or(base.write_fail_prob) * gm).clamp(0.0, 1.0),
+            partial_write_prob: (fc.probabilities.get(faults::disk::PARTIAL_WRITE).copied()
+                .unwrap_or(base.partial_write_prob) * gm).clamp(0.0, 1.0),
+            fsync_fail_prob: (fc.probabilities.get(faults::disk::FSYNC_FAIL).copied()
+                .unwrap_or(base.fsync_fail_prob) * gm).clamp(0.0, 1.0),
+            corruption_prob: (fc.probabilities.get(faults::disk::CORRUPTION).copied()
+                .unwrap_or(base.corruption_prob) * gm).clamp(0.0, 1.0),
+            disk_full_prob: (fc.probabilities.get(faults::disk::DISK_FULL).copied()
+                .unwrap_or(base.disk_full_prob) * gm).clamp(0.0, 1.0),
+        }
+    }
+
     /// No faults - for baseline testing
     pub fn no_faults() -> Self {
         SimulatedWalStoreConfig {

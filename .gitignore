@@ -18,6 +18,10 @@ Thumbs.db
 store/
 maelstrom/maelstrom/store/
 
+# Python
+__pycache__/
+*.pyc
+
 # Profiling
 profile.json
 

@@ -50,6 +50,26 @@ impl Default for CRDTDSTConfig {
 }
 
 impl CRDTDSTConfig {
+    /// Load from BUGGIFY_CONFIG env var, or fall back to moderate(seed).
+    /// Maps `replication.*` fault keys and applies `global_multiplier`.
+    pub fn from_env_or_default(seed: u64) -> Self {
+        use crate::buggify::faults;
+        use crate::buggify::FaultConfig;
+
+        let fc = FaultConfig::from_env_or_default();
+        let gm = fc.global_multiplier;
+        let base = Self::moderate(seed);
+
+        CRDTDSTConfig {
+            seed,
+            message_drop_prob: (fc.probabilities.get(faults::replication::GOSSIP_DROP).copied()
+                .unwrap_or(base.message_drop_prob) * gm).clamp(0.0, 1.0),
+            partition_prob: (fc.probabilities.get(faults::replication::SPLIT_BRAIN).copied()
+                .unwrap_or(base.partition_prob) * gm).clamp(0.0, 1.0),
+            ..base
+        }
+    }
+
     pub fn new(seed: u64, num_replicas: usize) -> Self {
         CRDTDSTConfig {
             seed,

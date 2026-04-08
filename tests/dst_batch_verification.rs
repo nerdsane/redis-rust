@@ -104,3 +104,39 @@ fn test_batch_runner_core_dst() {
     );
     assert!(results.total_operations >= 100_000);
 }
+
+/// Test using BUGGIFY_CONFIG env var for fault configuration.
+/// This is the entry point for the GEPA DST optimizer.
+///
+/// Run with: BUGGIFY_CONFIG="global_multiplier=2.0,..." cargo test --release --test dst_batch_verification test_env_config
+#[test]
+fn test_env_config_batch() {
+    let fault_config = FaultConfig::from_env_or_default();
+    let gm = fault_config.global_multiplier;
+
+    let stats = run_redis_dst_batch(40000, 50, 200, fault_config);
+
+    // Structured output for GEPA optimizer parsing
+    println!("\n=== GEPA DST Evaluation ===");
+    println!("GEPA_GLOBAL_MULTIPLIER={:.4}", gm);
+    println!("GEPA_TOTAL_RUNS={}", stats.total_runs);
+    println!("GEPA_TOTAL_OPS={}", stats.total_operations);
+    println!("GEPA_TOTAL_CRASHES={}", stats.total_crashes);
+    println!("GEPA_TOTAL_RECOVERIES={}", stats.total_recoveries);
+    println!("GEPA_FAILURES={}", stats.failed_seeds.len());
+    println!("GEPA_FAILED_SEEDS={:?}", stats.failed_seeds);
+    println!("{}", stats.summary());
+
+    // Report buggify stats for coverage tracking
+    let bstats = buggify::get_stats();
+    let total_checks: u64 = bstats.checks.values().sum();
+    let total_triggers: u64 = bstats.triggers.values().sum();
+    let faults_with_triggers = bstats.triggers.len();
+    println!("GEPA_BUGGIFY_CHECKS={}", total_checks);
+    println!("GEPA_BUGGIFY_TRIGGERS={}", total_triggers);
+    println!("GEPA_FAULTS_TRIGGERED={}", faults_with_triggers);
+
+    // This test always passes — the optimizer reads the structured output
+    // to compute fitness. A "failure" in DST means a bug was found, which
+    // is what the optimizer is trying to maximize.
+}
